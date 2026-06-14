@@ -36,6 +36,7 @@ type appConfig struct {
 	PubSubAPIEndpoint  string
 	ErrorCooldown      time.Duration
 	PollInterval       time.Duration
+	PublishTimeout     time.Duration
 
 	PGHost                  string
 	PGPort                  uint16
@@ -45,6 +46,7 @@ type appConfig struct {
 	PGSSL                   bool
 	PGSSLRejectUnauthorized bool
 	PGConnectTimeout        time.Duration
+	PGQueryTimeout          time.Duration
 	PGMaxConnections        int
 
 	AWSRegion                  string
@@ -87,13 +89,16 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	var watchdogIntervalMS = int(cfg.WatchdogInterval / time.Millisecond)
 	var errorCooldownMS = int(cfg.ErrorCooldown / time.Millisecond)
 	var pollIntervalMS = int(cfg.PollInterval / time.Millisecond)
+	var publishTimeoutMS = int(cfg.PublishTimeout / time.Millisecond)
 	var pgTimeoutMS = int(cfg.PGConnectTimeout / time.Millisecond)
+	var pgQueryTimeoutMS = int(cfg.PGQueryTimeout / time.Millisecond)
 	var awsRoleDurationSeconds = int(cfg.AWSRoleDuration / time.Second)
 	var awsCredentialRefreshWindowMS = int(cfg.AWSCredentialRefreshWindow / time.Millisecond)
 
 	addIntFlag(flags, &options, "Batch processing", &errorCooldownMS, "error-cooldown-ms", errorCooldownMS, "Sleep after batch or database errors in milliseconds.", "ERROR_COOLDOWN_MS")
 	addIntFlag(flags, &options, "Batch processing", &pollIntervalMS, "poll-interval-ms", pollIntervalMS, "Sleep after an empty batch in milliseconds.", "POLL_INTERVAL_MS")
 	addIntFlag(flags, &options, "Batch processing", &watchdogIntervalMS, "watchdog-interval-ms", watchdogIntervalMS, "Watchdog interval in milliseconds.", "WATCHDOG_INTERVAL_MS")
+	addIntFlag(flags, &options, "Batch processing", &publishTimeoutMS, "publish-timeout-ms", publishTimeoutMS, "Timeout for a single publish call in milliseconds. 0 disables the timeout.", "PUBLISH_TIMEOUT_MS")
 
 	addIntFlag(flags, &options, "HTTP / health", &cfg.HealthPort, "health-port", cfg.HealthPort, "HTTP health server port. Set to 0 to disable.", "HEALTH_PORT, PORT")
 
@@ -108,6 +113,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addBoolFlag(flags, &options, "PostgreSQL", &cfg.PGSSL, "pg-ssl", cfg.PGSSL, "Enable PostgreSQL TLS.", "PG_SSL")
 	addBoolFlag(flags, &options, "PostgreSQL", &cfg.PGSSLRejectUnauthorized, "pg-ssl-reject-unauthorized", cfg.PGSSLRejectUnauthorized, "Verify PostgreSQL TLS certificates.", "PG_SSL_REJECT_UNAUTHORIZED")
 	addIntFlag(flags, &options, "PostgreSQL", &pgTimeoutMS, "pg-connect-timeout-ms", pgTimeoutMS, "PostgreSQL connect timeout in milliseconds.", "PG_CONNECT_TIMEOUT_MS")
+	addIntFlag(flags, &options, "PostgreSQL", &pgQueryTimeoutMS, "pg-query-timeout-ms", pgQueryTimeoutMS, "Timeout for a single database query in milliseconds. 0 disables the timeout.", "PG_QUERY_TIMEOUT_MS")
 	addIntFlag(flags, &options, "PostgreSQL", &cfg.PGMaxConnections, "pg-max-connections", cfg.PGMaxConnections, "PostgreSQL max open connections.", "PG_MAX_CONNECTIONS")
 
 	addBoolFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubEnabled, "pubsub-enabled", cfg.PubSubEnabled, "Enable publishing to Google Pub/Sub.", "PUBSUB_ENABLED")
@@ -129,7 +135,9 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	cfg.WatchdogInterval = time.Duration(watchdogIntervalMS) * time.Millisecond
 	cfg.ErrorCooldown = time.Duration(errorCooldownMS) * time.Millisecond
 	cfg.PollInterval = time.Duration(pollIntervalMS) * time.Millisecond
+	cfg.PublishTimeout = time.Duration(publishTimeoutMS) * time.Millisecond
 	cfg.PGConnectTimeout = time.Duration(pgTimeoutMS) * time.Millisecond
+	cfg.PGQueryTimeout = time.Duration(pgQueryTimeoutMS) * time.Millisecond
 	cfg.AWSRoleDuration = time.Duration(awsRoleDurationSeconds) * time.Second
 	cfg.AWSCredentialRefreshWindow = time.Duration(awsCredentialRefreshWindowMS) * time.Millisecond
 
@@ -191,6 +199,7 @@ func loadConfigFromEnv() appConfig {
 		PubSubAPIEndpoint:  getenv("PUBSUB_API_ENDPOINT", ""),
 		ErrorCooldown:      time.Duration(getenvInt("ERROR_COOLDOWN_MS", 5000)) * time.Millisecond,
 		PollInterval:       time.Duration(getenvInt("POLL_INTERVAL_MS", 0)) * time.Millisecond,
+		PublishTimeout:     time.Duration(getenvInt("PUBLISH_TIMEOUT_MS", 30000)) * time.Millisecond,
 
 		PGHost:                  getenv("PG_HOST", "localhost"),
 		PGPort:                  uint16(getenvInt("PG_PORT", 5432)),
@@ -200,6 +209,7 @@ func loadConfigFromEnv() appConfig {
 		PGSSL:                   os.Getenv("PG_SSL") == "true",
 		PGSSLRejectUnauthorized: os.Getenv("PG_SSL_REJECT_UNAUTHORIZED") == "true",
 		PGConnectTimeout:        time.Duration(getenvInt("PG_CONNECT_TIMEOUT_MS", 10000)) * time.Millisecond,
+		PGQueryTimeout:          time.Duration(getenvInt("PG_QUERY_TIMEOUT_MS", 30000)) * time.Millisecond,
 		PGMaxConnections:        getenvInt("PG_MAX_CONNECTIONS", 10),
 
 		AWSRegion:                  getenv("AWS_REGION", ""),

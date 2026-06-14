@@ -35,7 +35,10 @@ Consumers should be idempotent.
 
 Outboxer holds a database transaction while publishing a batch. This keeps the
 delete behavior simple and preserves ordering behavior, but it also means slow
-queue calls can hold row locks for longer.
+queue calls can hold row locks for longer. Every database query and publish call
+is bounded by a timeout (`PG_QUERY_TIMEOUT_MS`, `PUBLISH_TIMEOUT_MS`) so a single
+hung call cannot stall the batch indefinitely, and the watchdog remains as a
+last-resort backstop.
 
 ## Event Table
 
@@ -164,6 +167,7 @@ outboxer --help
 | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors. |
 | `POLL_INTERVAL_MS` | `0` | Sleep after an empty batch. The default keeps polling immediately. |
 | `WATCHDOG_INTERVAL_MS` | `600000` | Watchdog interval. Must be at least 10x `POLL_INTERVAL_MS` when polling is enabled. |
+| `PUBLISH_TIMEOUT_MS` | `30000` | Timeout for a single publish call. `0` disables it. |
 | `HEALTH_PORT` | `PORT` or `0` | HTTP health server port. `0` disables the server. |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, or `error`. |
 | `LOG_FORMAT` | `text` | Log format: `text` or `json`. |
@@ -175,6 +179,7 @@ outboxer --help
 | `PG_SSL` | `false` | Enable PostgreSQL TLS. |
 | `PG_SSL_REJECT_UNAUTHORIZED` | `false` | Verify PostgreSQL TLS certificates. |
 | `PG_CONNECT_TIMEOUT_MS` | `10000` | PostgreSQL connect timeout in milliseconds. |
+| `PG_QUERY_TIMEOUT_MS` | `30000` | Timeout for a single database query. `0` disables it. |
 | `PG_MAX_CONNECTIONS` | `10` | PostgreSQL max open connections. |
 | `PUBSUB_API_ENDPOINT` | empty | Optional Pub/Sub API endpoint override. |
 | `AWS_REGION` | empty | AWS region for SQS and STS. |

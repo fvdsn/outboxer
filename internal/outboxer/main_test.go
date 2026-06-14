@@ -472,6 +472,56 @@ func TestResolveBackendRouting(t *testing.T) {
 	}
 }
 
+type blockingPubSubPublisher struct{}
+
+func (blockingPubSubPublisher) Publish(ctx context.Context, _ pubsubMessage) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+type blockingSQSPublisher struct{}
+
+func (blockingSQSPublisher) SendBatch(ctx context.Context, _ string, _ []sqsBatchEntry) (sqsBatchResponse, error) {
+	<-ctx.Done()
+	return sqsBatchResponse{}, ctx.Err()
+}
+
+func TestSendPubsubEventRespectsPublishTimeout(t *testing.T) {
+	cfg := testConfig()
+	cfg.PublishTimeout = 50 * time.Millisecond
+	a := &app{cfg: cfg, pubsub: blockingPubSubPublisher{}}
+
+	evt := event{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "p"}}
+
+	start := time.Now()
+	err := a.sendPubsubEvent(context.Background(), nil, evt, func(any) {})
+	if err == nil {
+		t.Fatal("expected a timeout error from a blocked publish")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("publish blocked for %s instead of timing out", elapsed)
+	}
+}
+
+func TestSendSQS10EventsRespectsPublishTimeout(t *testing.T) {
+	cfg := testConfig()
+	cfg.PublishTimeout = 50 * time.Millisecond
+	a := &app{cfg: cfg, sqs: blockingSQSPublisher{}}
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "p"}},
+	}
+
+	start := time.Now()
+	err := a.sendSQS10Events(context.Background(), nil, "queue-a", events, func(any) {})
+	if err == nil {
+		t.Fatal("expected a timeout error from a blocked SendBatch")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("SendBatch blocked for %s instead of timing out", elapsed)
+	}
+}
+
 func TestValidateWatchdogMustExceedPollInterval(t *testing.T) {
 	cfg := testConfig()
 	cfg.PollInterval = time.Minute

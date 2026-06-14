@@ -228,7 +228,9 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 		return nil
 	}
 
-	response, err := a.sqs.SendBatch(ctx, queueURL, entries)
+	sendCtx, cancel := withTimeout(ctx, a.cfg.PublishTimeout)
+	defer cancel()
+	response, err := a.sqs.SendBatch(sendCtx, queueURL, entries)
 	if err != nil {
 		slog.Error("Failed to send event batch",
 			"event_destination", queueURL,

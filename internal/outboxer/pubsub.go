@@ -93,7 +93,9 @@ func (a *app) sendPubsubEvent(ctx context.Context, tx *sql.Tx, evt event, addIDT
 		)
 	}
 
-	messageID, err := a.pubsub.Publish(ctx, pubsubMessage{
+	publishCtx, cancel := withTimeout(ctx, a.cfg.PublishTimeout)
+	defer cancel()
+	messageID, err := a.pubsub.Publish(publishCtx, pubsubMessage{
 		Topic:       topicName,
 		Data:        data,
 		OrderingKey: orderingKey,

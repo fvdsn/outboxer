@@ -36,6 +36,9 @@ func openDB(cfg appConfig) (*sql.DB, error) {
 }
 
 func (a *app) checkDBWorks(ctx context.Context) error {
+	ctx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
+	defer cancel()
+
 	query := fmt.Sprintf("SELECT * FROM %s LIMIT 1", ident(a.cfg.EventTable))
 	rows, err := a.db.QueryContext(ctx, query)
 	if err != nil {
@@ -81,6 +84,9 @@ func (a *app) checkRequiredColumns(columns []string) error {
 }
 
 func (a *app) selectEvents(ctx context.Context, tx *sql.Tx) ([]event, error) {
+	ctx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
+	defer cancel()
+
 	query := fmt.Sprintf(
 		"SELECT * FROM %s ORDER BY %s LIMIT $1 FOR UPDATE",
 		ident(a.cfg.EventTable),
@@ -136,6 +142,9 @@ func normalizeDBValue(value any) any {
 }
 
 func (a *app) deleteEvent(ctx context.Context, tx *sql.Tx, id any) error {
+	ctx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
+	defer cancel()
+
 	query := fmt.Sprintf("DELETE FROM %s WHERE %s = $1", ident(a.cfg.EventTable), ident(a.cfg.EventID))
 	_, err := tx.ExecContext(ctx, query, id)
 	return err
@@ -157,6 +166,9 @@ func (a *app) deleteEvents(ctx context.Context, tx *sql.Tx, ids []any) error {
 		ident(a.cfg.EventID),
 		strings.Join(placeholders, ", "),
 	)
+
+	ctx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
+	defer cancel()
 
 	a.txMu.Lock()
 	defer a.txMu.Unlock()
