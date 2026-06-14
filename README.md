@@ -206,17 +206,16 @@ aggregators). Per-event publish logs are emitted at debug level, so the default
 ## Health Endpoint
 
 The HTTP server starts only when `HEALTH_PORT`, `PORT`, or
-`--health-port` is set to a positive port. It returns `200 all good` for
-health checks. Successful health checks are logged at debug level. `DELETE`
-requests ask the process to shut down gracefully and are logged at info level.
+`--health-port` is set to a positive port. It returns `200 all good` for any
+request. Successful health checks are logged at debug level.
 
 ## Shutdown
 
-Outboxer shuts down gracefully on `SIGINT` or `SIGTERM` (or a `DELETE` request
-to the health endpoint): it stops the processing loop, closes the database and
-queue clients, and exits with status `0`. A batch that is mid-flight when
-shutdown begins may be interrupted; because delivery is at-least-once, any
-events that were published but not yet deleted are re-published on the next run.
+Outboxer shuts down gracefully on `SIGINT` or `SIGTERM`: it stops the processing
+loop, closes the database and queue clients, and exits with status `0`. A batch
+that is mid-flight when shutdown begins may be interrupted; because delivery is
+at-least-once, any events that were published but not yet deleted are
+re-published on the next run.
 
 ## Layout
 

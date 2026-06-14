@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strings"
 )
 
 func (a *app) serveHTTPRequests() (*http.Server, error) {
@@ -30,26 +29,10 @@ func (a *app) serveHTTPRequests() (*http.Server, error) {
 func (a *app) newHTTPServer() *http.Server {
 	server := &http.Server{Addr: fmt.Sprintf(":%d", a.cfg.HealthPort)}
 
-	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		method := strings.ToUpper(req.Method)
-		switch {
-		case method == http.MethodDelete:
-			origin := req.Header.Get("x-forwarded-for")
-			if origin == "" && req.RemoteAddr != "" {
-				origin = req.RemoteAddr
-			}
-			if origin == "" {
-				origin = "unknown"
-			}
-			slog.Info("Shutdown requested by client", "from", origin)
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("Shutting down"))
-			a.shutdown()
-		default:
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("all good"))
-			slog.Debug("Healthcheck request answered")
-		}
+	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("all good"))
+		slog.Debug("Healthcheck request answered")
 	})
 
 	return server
