@@ -60,16 +60,16 @@ func loadConfig() appConfig {
 		BatchMaxSequential: getenvInt("BATCH_MAX_SEQUENTIAL", 8),
 
 		DeadlockCheckInterval: time.Duration(getenvInt("DEADLOCK_CHECK_INTERVAL_SEC", 10*60)) * time.Second,
-		HealthcheckPort:       getenvInt("HEALTHCHECK_PORT", 9000+int(randomInt63()%1000)),
+		HealthcheckPort:       getenvInt("HEALTHCHECK_PORT", getenvInt("PORT", 8080)),
 		DefaultTopic:          getenv("DEFAULT_TOPIC", "default"),
 		PubSubAPIEndpoint:     getenv("PUBSUB_API_ENDPOINT", ""),
 		ErrorCooldown:         time.Duration(getenvInt("ERROR_COOLDOWN_MS", 5000)) * time.Millisecond,
 
-		PGHost:                  getenv("PG_HOST", "0.0.0.0"),
+		PGHost:                  getenv("PG_HOST", "localhost"),
 		PGPort:                  uint16(getenvInt("PG_PORT", 5432)),
-		PGUser:                  getenv("PG_USER", "fred"),
+		PGUser:                  getenv("PG_USER", "postgres"),
 		PGPassword:              getenv("PG_PASSWORD", ""),
-		PGDatabase:              getenv("PG_DATABASE", "fred"),
+		PGDatabase:              getenv("PG_DATABASE", "postgres"),
 		PGSSL:                   os.Getenv("PG_SSL") == "true",
 		PGSSLRejectUnauthorized: os.Getenv("PG_SSL_REJECT_UNAUTHORIZED") == "true",
 		PGTimeout:               time.Duration(getenvInt("PG_TIMEOUT", 10000)) * time.Millisecond,
@@ -77,7 +77,7 @@ func loadConfig() appConfig {
 
 		AWSRegion:                  getenv("AWS_REGION", ""),
 		AWSRoleARN:                 getenv("AWS_ROLE_ARN", ""),
-		AWSRoleSessionName:         getenv("AWS_ROLE_SESSION_NAME", "core-outbox"),
+		AWSRoleSessionName:         getenv("AWS_ROLE_SESSION_NAME", "outboxer"),
 		AWSRoleDuration:            time.Duration(getenvInt("AWS_ROLE_DURATION_SECONDS", 3600)) * time.Second,
 		AWSCredentialRefreshWindow: time.Duration(getenvInt("AWS_CREDENTIAL_REFRESH_WINDOW_MS", 5*60*1000)) * time.Millisecond,
 	}

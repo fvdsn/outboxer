@@ -1,7 +1,7 @@
 set dotenv-load
 
 integration_pg_dsn := env_var_or_default("INTEGRATION_PG_DSN", "postgres://outboxer:outboxer@localhost:54329/outboxer?sslmode=disable")
-image := env_var_or_default("IMAGE", "outboxer-go:local")
+image := env_var_or_default("IMAGE", "outboxer:local")
 
 # List available commands.
 default:
@@ -17,7 +17,7 @@ build:
 
 # Build a local binary.
 binary:
-    go build -o outboxer-go ./cmd/outboxer
+    go build -o outboxer ./cmd/outboxer
 
 # Build the Docker image.
 docker-build:
