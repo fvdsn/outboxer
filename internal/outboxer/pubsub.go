@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub/v2"
 	"google.golang.org/api/option"
 )
 
@@ -34,10 +34,11 @@ func newPubSubClient(ctx context.Context, cfg appConfig) (*pubsub.Client, error)
 }
 
 func (p *cloudPubSubPublisher) Publish(ctx context.Context, message pubsubMessage) (string, error) {
-	topic := p.client.Topic(message.Topic)
+	publisher := p.client.Publisher(message.Topic)
 	if message.OrderingKey != "" {
-		topic.EnableMessageOrdering = true
+		publisher.EnableMessageOrdering = true
 	}
+	defer publisher.Stop()
 
 	pubsubMsg := &pubsub.Message{
 		Data:       message.Data,
@@ -47,7 +48,7 @@ func (p *cloudPubSubPublisher) Publish(ctx context.Context, message pubsubMessag
 		pubsubMsg.OrderingKey = message.OrderingKey
 	}
 
-	return topic.Publish(ctx, pubsubMsg).Get(ctx)
+	return publisher.Publish(ctx, pubsubMsg).Get(ctx)
 }
 
 func (a *app) sendPubsubEvents(ctx context.Context, tx *sql.Tx, events []event, addIDToDelete func(any)) error {
