@@ -15,14 +15,6 @@ func (a *app) serveHTTPRequests() *http.Server {
 	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		method := strings.ToUpper(req.Method)
 		switch {
-		case a.cfg.RunMode == runModeOnDemand && method == http.MethodPost:
-			if err := a.processEvents(req.Context(), a.cfg.RunMode); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				_, _ = w.Write([]byte(err.Error()))
-				return
-			}
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("done"))
 		case method == http.MethodDelete:
 			origin := req.Header.Get("x-forwarded-for")
 			if origin == "" && req.RemoteAddr != "" {

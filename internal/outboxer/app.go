@@ -8,12 +8,6 @@ import (
 	"syscall"
 )
 
-const (
-	runModePoll     = "poll"
-	runModeOnce     = "once"
-	runModeOnDemand = "ondemand"
-)
-
 type app struct {
 	cfg    appConfig
 	db     *sql.DB

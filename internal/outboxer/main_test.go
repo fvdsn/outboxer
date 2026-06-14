@@ -85,7 +85,6 @@ func testConfig() appConfig {
 		HealthcheckPort:       9999,
 		DefaultTopic:          "default",
 		ErrorCooldown:         time.Millisecond,
-		RunMode:               runModeOnce,
 	}
 }
 
@@ -257,7 +256,7 @@ func TestPostgresIntegrationProcessesAndDeletesEvents(t *testing.T) {
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a := &app{cfg: cfg, db: db, pubsub: pubsub, sqs: sqs}
 
-	if err := a.processEvents(ctx, runModeOnce); err != nil {
+	if err := a.processOneBatch(ctx); err != nil {
 		t.Fatalf("process events: %v", err)
 	}
 

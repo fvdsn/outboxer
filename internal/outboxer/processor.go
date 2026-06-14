@@ -33,37 +33,34 @@ func startDeadlockDetector(interval time.Duration) {
 	}()
 }
 
-func (a *app) processEvents(ctx context.Context, mode string) error {
+func (a *app) processEvents(ctx context.Context) {
 	logInfo(map[string]any{"message": fmt.Sprintf("Processing events from table '%s'", a.cfg.EventTable)})
 
 	for {
-		tx, err := a.db.BeginTx(ctx, nil)
-		if err != nil {
-			logError(map[string]any{"message": "Error while starting event batch transaction", "error": err.Error()})
-			if a.cfg.RunMode == runModeOnDemand {
-				return err
-			}
+		if err := a.processOneBatch(ctx); err != nil {
 			time.Sleep(a.cfg.ErrorCooldown)
-		} else {
-			if err := a.processEventBatch(ctx, tx); err != nil {
-				logError(map[string]any{"message": "Error during event batch transaction", "error": err.Error()})
-				time.Sleep(a.cfg.ErrorCooldown)
-			}
-			if err := tx.Commit(); err != nil {
-				logError(map[string]any{"message": "Error while starting event batch transaction", "error": err.Error()})
-				if a.cfg.RunMode == runModeOnDemand {
-					return err
-				}
-				time.Sleep(a.cfg.ErrorCooldown)
-			}
-		}
-
-		if mode != runModePoll {
-			break
 		}
 	}
+}
 
-	return nil
+func (a *app) processOneBatch(ctx context.Context) error {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		logError(map[string]any{"message": "Error while starting event batch transaction", "error": err.Error()})
+		return err
+	}
+
+	batchErr := a.processEventBatch(ctx, tx)
+	if batchErr != nil {
+		logError(map[string]any{"message": "Error during event batch transaction", "error": batchErr.Error()})
+	}
+
+	if err := tx.Commit(); err != nil {
+		logError(map[string]any{"message": "Error while starting event batch transaction", "error": err.Error()})
+		return err
+	}
+
+	return batchErr
 }
 
 func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) error {

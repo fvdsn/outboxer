@@ -49,23 +49,6 @@ func Run(ctx context.Context) {
 
 	go handleSignals(db)
 
-	switch cfg.RunMode {
-	case runModePoll:
-		server := a.serveHTTPRequests()
-		if err := a.processEvents(ctx, cfg.RunMode); err != nil {
-			logError(map[string]any{"message": "crashed and exited", "error": err.Error()})
-		} else {
-			logError(map[string]any{"message": "crashed and exited"})
-		}
-		_ = db.Close()
-		_ = server.Close()
-		os.Exit(1)
-	case runModeOnDemand:
-		a.serveHTTPRequests()
-		select {}
-	default:
-		_ = a.processEvents(ctx, cfg.RunMode)
-		_ = db.Close()
-		logInfo(map[string]any{"message": "done"})
-	}
+	a.serveHTTPRequests()
+	a.processEvents(ctx)
 }
