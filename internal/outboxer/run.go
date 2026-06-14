@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// Run loads configuration, connects to the database and the enabled queue
+// backends, and processes the outbox until the context is cancelled. It returns
+// an error for any fatal startup or configuration problem.
 func Run(ctx context.Context, args []string) error {
 	cfg, err := loadConfig(args, os.Stderr)
 	if err != nil {

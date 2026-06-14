@@ -66,5 +66,20 @@ fmt:
 tidy:
     go mod tidy
 
-# Format, tidy, test, and build.
-check: fmt tidy test build
+# Run go vet.
+vet:
+    go vet ./...
+
+# Run golangci-lint (pinned to the version used in CI).
+lint:
+    go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./...
+
+# Scan dependencies for known vulnerabilities.
+vuln:
+    go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+# Format, tidy, and run every static check plus unit tests and build.
+check: fmt tidy vet lint vuln test build
+
+# Run the full CI suite locally, including the integration tests.
+ci: fmt tidy vet lint vuln integration build

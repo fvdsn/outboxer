@@ -1,3 +1,6 @@
+// Package outboxer implements a worker for the transactional outbox pattern: it
+// reads events from a PostgreSQL table and publishes them to Google Pub/Sub or
+// AWS SQS.
 package outboxer
 
 import (

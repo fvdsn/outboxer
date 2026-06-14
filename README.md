@@ -1,5 +1,9 @@
 # Outboxer
 
+[![CI](https://github.com/fvdsn/outboxer/actions/workflows/ci.yml/badge.svg)](https://github.com/fvdsn/outboxer/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/fvdsn/outboxer)](https://goreportcard.com/report/github.com/fvdsn/outboxer)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Outboxer is a small worker for the transactional outbox pattern. It reads events
 from a PostgreSQL table, publishes them to Google Pub/Sub or AWS SQS, and deletes
 rows that were successfully published.

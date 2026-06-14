@@ -680,7 +680,7 @@ func TestSleepContextReturnsOnCancel(t *testing.T) {
 	}
 }
 
-func TestDeadlockDetectorConcurrentAccess(t *testing.T) {
+func TestDeadlockDetectorConcurrentAccess(_ *testing.T) {
 	// Exercises the watchdog counter from two goroutines so the race detector
 	// would flag a regression back to an unsynchronized int64.
 	var wg sync.WaitGroup
@@ -906,7 +906,9 @@ func TestPostgresIntegrationProcessesAndDeletesEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create test table: %v", err)
 	}
-	defer db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
+	defer func() {
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
+	}()
 
 	_, err = db.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO %s (id, timestamp, payload, target, destination, ordering_key, attributes)

@@ -1,0 +1,25 @@
+version: "2"
+
+linters:
+  enable:
+    - bodyclose
+    - errorlint
+    - misspell
+    - revive
+    - unconvert
+    - unparam
+  settings:
+    errcheck:
+      # Cleanup calls whose errors are intentionally ignored.
+      exclude-functions:
+        - (*database/sql.Rows).Close
+        - (*database/sql.DB).Close
+        - (*cloud.google.com/go/pubsub.Client).Close
+  exclusions:
+    rules:
+      # cloud.google.com/go/pubsub v1 is deprecated in favor of v2. Migrating is
+      # tracked separately; until then, do not fail the build on the deprecation.
+      - path: internal/outboxer/pubsub.go
+        text: "SA1019"
+        linters:
+          - staticcheck

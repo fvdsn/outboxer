@@ -1,3 +1,4 @@
+// Package main is the outboxer command-line entry point.
 package main
 
 import (
