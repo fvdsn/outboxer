@@ -18,6 +18,10 @@ var (
 	deadlockDetectorPrevious int64
 )
 
+type batchResult struct {
+	selected int
+}
+
 func startDeadlockDetector(interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -37,39 +41,43 @@ func (a *app) processEvents(ctx context.Context) {
 	logInfo(map[string]any{"message": fmt.Sprintf("Processing events from table '%s'", a.cfg.EventTable)})
 
 	for {
-		if err := a.processOneBatch(ctx); err != nil {
+		result, err := a.processOneBatch(ctx)
+		if err != nil {
 			time.Sleep(a.cfg.ErrorCooldown)
+		} else if result.selected == 0 && a.cfg.PollInterval > 0 {
+			time.Sleep(a.cfg.PollInterval)
 		}
 	}
 }
 
-func (a *app) processOneBatch(ctx context.Context) error {
+func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		logError(map[string]any{"message": "Error while starting event batch transaction", "error": err.Error()})
-		return err
+		return batchResult{}, err
 	}
 
-	batchErr := a.processEventBatch(ctx, tx)
+	result, batchErr := a.processEventBatch(ctx, tx)
 	if batchErr != nil {
 		logError(map[string]any{"message": "Error during event batch transaction", "error": batchErr.Error()})
 	}
 
 	if err := tx.Commit(); err != nil {
 		logError(map[string]any{"message": "Error while starting event batch transaction", "error": err.Error()})
-		return err
+		return result, err
 	}
 
-	return batchErr
+	return result, batchErr
 }
 
-func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) error {
+func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, error) {
 	deadlockDetector = randomInt63()
 
 	events, err := a.selectEvents(ctx, tx)
 	if err != nil {
-		return err
+		return batchResult{}, err
 	}
+	result := batchResult{selected: len(events)}
 	if len(events) > 0 {
 		logInfo(map[string]any{"message": fmt.Sprintf("processing %d messages", len(events))})
 	}
@@ -120,16 +128,16 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) error {
 	idsMu.Unlock()
 
 	if err := a.deleteEvents(ctx, tx, deleteIDs); err != nil {
-		return err
+		return result, err
 	}
 
 	for err := range errs {
 		if err != nil {
-			return err
+			return result, err
 		}
 	}
 
-	return nil
+	return result, nil
 }
 
 func parallelizeEvents(cfg appConfig, events []event) [][]event {

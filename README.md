@@ -88,6 +88,7 @@ present.
 | `BATCH_WORKERS` | `8` | Number of parallel publisher workers per batch. |
 | `BATCH_MAX_SEQUENTIAL` | `8` | Maximum ordered events assigned to one worker in a batch. |
 | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors. |
+| `POLL_INTERVAL_MS` | `0` | Sleep after an empty batch. The default keeps polling immediately. |
 | `DEADLOCK_CHECK_INTERVAL_SEC` | `600` | Watchdog interval. |
 | `HEALTHCHECK_PORT` | `PORT` or `8080` | HTTP health server port. |
 | `PG_HOST` | `localhost` | PostgreSQL host. |
@@ -112,6 +113,12 @@ Google Pub/Sub uses Application Default Credentials.
 
 AWS SQS uses the AWS SDK default credential chain. If `AWS_ROLE_ARN` is set,
 Outboxer assumes that role before publishing to SQS.
+
+## Health Endpoint
+
+The HTTP server returns `200 all good` for health checks. Successful health
+checks are logged at debug level. `DELETE` requests ask the process to shut down
+gracefully and are logged at info level.
 
 ## Layout
 

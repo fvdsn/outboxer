@@ -10,6 +10,20 @@ import (
 )
 
 func (a *app) serveHTTPRequests() *http.Server {
+	server := a.newHTTPServer()
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logError(map[string]any{"message": "HTTP server failed", "error": err.Error()})
+			os.Exit(1)
+		}
+	}()
+
+	logInfo(map[string]any{"message": fmt.Sprintf("Server listening on http://0.0.0.0:%d", a.cfg.HealthcheckPort)})
+	return server
+}
+
+func (a *app) newHTTPServer() *http.Server {
 	server := &http.Server{Addr: fmt.Sprintf(":%d", a.cfg.HealthcheckPort)}
 
 	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -37,17 +51,9 @@ func (a *app) serveHTTPRequests() *http.Server {
 		default:
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("all good"))
-			logInfo(map[string]any{"message": "Healtcheck request answered"})
+			logDebug(map[string]any{"message": "Healthcheck request answered"})
 		}
 	})
 
-	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logError(map[string]any{"message": "HTTP server failed", "error": err.Error()})
-			os.Exit(1)
-		}
-	}()
-
-	logInfo(map[string]any{"message": fmt.Sprintf("Server listening on http://0.0.0.0:%d", a.cfg.HealthcheckPort)})
 	return server
 }

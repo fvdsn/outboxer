@@ -26,6 +26,7 @@ type appConfig struct {
 	DefaultTopic          string
 	PubSubAPIEndpoint     string
 	ErrorCooldown         time.Duration
+	PollInterval          time.Duration
 
 	PGHost                  string
 	PGPort                  uint16
@@ -64,6 +65,7 @@ func loadConfig() appConfig {
 		DefaultTopic:          getenv("DEFAULT_TOPIC", "default"),
 		PubSubAPIEndpoint:     getenv("PUBSUB_API_ENDPOINT", ""),
 		ErrorCooldown:         time.Duration(getenvInt("ERROR_COOLDOWN_MS", 5000)) * time.Millisecond,
+		PollInterval:          time.Duration(getenvInt("POLL_INTERVAL_MS", 0)) * time.Millisecond,
 
 		PGHost:                  getenv("PG_HOST", "localhost"),
 		PGPort:                  uint16(getenvInt("PG_PORT", 5432)),

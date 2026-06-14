@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"sort"
@@ -256,8 +259,12 @@ func TestPostgresIntegrationProcessesAndDeletesEvents(t *testing.T) {
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a := &app{cfg: cfg, db: db, pubsub: pubsub, sqs: sqs}
 
-	if err := a.processOneBatch(ctx); err != nil {
+	result, err := a.processOneBatch(ctx)
+	if err != nil {
 		t.Fatalf("process events: %v", err)
+	}
+	if result.selected != 2 {
+		t.Fatalf("expected 2 selected events, got %d", result.selected)
 	}
 
 	var remaining int
@@ -279,6 +286,34 @@ func TestPostgresIntegrationProcessesAndDeletesEvents(t *testing.T) {
 	sort.Strings(gotBodies)
 	if !reflect.DeepEqual(gotBodies, []string{"hello pubsub", "hello sqs"}) {
 		t.Fatalf("unexpected published bodies: %#v", gotBodies)
+	}
+
+	result, err = a.processOneBatch(ctx)
+	if err != nil {
+		t.Fatalf("process empty batch: %v", err)
+	}
+	if result.selected != 0 {
+		t.Fatalf("expected empty batch to select 0 events, got %d", result.selected)
+	}
+}
+
+func TestHealthcheckReturnsOK(t *testing.T) {
+	a := &app{cfg: testConfig()}
+	server := a.newHTTPServer()
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response := httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", response.Code)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if string(body) != "all good" {
+		t.Fatalf("expected healthcheck body, got %q", string(body))
 	}
 }
 
