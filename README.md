@@ -113,7 +113,7 @@ outboxer --help
 | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors. |
 | `POLL_INTERVAL_MS` | `0` | Sleep after an empty batch. The default keeps polling immediately. |
 | `DEADLOCK_CHECK_INTERVAL_SEC` | `600` | Watchdog interval. |
-| `HEALTHCHECK_PORT` | `PORT` or `8080` | HTTP health server port. |
+| `HEALTHCHECK_PORT` | `PORT` or `0` | HTTP health server port. `0` disables the server. |
 | `PG_HOST` | `localhost` | PostgreSQL host. |
 | `PG_PORT` | `5432` | PostgreSQL port. |
 | `PG_USER` | `postgres` | PostgreSQL user. |
@@ -139,9 +139,10 @@ Outboxer assumes that role before publishing to SQS.
 
 ## Health Endpoint
 
-The HTTP server returns `200 all good` for health checks. Successful health
-checks are logged at debug level. `DELETE` requests ask the process to shut down
-gracefully and are logged at info level.
+The HTTP server starts only when `HEALTHCHECK_PORT`, `PORT`, or
+`--healthcheck-port` is set to a positive port. It returns `200 all good` for
+health checks. Successful health checks are logged at debug level. `DELETE`
+requests ask the process to shut down gracefully and are logged at info level.
 
 ## Layout
 

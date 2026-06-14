@@ -56,6 +56,8 @@ func Run(ctx context.Context, args []string) {
 
 	go handleSignals(db)
 
-	a.serveHTTPRequests()
+	if cfg.HealthcheckPort > 0 {
+		a.serveHTTPRequests()
+	}
 	a.processEvents(ctx)
 }

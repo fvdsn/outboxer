@@ -89,7 +89,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addIntFlag(flags, &options, "Batch processing", &pollIntervalMS, "poll-interval-ms", pollIntervalMS, "Sleep after an empty batch in milliseconds.", "POLL_INTERVAL_MS")
 	addIntFlag(flags, &options, "Batch processing", &deadlockCheckIntervalSec, "deadlock-check-interval-sec", deadlockCheckIntervalSec, "Watchdog interval in seconds.", "DEADLOCK_CHECK_INTERVAL_SEC")
 
-	addIntFlag(flags, &options, "HTTP / health", &cfg.HealthcheckPort, "healthcheck-port", cfg.HealthcheckPort, "HTTP health server port.", "HEALTHCHECK_PORT")
+	addIntFlag(flags, &options, "HTTP / health", &cfg.HealthcheckPort, "healthcheck-port", cfg.HealthcheckPort, "HTTP health server port. Set to 0 to disable.", "HEALTHCHECK_PORT, PORT")
 
 	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGHost, "pg-host", cfg.PGHost, "PostgreSQL host.", "PG_HOST")
 	addValueFlag(flags, &options, "PostgreSQL", (*uint16Value)(&cfg.PGPort), "pg-port", "PostgreSQL port.", "PG_PORT", cfg.PGPort)
@@ -140,7 +140,7 @@ func loadConfigFromEnv() appConfig {
 		BatchMaxSequential: getenvInt("BATCH_MAX_SEQUENTIAL", 8),
 
 		DeadlockCheckInterval: time.Duration(getenvInt("DEADLOCK_CHECK_INTERVAL_SEC", 10*60)) * time.Second,
-		HealthcheckPort:       getenvInt("HEALTHCHECK_PORT", getenvInt("PORT", 8080)),
+		HealthcheckPort:       getenvInt("HEALTHCHECK_PORT", getenvInt("PORT", 0)),
 		DefaultTopic:          getenv("DEFAULT_TOPIC", "default"),
 		PubSubAPIEndpoint:     getenv("PUBSUB_API_ENDPOINT", ""),
 		ErrorCooldown:         time.Duration(getenvInt("ERROR_COOLDOWN_MS", 5000)) * time.Millisecond,

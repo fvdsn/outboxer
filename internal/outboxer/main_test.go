@@ -124,8 +124,8 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	if cfg.PGUser != "postgres" {
 		t.Fatalf("expected default pg user, got %q", cfg.PGUser)
 	}
-	if cfg.HealthcheckPort != 8080 {
-		t.Fatalf("expected default healthcheck port 8080, got %d", cfg.HealthcheckPort)
+	if cfg.HealthcheckPort != 0 {
+		t.Fatalf("expected default healthcheck port 0, got %d", cfg.HealthcheckPort)
 	}
 	if cfg.PollInterval != 0 {
 		t.Fatalf("expected default poll interval 0, got %s", cfg.PollInterval)
@@ -151,6 +151,27 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	}
 	if cfg.HealthcheckPort != 9090 {
 		t.Fatalf("expected PORT fallback, got %d", cfg.HealthcheckPort)
+	}
+}
+
+func TestLoadConfigHealthcheckPortPrecedence(t *testing.T) {
+	t.Setenv("PORT", "8080")
+	t.Setenv("HEALTHCHECK_PORT", "9000")
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.HealthcheckPort != 9000 {
+		t.Fatalf("expected HEALTHCHECK_PORT to override PORT, got %d", cfg.HealthcheckPort)
+	}
+
+	cfg, err = loadConfig([]string{"--healthcheck-port=0"}, io.Discard)
+	if err != nil {
+		t.Fatalf("load config with flag: %v", err)
+	}
+	if cfg.HealthcheckPort != 0 {
+		t.Fatalf("expected CLI flag to disable healthcheck server, got %d", cfg.HealthcheckPort)
 	}
 }
 
@@ -202,6 +223,8 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"PostgreSQL:",
 		"Google Pub/Sub:",
 		"AWS SQS:",
+		"--healthcheck-port",
+		"Env: HEALTHCHECK_PORT, PORT",
 		"--pg-host",
 		"Env: PG_HOST",
 		"--poll-interval-ms",
