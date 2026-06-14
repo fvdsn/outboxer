@@ -24,12 +24,15 @@ type appConfig struct {
 	BatchWorkers       int
 	BatchMaxSequential int
 
-	WatchdogInterval  time.Duration
-	HealthPort        int
-	DefaultTopic      string
-	PubSubAPIEndpoint string
-	ErrorCooldown     time.Duration
-	PollInterval      time.Duration
+	WatchdogInterval   time.Duration
+	HealthPort         int
+	PubSubEnabled      bool
+	SQSEnabled         bool
+	DefaultPubSubTopic string
+	DefaultSQSQueueURL string
+	PubSubAPIEndpoint  string
+	ErrorCooldown      time.Duration
+	PollInterval       time.Duration
 
 	PGHost                  string
 	PGPort                  uint16
@@ -101,9 +104,12 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addIntFlag(flags, &options, "PostgreSQL", &pgTimeoutMS, "pg-connect-timeout-ms", pgTimeoutMS, "PostgreSQL connect timeout in milliseconds.", "PG_CONNECT_TIMEOUT_MS")
 	addIntFlag(flags, &options, "PostgreSQL", &cfg.PGMaxConnections, "pg-max-connections", cfg.PGMaxConnections, "PostgreSQL max open connections.", "PG_MAX_CONNECTIONS")
 
-	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.DefaultTopic, "default-topic", cfg.DefaultTopic, "Pub/Sub topic used when an event has no topic.", "DEFAULT_TOPIC")
+	addBoolFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubEnabled, "pubsub-enabled", cfg.PubSubEnabled, "Enable publishing to Google Pub/Sub.", "PUBSUB_ENABLED")
+	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.DefaultPubSubTopic, "default-pubsub-topic", cfg.DefaultPubSubTopic, "Pub/Sub topic used when an event has no destination.", "DEFAULT_PUBSUB_TOPIC")
 	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubAPIEndpoint, "pubsub-api-endpoint", cfg.PubSubAPIEndpoint, "Optional Pub/Sub API endpoint override.", "PUBSUB_API_ENDPOINT")
 
+	addBoolFlag(flags, &options, "AWS SQS", &cfg.SQSEnabled, "sqs-enabled", cfg.SQSEnabled, "Enable publishing to AWS SQS.", "SQS_ENABLED")
+	addStringFlag(flags, &options, "AWS SQS", &cfg.DefaultSQSQueueURL, "default-sqs-queue-url", cfg.DefaultSQSQueueURL, "SQS queue URL used when an event has no destination.", "DEFAULT_SQS_QUEUE_URL")
 	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRegion, "aws-region", cfg.AWSRegion, "AWS region for SQS and STS.", "AWS_REGION")
 	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRoleARN, "aws-role-arn", cfg.AWSRoleARN, "Optional AWS role to assume before publishing to SQS.", "AWS_ROLE_ARN")
 	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRoleSessionName, "aws-role-session-name", cfg.AWSRoleSessionName, "AWS assume-role session name.", "AWS_ROLE_SESSION_NAME")
@@ -124,6 +130,31 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	return cfg, nil
 }
 
+func (cfg appConfig) validate() error {
+	if cfg.EventTable == "" {
+		return fmt.Errorf("an event table is required: set EVENT_TABLE")
+	}
+	if cfg.EventID == "" {
+		return fmt.Errorf("an id column is required: set EVENT_ID")
+	}
+	if cfg.EventPayload == "" {
+		return fmt.Errorf("a payload column is required: set EVENT_PAYLOAD")
+	}
+	if !cfg.PubSubEnabled && !cfg.SQSEnabled {
+		return fmt.Errorf("no publishing backend enabled: set PUBSUB_ENABLED=true and/or SQS_ENABLED=true")
+	}
+	if cfg.PubSubEnabled && cfg.SQSEnabled && cfg.EventTarget == "" {
+		return fmt.Errorf("a target column is required when both Pub/Sub and SQS are enabled: set EVENT_TARGET")
+	}
+	if cfg.PubSubEnabled && cfg.DefaultPubSubTopic == "" && cfg.EventDestination == "" {
+		return fmt.Errorf("Pub/Sub needs a destination: set EVENT_DESTINATION or DEFAULT_PUBSUB_TOPIC")
+	}
+	if cfg.SQSEnabled && cfg.DefaultSQSQueueURL == "" && cfg.EventDestination == "" {
+		return fmt.Errorf("SQS needs a destination: set EVENT_DESTINATION or DEFAULT_SQS_QUEUE_URL")
+	}
+	return nil
+}
+
 func loadConfigFromEnv() appConfig {
 	return appConfig{
 		EventTable:       getenv("EVENT_TABLE", "events"),
@@ -139,12 +170,15 @@ func loadConfigFromEnv() appConfig {
 		BatchWorkers:       getenvInt("BATCH_WORKERS", 8),
 		BatchMaxSequential: getenvInt("BATCH_MAX_SEQUENTIAL", 8),
 
-		WatchdogInterval:  time.Duration(getenvInt("WATCHDOG_INTERVAL_MS", 10*60*1000)) * time.Millisecond,
-		HealthPort:        getenvInt("HEALTH_PORT", getenvInt("PORT", 0)),
-		DefaultTopic:      getenv("DEFAULT_TOPIC", "default"),
-		PubSubAPIEndpoint: getenv("PUBSUB_API_ENDPOINT", ""),
-		ErrorCooldown:     time.Duration(getenvInt("ERROR_COOLDOWN_MS", 5000)) * time.Millisecond,
-		PollInterval:      time.Duration(getenvInt("POLL_INTERVAL_MS", 0)) * time.Millisecond,
+		WatchdogInterval:   time.Duration(getenvInt("WATCHDOG_INTERVAL_MS", 10*60*1000)) * time.Millisecond,
+		HealthPort:         getenvInt("HEALTH_PORT", getenvInt("PORT", 0)),
+		PubSubEnabled:      os.Getenv("PUBSUB_ENABLED") == "true",
+		SQSEnabled:         os.Getenv("SQS_ENABLED") == "true",
+		DefaultPubSubTopic: getenv("DEFAULT_PUBSUB_TOPIC", "default"),
+		DefaultSQSQueueURL: getenv("DEFAULT_SQS_QUEUE_URL", ""),
+		PubSubAPIEndpoint:  getenv("PUBSUB_API_ENDPOINT", ""),
+		ErrorCooldown:      time.Duration(getenvInt("ERROR_COOLDOWN_MS", 5000)) * time.Millisecond,
+		PollInterval:       time.Duration(getenvInt("POLL_INTERVAL_MS", 0)) * time.Millisecond,
 
 		PGHost:                  getenv("PG_HOST", "localhost"),
 		PGPort:                  uint16(getenvInt("PG_PORT", 5432)),

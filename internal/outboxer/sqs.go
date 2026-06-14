@@ -16,6 +16,7 @@ import (
 )
 
 const (
+	eventTargetPubSub   = "pubsub"
 	eventTargetSQS      = "sqs"
 	sqsEventBatchSize   = 10
 	sqsEventMaxSizeByte = 256 * 1024
@@ -122,6 +123,9 @@ func (a *app) sendSQSEvents(ctx context.Context, tx *sql.Tx, events []event, add
 	eventsByQueue := map[string][]event{}
 	for _, evt := range events {
 		queue := eventString(evt, a.cfg.EventDestination)
+		if queue == "" {
+			queue = a.cfg.DefaultSQSQueueURL
+		}
 		eventsByQueue[queue] = append(eventsByQueue[queue], evt)
 	}
 

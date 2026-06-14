@@ -86,10 +86,12 @@ func testConfig() appConfig {
 		BatchWorkers:       4,
 		BatchMaxSequential: 8,
 
-		WatchdogInterval: time.Hour,
-		HealthPort:       9999,
-		DefaultTopic:     "default",
-		ErrorCooldown:    time.Millisecond,
+		WatchdogInterval:   time.Hour,
+		HealthPort:         9999,
+		PubSubEnabled:      true,
+		SQSEnabled:         true,
+		DefaultPubSubTopic: "default",
+		ErrorCooldown:      time.Millisecond,
 	}
 }
 
@@ -281,6 +283,195 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 	}
 }
 
+func TestValidateRequiresAnEnabledBackend(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubEnabled = false
+	cfg.SQSEnabled = false
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when no backend is enabled")
+	}
+
+	cfg.PubSubEnabled = true
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected single enabled backend to be valid, got %v", err)
+	}
+}
+
+func TestValidateRequiresTargetColumnWhenBothEnabled(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubEnabled = true
+	cfg.SQSEnabled = true
+
+	cfg.EventTarget = ""
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when both backends are enabled without a target column")
+	}
+
+	cfg.EventTarget = "target"
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected both backends with a target column to be valid, got %v", err)
+	}
+}
+
+func TestValidateRequiresIDAndPayloadColumns(t *testing.T) {
+	cfg := testConfig()
+	cfg.EventID = ""
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when id column is empty")
+	}
+
+	cfg = testConfig()
+	cfg.EventPayload = ""
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when payload column is empty")
+	}
+}
+
+func TestValidateRequiresDestinationOrDefault(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubEnabled = true
+	cfg.SQSEnabled = false
+	cfg.EventDestination = ""
+	cfg.DefaultPubSubTopic = ""
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when Pub/Sub has neither a destination column nor a default topic")
+	}
+	cfg.DefaultPubSubTopic = "default"
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected a default topic to satisfy Pub/Sub destination, got %v", err)
+	}
+
+	cfg = testConfig()
+	cfg.PubSubEnabled = false
+	cfg.SQSEnabled = true
+	cfg.EventDestination = ""
+	cfg.DefaultSQSQueueURL = ""
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when SQS has neither a destination column nor a default queue URL")
+	}
+	cfg.DefaultSQSQueueURL = "https://sqs.example/q"
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected a default queue URL to satisfy SQS destination, got %v", err)
+	}
+}
+
+func TestCheckRequiredColumns(t *testing.T) {
+	base := testConfig()
+
+	cases := []struct {
+		name    string
+		mutate  func(*appConfig)
+		columns []string
+		wantErr bool
+	}{
+		{"both enabled needs target and destination", nil, []string{"id", "payload", "target", "destination"}, false},
+		{"missing id", nil, []string{"payload", "target", "destination"}, true},
+		{"missing target when both enabled", nil, []string{"id", "payload", "destination"}, true},
+		{
+			"destination optional once both defaults cover it",
+			func(c *appConfig) { c.DefaultPubSubTopic = "default"; c.DefaultSQSQueueURL = "https://sqs.example/q" },
+			[]string{"id", "payload", "target"},
+			false,
+		},
+		{
+			"pubsub only without default needs destination",
+			func(c *appConfig) { c.SQSEnabled = false; c.DefaultPubSubTopic = "" },
+			[]string{"id", "payload"},
+			true,
+		},
+		{
+			"pubsub only with default skips optional columns",
+			func(c *appConfig) { c.SQSEnabled = false },
+			[]string{"id", "payload"},
+			false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			if tc.mutate != nil {
+				tc.mutate(&cfg)
+			}
+			a := &app{cfg: cfg}
+			err := a.checkRequiredColumns(tc.columns)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestSendSQSEventsUsesDefaultQueueURL(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubEnabled = false
+	cfg.DefaultSQSQueueURL = "https://sqs.example/default"
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "payload": "one"}},
+	}
+
+	if err := a.sendSQSEvents(context.Background(), nil, events, func(id any) { deleted = append(deleted, id) }); err != nil {
+		t.Fatalf("sendSQSEvents returned error: %v", err)
+	}
+
+	if len(sqs.requests) != 1 || sqs.requests[0].queueURL != "https://sqs.example/default" {
+		t.Fatalf("expected request to default queue URL, got %#v", sqs.requests)
+	}
+	if !reflect.DeepEqual(deleted, []any{"event-1"}) {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+}
+
+func TestResolveBackendRouting(t *testing.T) {
+	bothEnabled := testConfig()
+
+	pubsubOnly := testConfig()
+	pubsubOnly.SQSEnabled = false
+
+	sqsOnly := testConfig()
+	sqsOnly.PubSubEnabled = false
+
+	newEvent := func(target string) event {
+		columns := map[string]any{"id": "event-1"}
+		if target != "" {
+			columns["target"] = target
+		}
+		return event{columns: columns}
+	}
+
+	cases := []struct {
+		name   string
+		cfg    appConfig
+		target string
+		want   backend
+	}{
+		{"both: explicit pubsub", bothEnabled, "pubsub", backendPubSub},
+		{"both: explicit sqs", bothEnabled, "sqs", backendSQS},
+		{"both: empty target is ambiguous", bothEnabled, "", backendNone},
+		{"both: unknown target", bothEnabled, "kafka", backendNone},
+		{"pubsub only: empty target routes to pubsub", pubsubOnly, "", backendPubSub},
+		{"pubsub only: explicit sqs is unroutable", pubsubOnly, "sqs", backendNone},
+		{"sqs only: empty target routes to sqs", sqsOnly, "", backendSQS},
+		{"sqs only: explicit pubsub is unroutable", sqsOnly, "pubsub", backendNone},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &app{cfg: tc.cfg}
+			if got := a.resolveBackend(newEvent(tc.target)); got != tc.want {
+				t.Fatalf("resolveBackend(%q) = %v, want %v", tc.target, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParallelizeEventsKeepsOrderingKeysSequentialAndCapsLongJobs(t *testing.T) {
 	cfg := testConfig()
 	cfg.BatchWorkers = 1
@@ -435,7 +626,7 @@ func TestPostgresIntegrationProcessesAndDeletesEvents(t *testing.T) {
 	_, err = db.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO %s (id, timestamp, payload, target, destination, ordering_key, attributes)
 		VALUES
-			('pubsub-1', now(), 'hello pubsub', null, 'topic-a', null, '{"trace":"abc"}'),
+			('pubsub-1', now(), 'hello pubsub', 'pubsub', 'topic-a', null, '{"trace":"abc"}'),
 			('sqs-1', now(), 'hello sqs', 'sqs', 'queue-a', null, '{"trace":"def"}')
 	`, ident(table)))
 	if err != nil {

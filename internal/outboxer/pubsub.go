@@ -62,7 +62,7 @@ func (a *app) sendPubsubEvent(ctx context.Context, tx *sql.Tx, evt event, addIDT
 	target := eventOptionalString(evt, a.cfg.EventTarget)
 	topicName := eventString(evt, a.cfg.EventDestination)
 	if topicName == "" {
-		topicName = a.cfg.DefaultTopic
+		topicName = a.cfg.DefaultPubSubTopic
 	}
 	orderingKey := eventOptionalString(evt, a.cfg.EventOrderingKey)
 	attributes := eventAttributes(evt, a.cfg.EventAttributes)

@@ -41,7 +41,43 @@ func (a *app) checkDBWorks(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return rows.Close()
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return err
+	}
+	return a.checkRequiredColumns(columns)
+}
+
+// checkRequiredColumns verifies that the event table exposes every column the
+// current configuration depends on. Optional columns (timestamp, ordering key,
+// attributes, and any column covered by a default) may be absent.
+func (a *app) checkRequiredColumns(columns []string) error {
+	present := map[string]bool{}
+	for _, column := range columns {
+		present[column] = true
+	}
+
+	required := []string{a.cfg.EventID, a.cfg.EventPayload}
+	if a.cfg.PubSubEnabled && a.cfg.SQSEnabled {
+		required = append(required, a.cfg.EventTarget)
+	}
+	if (a.cfg.PubSubEnabled && a.cfg.DefaultPubSubTopic == "") ||
+		(a.cfg.SQSEnabled && a.cfg.DefaultSQSQueueURL == "") {
+		required = append(required, a.cfg.EventDestination)
+	}
+
+	missing := []string{}
+	for _, name := range required {
+		if name != "" && !present[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("event table %s is missing required columns: %s", a.cfg.EventTable, strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func (a *app) selectEvents(ctx context.Context, tx *sql.Tx) ([]event, error) {

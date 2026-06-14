@@ -17,6 +17,11 @@ func Run(ctx context.Context, args []string) {
 		os.Exit(2)
 	}
 
+	if err := cfg.validate(); err != nil {
+		logError(map[string]any{"message": "Invalid configuration", "error": err.Error()})
+		os.Exit(2)
+	}
+
 	startDeadlockDetector(cfg.WatchdogInterval)
 
 	db, err := openDB(cfg)
@@ -26,24 +31,28 @@ func Run(ctx context.Context, args []string) {
 		os.Exit(1)
 	}
 
-	pubsubClient, err := newPubSubClient(ctx, cfg)
-	if err != nil {
-		logError(map[string]any{"message": "Failed to create pubsub client", "error": err.Error()})
-		os.Exit(1)
-	}
-	defer pubsubClient.Close()
-
-	sqsClient, err := newSQSClient(ctx, cfg)
-	if err != nil {
-		logError(map[string]any{"message": "Failed to create sqs client", "error": err.Error()})
-		os.Exit(1)
-	}
-
 	a := &app{
-		cfg:    cfg,
-		db:     db,
-		pubsub: &cloudPubSubPublisher{client: pubsubClient},
-		sqs:    &awsSQSPublisher{client: sqsClient},
+		cfg: cfg,
+		db:  db,
+	}
+
+	if cfg.PubSubEnabled {
+		pubsubClient, err := newPubSubClient(ctx, cfg)
+		if err != nil {
+			logError(map[string]any{"message": "Failed to create pubsub client", "error": err.Error()})
+			os.Exit(1)
+		}
+		defer pubsubClient.Close()
+		a.pubsub = &cloudPubSubPublisher{client: pubsubClient}
+	}
+
+	if cfg.SQSEnabled {
+		sqsClient, err := newSQSClient(ctx, cfg)
+		if err != nil {
+			logError(map[string]any{"message": "Failed to create sqs client", "error": err.Error()})
+			os.Exit(1)
+		}
+		a.sqs = &awsSQSPublisher{client: sqsClient}
 	}
 
 	logInfo(map[string]any{"message": "Startup", "pid": os.Getpid()})

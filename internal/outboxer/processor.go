@@ -63,7 +63,7 @@ func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 	}
 
 	if err := tx.Commit(); err != nil {
-		logError(map[string]any{"message": "Error while starting event batch transaction", "error": err.Error()})
+		logError(map[string]any{"message": "Error while committing event batch transaction", "error": err.Error()})
 		return result, err
 	}
 
@@ -103,10 +103,19 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 			pubsubEvents := []event{}
 			sqsEvents := []event{}
 			for _, evt := range jobEvents {
-				if eventString(evt, a.cfg.EventTarget) == eventTargetSQS {
-					sqsEvents = append(sqsEvents, evt)
-				} else {
+				switch a.resolveBackend(evt) {
+				case backendPubSub:
 					pubsubEvents = append(pubsubEvents, evt)
+				case backendSQS:
+					sqsEvents = append(sqsEvents, evt)
+				default:
+					logError(map[string]any{
+						"message":       "Event has no enabled backend for its target, leaving it in the table",
+						"eventId":       eventValue(evt, a.cfg.EventID),
+						"eventTarget":   eventOptionalString(evt, a.cfg.EventTarget),
+						"pubsubEnabled": a.cfg.PubSubEnabled,
+						"sqsEnabled":    a.cfg.SQSEnabled,
+					})
 				}
 			}
 
@@ -138,6 +147,40 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	}
 
 	return result, nil
+}
+
+type backend int
+
+const (
+	backendNone backend = iota
+	backendPubSub
+	backendSQS
+)
+
+// resolveBackend decides where an event should be published based on the
+// enabled backends and the event's target column. When only one backend is
+// enabled the target is optional and every event routes there. When both are
+// enabled the target must explicitly name a backend. Anything that cannot be
+// routed returns backendNone so the caller can leave the row in place.
+func (a *app) resolveBackend(evt event) backend {
+	switch eventOptionalString(evt, a.cfg.EventTarget) {
+	case eventTargetPubSub:
+		if a.cfg.PubSubEnabled {
+			return backendPubSub
+		}
+	case eventTargetSQS:
+		if a.cfg.SQSEnabled {
+			return backendSQS
+		}
+	case "":
+		if a.cfg.PubSubEnabled && !a.cfg.SQSEnabled {
+			return backendPubSub
+		}
+		if a.cfg.SQSEnabled && !a.cfg.PubSubEnabled {
+			return backendSQS
+		}
+	}
+	return backendNone
 }
 
 func parallelizeEvents(cfg appConfig, events []event) [][]event {

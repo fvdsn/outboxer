@@ -6,6 +6,25 @@ rows that were successfully published.
 
 It is meant to run as a long-lived container with a health endpoint.
 
+## Backends
+
+Both backends are opt-in. Enable the ones you need with `PUBSUB_ENABLED=true`
+and/or `SQS_ENABLED=true`. At least one must be enabled or Outboxer exits at
+startup. A backend's client is only created when it is enabled, so disabled
+backends never need credentials or configuration.
+
+Routing depends on how many backends are enabled:
+
+- **One backend enabled:** the `target` column is optional and every event is
+  sent to that backend.
+- **Both backends enabled:** each event's `target` column must be `pubsub` or
+  `sqs`. A configured `target` column (`EVENT_TARGET`) is required, otherwise
+  Outboxer exits at startup.
+
+Events whose target cannot be routed to an enabled backend (an unknown value, or
+an empty target when both backends are enabled) are logged as errors and left in
+the table. Fix the row or the configuration and they will be picked up again.
+
 ## Delivery Semantics
 
 Outboxer provides at-least-once delivery. A message may be published more than
@@ -34,18 +53,32 @@ CREATE TABLE events (
 );
 ```
 
-Only `id` and `payload` are strictly required by Outboxer. `destination`
-defaults to `DEFAULT_TOPIC` for Pub/Sub events. For SQS events, `destination`
-must contain the SQS queue URL.
+Outboxer reads the table with `SELECT *` and maps columns by name, so optional
+columns may simply be left out of the table. Required columns are checked at
+startup and a missing one stops the process with a clear error.
+
+| Column | Required when | Notes |
+| --- | --- | --- |
+| `id` | always | Primary key. Used to order and delete rows. |
+| `payload` | always | Message body. |
+| `target` | both backends enabled | Backend selector: `pubsub` or `sqs`. See [Backends](#backends). |
+| `destination` | a backend is enabled without a default destination | Pub/Sub topic name or SQS queue URL. Optional when `DEFAULT_PUBSUB_TOPIC` / `DEFAULT_SQS_QUEUE_URL` covers it. |
+| `timestamp` | never | Used only for latency logging. |
+| `ordering_key` | never | Enables ordered / FIFO delivery. |
+| `attributes` | never | JSON object of string message attributes. |
+
+A minimal single-backend table can therefore be just `id` and `payload`, with a
+default destination configured.
 
 ### Pub/Sub Example
 
 ```sql
-INSERT INTO events (id, timestamp, payload, destination, ordering_key, attributes)
+INSERT INTO events (id, timestamp, payload, target, destination, ordering_key, attributes)
 VALUES (
     'event-1',
     now(),
     '{"type":"user.created","id":"123"}',
+    'pubsub',
     'user-events',
     'user-123',
     '{"source":"users"}'
@@ -86,7 +119,8 @@ outboxer \
     --pg-host=localhost \
     --pg-user=postgres \
     --event-table=events \
-    --default-topic=user-events
+    --pubsub-enabled \
+    --default-pubsub-topic=user-events
 ```
 
 Use `--help` to list every flag. The help output includes the associated
@@ -102,11 +136,14 @@ outboxer --help
 | `EVENT_ID` | `id` | Event id column. |
 | `EVENT_TIMESTAMP` | `timestamp` | Event timestamp column, used for latency logs. |
 | `EVENT_PAYLOAD` | `payload` | Event payload column. |
-| `EVENT_TARGET` | `target` | Target column. Use `sqs` for SQS, anything else for Pub/Sub. |
-| `EVENT_DESTINATION` | `destination` | Pub/Sub topic name or SQS queue URL. |
+| `EVENT_TARGET` | `target` | Backend selector column. Values `pubsub` or `sqs`. Required only when both backends are enabled. |
+| `EVENT_DESTINATION` | `destination` | Pub/Sub topic name or SQS queue URL column. |
 | `EVENT_ORDERING_KEY` | `ordering_key` | Ordering key / FIFO message group column. |
 | `EVENT_ATTRIBUTES` | `attributes` | JSON attributes column. |
-| `DEFAULT_TOPIC` | `default` | Pub/Sub topic used when an event has no topic. |
+| `PUBSUB_ENABLED` | `false` | Enable publishing to Google Pub/Sub. |
+| `SQS_ENABLED` | `false` | Enable publishing to AWS SQS. |
+| `DEFAULT_PUBSUB_TOPIC` | `default` | Pub/Sub topic used when an event has no destination. |
+| `DEFAULT_SQS_QUEUE_URL` | empty | SQS queue URL used when an event has no destination. |
 | `BATCH_SIZE` | `32` | Maximum rows selected per batch. |
 | `BATCH_WORKERS` | `8` | Number of parallel publisher workers per batch. |
 | `BATCH_MAX_SEQUENTIAL` | `8` | Maximum ordered events assigned to one worker in a batch. |
