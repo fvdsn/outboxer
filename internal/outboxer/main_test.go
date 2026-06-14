@@ -1,9 +1,11 @@
 package outboxer
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -88,6 +90,134 @@ func testConfig() appConfig {
 		HealthcheckPort:       9999,
 		DefaultTopic:          "default",
 		ErrorCooldown:         time.Millisecond,
+	}
+}
+
+func unsetEnv(t *testing.T, keys ...string) {
+	t.Helper()
+	for _, key := range keys {
+		original, existed := os.LookupEnv(key)
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
+		}
+		t.Cleanup(func() {
+			if existed {
+				_ = os.Setenv(key, original)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		})
+	}
+}
+
+func TestLoadConfigUsesDefaults(t *testing.T) {
+	unsetEnv(t, "PG_HOST", "PG_USER", "HEALTHCHECK_PORT", "PORT", "POLL_INTERVAL_MS")
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.PGHost != "localhost" {
+		t.Fatalf("expected default pg host, got %q", cfg.PGHost)
+	}
+	if cfg.PGUser != "postgres" {
+		t.Fatalf("expected default pg user, got %q", cfg.PGUser)
+	}
+	if cfg.HealthcheckPort != 8080 {
+		t.Fatalf("expected default healthcheck port 8080, got %d", cfg.HealthcheckPort)
+	}
+	if cfg.PollInterval != 0 {
+		t.Fatalf("expected default poll interval 0, got %s", cfg.PollInterval)
+	}
+}
+
+func TestLoadConfigUsesEnv(t *testing.T) {
+	t.Setenv("PG_HOST", "db")
+	t.Setenv("POLL_INTERVAL_MS", "250")
+	t.Setenv("PORT", "9090")
+	t.Setenv("HEALTHCHECK_PORT", "")
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.PGHost != "db" {
+		t.Fatalf("expected env pg host, got %q", cfg.PGHost)
+	}
+	if cfg.PollInterval != 250*time.Millisecond {
+		t.Fatalf("expected env poll interval, got %s", cfg.PollInterval)
+	}
+	if cfg.HealthcheckPort != 9090 {
+		t.Fatalf("expected PORT fallback, got %d", cfg.HealthcheckPort)
+	}
+}
+
+func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
+	t.Setenv("PG_HOST", "env-db")
+	t.Setenv("PG_PORT", "5433")
+	t.Setenv("PG_SSL", "false")
+	t.Setenv("POLL_INTERVAL_MS", "250")
+
+	cfg, err := loadConfig([]string{
+		"--pg-host=flag-db",
+		"--pg-port=6543",
+		"--pg-ssl=true",
+		"--poll-interval-ms=500",
+	}, io.Discard)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.PGHost != "flag-db" {
+		t.Fatalf("expected flag pg host, got %q", cfg.PGHost)
+	}
+	if cfg.PGPort != 6543 {
+		t.Fatalf("expected flag pg port, got %d", cfg.PGPort)
+	}
+	if !cfg.PGSSL {
+		t.Fatal("expected flag pg ssl to override env")
+	}
+	if cfg.PollInterval != 500*time.Millisecond {
+		t.Fatalf("expected flag poll interval, got %s", cfg.PollInterval)
+	}
+}
+
+func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
+	t.Setenv("PG_PASSWORD", "super-secret")
+
+	var output bytes.Buffer
+	_, err := loadConfig([]string{"--help"}, &output)
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("expected flag.ErrHelp, got %v", err)
+	}
+
+	help := output.String()
+	for _, expected := range []string{
+		"Usage:",
+		"Event table:",
+		"Batch processing:",
+		"HTTP / health:",
+		"PostgreSQL:",
+		"Google Pub/Sub:",
+		"AWS SQS:",
+		"--pg-host",
+		"Env: PG_HOST",
+		"--poll-interval-ms",
+		"Env: POLL_INTERVAL_MS",
+		"--aws-role-session-name",
+		"Env: AWS_ROLE_SESSION_NAME",
+	} {
+		if !strings.Contains(help, expected) {
+			t.Fatalf("expected help to contain %q, got:\n%s", expected, help)
+		}
+	}
+	if strings.Contains(help, "super-secret") {
+		t.Fatalf("expected help to redact database password, got:\n%s", help)
+	}
+	if !strings.Contains(help, "Env: PG_PASSWORD") || !strings.Contains(help, "Default: <set>") {
+		t.Fatalf("expected help to mention redacted pg password default, got:\n%s", help)
 	}
 }
 

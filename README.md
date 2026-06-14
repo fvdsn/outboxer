@@ -71,7 +71,30 @@ Attributes must be strings. Non-string attributes are dropped and logged.
 ## Configuration
 
 Outboxer reads environment variables and also loads a local `.env` file when
-present.
+present. Every configuration value can also be set with a CLI flag.
+
+Configuration precedence is:
+
+1. CLI flags
+2. environment variables or `.env`
+3. defaults
+
+CLI flags use kebab-case names:
+
+```sh
+outboxer \
+    --pg-host=localhost \
+    --pg-user=postgres \
+    --event-table=events \
+    --default-topic=user-events
+```
+
+Use `--help` to list every flag. The help output includes the associated
+environment variable and default value:
+
+```sh
+outboxer --help
+```
 
 | Variable | Default | Description |
 | --- | --- | --- |

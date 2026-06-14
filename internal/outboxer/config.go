@@ -1,6 +1,9 @@
 package outboxer
 
 import (
+	"flag"
+	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -45,7 +48,83 @@ type appConfig struct {
 	AWSCredentialRefreshWindow time.Duration
 }
 
-func loadConfig() appConfig {
+type cliOption struct {
+	category string
+	name     string
+	usage    string
+}
+
+func loadConfig(args []string, output io.Writer) (appConfig, error) {
+	loadDotEnv(".env")
+	cfg := loadConfigFromEnv()
+
+	flags := flag.NewFlagSet("outboxer", flag.ContinueOnError)
+	flags.SetOutput(output)
+	options := []cliOption{}
+	flags.Usage = func() {
+		printUsage(output, options)
+	}
+
+	addStringFlag(flags, &options, "Event table", &cfg.EventTable, "event-table", cfg.EventTable, "Outbox table name.", "EVENT_TABLE")
+	addStringFlag(flags, &options, "Event table", &cfg.EventID, "event-id", cfg.EventID, "Event id column.", "EVENT_ID")
+	addStringFlag(flags, &options, "Event table", &cfg.EventTimestamp, "event-timestamp", cfg.EventTimestamp, "Event timestamp column.", "EVENT_TIMESTAMP")
+	addStringFlag(flags, &options, "Event table", &cfg.EventData, "event-data", cfg.EventData, "Event payload column.", "EVENT_DATA")
+	addStringFlag(flags, &options, "Event table", &cfg.EventTarget, "event-target", cfg.EventTarget, "Target column. Use sqs for SQS, anything else for Pub/Sub.", "EVENT_TARGET")
+	addStringFlag(flags, &options, "Event table", &cfg.EventTopic, "event-topic", cfg.EventTopic, "Pub/Sub topic name or SQS queue URL column.", "EVENT_TOPIC")
+	addStringFlag(flags, &options, "Event table", &cfg.EventOrderingKey, "event-ordering-key", cfg.EventOrderingKey, "Ordering key / FIFO message group column.", "EVENT_ORDERING_KEY")
+	addStringFlag(flags, &options, "Event table", &cfg.EventAttributes, "event-attributes", cfg.EventAttributes, "JSON attributes column.", "EVENT_ATTRIBUTES")
+
+	addIntFlag(flags, &options, "Batch processing", &cfg.BatchSize, "batch-size", cfg.BatchSize, "Maximum rows selected per batch.", "BATCH_SIZE")
+	addIntFlag(flags, &options, "Batch processing", &cfg.BatchWorkers, "batch-workers", cfg.BatchWorkers, "Number of parallel publisher workers per batch.", "BATCH_WORKERS")
+	addIntFlag(flags, &options, "Batch processing", &cfg.BatchMaxSequential, "batch-max-sequential", cfg.BatchMaxSequential, "Maximum ordered events assigned to one worker in a batch.", "BATCH_MAX_SEQUENTIAL")
+
+	var deadlockCheckIntervalSec = int(cfg.DeadlockCheckInterval / time.Second)
+	var errorCooldownMS = int(cfg.ErrorCooldown / time.Millisecond)
+	var pollIntervalMS = int(cfg.PollInterval / time.Millisecond)
+	var pgTimeoutMS = int(cfg.PGTimeout / time.Millisecond)
+	var awsRoleDurationSeconds = int(cfg.AWSRoleDuration / time.Second)
+	var awsCredentialRefreshWindowMS = int(cfg.AWSCredentialRefreshWindow / time.Millisecond)
+
+	addIntFlag(flags, &options, "Batch processing", &errorCooldownMS, "error-cooldown-ms", errorCooldownMS, "Sleep after batch or database errors in milliseconds.", "ERROR_COOLDOWN_MS")
+	addIntFlag(flags, &options, "Batch processing", &pollIntervalMS, "poll-interval-ms", pollIntervalMS, "Sleep after an empty batch in milliseconds.", "POLL_INTERVAL_MS")
+	addIntFlag(flags, &options, "Batch processing", &deadlockCheckIntervalSec, "deadlock-check-interval-sec", deadlockCheckIntervalSec, "Watchdog interval in seconds.", "DEADLOCK_CHECK_INTERVAL_SEC")
+
+	addIntFlag(flags, &options, "HTTP / health", &cfg.HealthcheckPort, "healthcheck-port", cfg.HealthcheckPort, "HTTP health server port.", "HEALTHCHECK_PORT")
+
+	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGHost, "pg-host", cfg.PGHost, "PostgreSQL host.", "PG_HOST")
+	addValueFlag(flags, &options, "PostgreSQL", (*uint16Value)(&cfg.PGPort), "pg-port", "PostgreSQL port.", "PG_PORT", cfg.PGPort)
+	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGUser, "pg-user", cfg.PGUser, "PostgreSQL user.", "PG_USER")
+	addValueFlag(flags, &options, "PostgreSQL", newSecretStringValue(&cfg.PGPassword), "pg-password", "PostgreSQL password.", "PG_PASSWORD", redactDefault(cfg.PGPassword))
+	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGDatabase, "pg-database", cfg.PGDatabase, "PostgreSQL database.", "PG_DATABASE")
+	addBoolFlag(flags, &options, "PostgreSQL", &cfg.PGSSL, "pg-ssl", cfg.PGSSL, "Enable PostgreSQL TLS.", "PG_SSL")
+	addBoolFlag(flags, &options, "PostgreSQL", &cfg.PGSSLRejectUnauthorized, "pg-ssl-reject-unauthorized", cfg.PGSSLRejectUnauthorized, "Verify PostgreSQL TLS certificates.", "PG_SSL_REJECT_UNAUTHORIZED")
+	addIntFlag(flags, &options, "PostgreSQL", &pgTimeoutMS, "pg-timeout", pgTimeoutMS, "PostgreSQL connect timeout in milliseconds.", "PG_TIMEOUT")
+	addIntFlag(flags, &options, "PostgreSQL", &cfg.PGMaxConnections, "pg-max-connections", cfg.PGMaxConnections, "PostgreSQL max open connections.", "PG_MAX_CONNECTIONS")
+
+	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.DefaultTopic, "default-topic", cfg.DefaultTopic, "Pub/Sub topic used when an event has no topic.", "DEFAULT_TOPIC")
+	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubAPIEndpoint, "pubsub-api-endpoint", cfg.PubSubAPIEndpoint, "Optional Pub/Sub API endpoint override.", "PUBSUB_API_ENDPOINT")
+
+	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRegion, "aws-region", cfg.AWSRegion, "AWS region for SQS and STS.", "AWS_REGION")
+	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRoleARN, "aws-role-arn", cfg.AWSRoleARN, "Optional AWS role to assume before publishing to SQS.", "AWS_ROLE_ARN")
+	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRoleSessionName, "aws-role-session-name", cfg.AWSRoleSessionName, "AWS assume-role session name.", "AWS_ROLE_SESSION_NAME")
+	addIntFlag(flags, &options, "AWS SQS", &awsRoleDurationSeconds, "aws-role-duration-seconds", awsRoleDurationSeconds, "AWS assumed-role duration in seconds.", "AWS_ROLE_DURATION_SECONDS")
+	addIntFlag(flags, &options, "AWS SQS", &awsCredentialRefreshWindowMS, "aws-credential-refresh-window-ms", awsCredentialRefreshWindowMS, "Refresh assumed credentials before expiry in milliseconds.", "AWS_CREDENTIAL_REFRESH_WINDOW_MS")
+
+	if err := flags.Parse(args); err != nil {
+		return appConfig{}, err
+	}
+
+	cfg.DeadlockCheckInterval = time.Duration(deadlockCheckIntervalSec) * time.Second
+	cfg.ErrorCooldown = time.Duration(errorCooldownMS) * time.Millisecond
+	cfg.PollInterval = time.Duration(pollIntervalMS) * time.Millisecond
+	cfg.PGTimeout = time.Duration(pgTimeoutMS) * time.Millisecond
+	cfg.AWSRoleDuration = time.Duration(awsRoleDurationSeconds) * time.Second
+	cfg.AWSCredentialRefreshWindow = time.Duration(awsCredentialRefreshWindowMS) * time.Millisecond
+
+	return cfg, nil
+}
+
+func loadConfigFromEnv() appConfig {
 	return appConfig{
 		EventTable:       getenv("EVENT_TABLE", "events"),
 		EventID:          getenv("EVENT_ID", "id"),
@@ -83,6 +162,90 @@ func loadConfig() appConfig {
 		AWSRoleDuration:            time.Duration(getenvInt("AWS_ROLE_DURATION_SECONDS", 3600)) * time.Second,
 		AWSCredentialRefreshWindow: time.Duration(getenvInt("AWS_CREDENTIAL_REFRESH_WINDOW_MS", 5*60*1000)) * time.Millisecond,
 	}
+}
+
+func optionHelp(description string, envVar string, defaultValue any) string {
+	return fmt.Sprintf("%s Env: %s. Default: %v.", description, envVar, defaultValue)
+}
+
+func addStringFlag(flags *flag.FlagSet, options *[]cliOption, category string, destination *string, name string, value string, description string, envVar string) {
+	usage := optionHelp(description, envVar, value)
+	flags.StringVar(destination, name, value, usage)
+	*options = append(*options, cliOption{category: category, name: name, usage: usage})
+}
+
+func addIntFlag(flags *flag.FlagSet, options *[]cliOption, category string, destination *int, name string, value int, description string, envVar string) {
+	usage := optionHelp(description, envVar, value)
+	flags.IntVar(destination, name, value, usage)
+	*options = append(*options, cliOption{category: category, name: name, usage: usage})
+}
+
+func addBoolFlag(flags *flag.FlagSet, options *[]cliOption, category string, destination *bool, name string, value bool, description string, envVar string) {
+	usage := optionHelp(description, envVar, value)
+	flags.BoolVar(destination, name, value, usage)
+	*options = append(*options, cliOption{category: category, name: name, usage: usage})
+}
+
+func addValueFlag(flags *flag.FlagSet, options *[]cliOption, category string, value flag.Value, name string, description string, envVar string, defaultValue any) {
+	usage := optionHelp(description, envVar, defaultValue)
+	flags.Var(value, name, usage)
+	*options = append(*options, cliOption{category: category, name: name, usage: usage})
+}
+
+func printUsage(output io.Writer, options []cliOption) {
+	_, _ = fmt.Fprintln(output, "Usage:")
+	_, _ = fmt.Fprintln(output, "  outboxer [options]")
+
+	currentCategory := ""
+	for _, option := range options {
+		if option.category != currentCategory {
+			currentCategory = option.category
+			_, _ = fmt.Fprintf(output, "\n%s:\n", currentCategory)
+		}
+		_, _ = fmt.Fprintf(output, "  --%s\n      %s\n", option.name, option.usage)
+	}
+}
+
+func redactDefault(value string) string {
+	if value == "" {
+		return ""
+	}
+	return "<set>"
+}
+
+type uint16Value uint16
+
+func (v *uint16Value) String() string {
+	return strconv.Itoa(int(*v))
+}
+
+func (v *uint16Value) Set(value string) error {
+	parsed, err := strconv.ParseUint(value, 10, 16)
+	if err != nil {
+		return err
+	}
+	*v = uint16Value(parsed)
+	return nil
+}
+
+type secretStringValue struct {
+	value *string
+}
+
+func newSecretStringValue(value *string) *secretStringValue {
+	return &secretStringValue{value: value}
+}
+
+func (v *secretStringValue) String() string {
+	if v == nil || v.value == nil || *v.value == "" {
+		return ""
+	}
+	return "<set>"
+}
+
+func (v *secretStringValue) Set(value string) error {
+	*v.value = value
+	return nil
 }
 
 func loadDotEnv(path string) {

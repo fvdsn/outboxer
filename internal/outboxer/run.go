@@ -2,13 +2,20 @@ package outboxer
 
 import (
 	"context"
+	"flag"
 	"os"
 	"time"
 )
 
-func Run(ctx context.Context) {
-	loadDotEnv(".env")
-	cfg := loadConfig()
+func Run(ctx context.Context, args []string) {
+	cfg, err := loadConfig(args, os.Stderr)
+	if err != nil {
+		if err == flag.ErrHelp {
+			os.Exit(0)
+		}
+		logError(map[string]any{"message": "Invalid configuration", "error": err.Error()})
+		os.Exit(2)
+	}
 
 	startDeadlockDetector(cfg.DeadlockCheckInterval)
 
