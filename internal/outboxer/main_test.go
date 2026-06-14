@@ -3,14 +3,22 @@ package outboxer
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strconv"
@@ -141,6 +149,106 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	if cfg.WatchdogInterval != 10*time.Minute {
 		t.Fatalf("expected default watchdog interval 10m, got %s", cfg.WatchdogInterval)
 	}
+}
+
+func TestLoadConfigVerifiesTLSByDefault(t *testing.T) {
+	unsetEnv(t, "PG_SSL_REJECT_UNAUTHORIZED")
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.PGSSLRejectUnauthorized {
+		t.Fatal("expected TLS certificate verification to be enabled by default")
+	}
+
+	cfg, err = loadConfig([]string{"--pg-ssl-reject-unauthorized=false"}, io.Discard)
+	if err != nil {
+		t.Fatalf("load config with flag: %v", err)
+	}
+	if cfg.PGSSLRejectUnauthorized {
+		t.Fatal("expected flag to disable TLS verification")
+	}
+}
+
+func TestBuildTLSConfig(t *testing.T) {
+	cfg := testConfig()
+	cfg.PGHost = "db.example.com"
+	cfg.PGSSLRejectUnauthorized = true
+
+	tlsConfig, err := buildTLSConfig(cfg)
+	if err != nil {
+		t.Fatalf("buildTLSConfig: %v", err)
+	}
+	if tlsConfig.ServerName != "db.example.com" {
+		t.Fatalf("expected ServerName from host, got %q", tlsConfig.ServerName)
+	}
+	if tlsConfig.InsecureSkipVerify {
+		t.Fatal("expected verification enabled when reject-unauthorized is true")
+	}
+
+	cfg.PGSSLRejectUnauthorized = false
+	tlsConfig, err = buildTLSConfig(cfg)
+	if err != nil {
+		t.Fatalf("buildTLSConfig: %v", err)
+	}
+	if !tlsConfig.InsecureSkipVerify {
+		t.Fatal("expected verification skipped when reject-unauthorized is false")
+	}
+}
+
+func TestBuildTLSConfigRootCert(t *testing.T) {
+	cfg := testConfig()
+
+	cfg.PGSSLRootCert = filepath.Join(t.TempDir(), "missing.pem")
+	if _, err := buildTLSConfig(cfg); err == nil {
+		t.Fatal("expected error for a missing root cert file")
+	}
+
+	invalid := filepath.Join(t.TempDir(), "invalid.pem")
+	if err := os.WriteFile(invalid, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatalf("write invalid cert: %v", err)
+	}
+	cfg.PGSSLRootCert = invalid
+	if _, err := buildTLSConfig(cfg); err == nil {
+		t.Fatal("expected error for a file with no certificates")
+	}
+
+	cfg.PGSSLRootCert = writeTestCACert(t)
+	tlsConfig, err := buildTLSConfig(cfg)
+	if err != nil {
+		t.Fatalf("buildTLSConfig with valid cert: %v", err)
+	}
+	if tlsConfig.RootCAs == nil {
+		t.Fatal("expected RootCAs to be set from the root cert")
+	}
+}
+
+func writeTestCACert(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	template := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "outboxer-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	return path
 }
 
 func TestLoadConfigUsesEnv(t *testing.T) {

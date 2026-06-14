@@ -45,6 +45,7 @@ type appConfig struct {
 	PGDatabase              string
 	PGSSL                   bool
 	PGSSLRejectUnauthorized bool
+	PGSSLRootCert           string
 	PGConnectTimeout        time.Duration
 	PGQueryTimeout          time.Duration
 	PGMaxConnections        int
@@ -111,7 +112,8 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addValueFlag(flags, &options, "PostgreSQL", newSecretStringValue(&cfg.PGPassword), "pg-password", "PostgreSQL password.", "PG_PASSWORD", redactDefault(cfg.PGPassword))
 	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGDatabase, "pg-database", cfg.PGDatabase, "PostgreSQL database.", "PG_DATABASE")
 	addBoolFlag(flags, &options, "PostgreSQL", &cfg.PGSSL, "pg-ssl", cfg.PGSSL, "Enable PostgreSQL TLS.", "PG_SSL")
-	addBoolFlag(flags, &options, "PostgreSQL", &cfg.PGSSLRejectUnauthorized, "pg-ssl-reject-unauthorized", cfg.PGSSLRejectUnauthorized, "Verify PostgreSQL TLS certificates.", "PG_SSL_REJECT_UNAUTHORIZED")
+	addBoolFlag(flags, &options, "PostgreSQL", &cfg.PGSSLRejectUnauthorized, "pg-ssl-reject-unauthorized", cfg.PGSSLRejectUnauthorized, "Verify PostgreSQL TLS certificate and hostname.", "PG_SSL_REJECT_UNAUTHORIZED")
+	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGSSLRootCert, "pg-ssl-root-cert", cfg.PGSSLRootCert, "Path to a CA certificate (PEM) used to verify the PostgreSQL server.", "PG_SSL_ROOT_CERT")
 	addIntFlag(flags, &options, "PostgreSQL", &pgTimeoutMS, "pg-connect-timeout-ms", pgTimeoutMS, "PostgreSQL connect timeout in milliseconds.", "PG_CONNECT_TIMEOUT_MS")
 	addIntFlag(flags, &options, "PostgreSQL", &pgQueryTimeoutMS, "pg-query-timeout-ms", pgQueryTimeoutMS, "Timeout for a single database query in milliseconds. 0 disables the timeout.", "PG_QUERY_TIMEOUT_MS")
 	addIntFlag(flags, &options, "PostgreSQL", &cfg.PGMaxConnections, "pg-max-connections", cfg.PGMaxConnections, "PostgreSQL max open connections.", "PG_MAX_CONNECTIONS")
@@ -206,8 +208,9 @@ func loadConfigFromEnv() appConfig {
 		PGUser:                  getenv("PG_USER", "postgres"),
 		PGPassword:              getenv("PG_PASSWORD", ""),
 		PGDatabase:              getenv("PG_DATABASE", "postgres"),
-		PGSSL:                   os.Getenv("PG_SSL") == "true",
-		PGSSLRejectUnauthorized: os.Getenv("PG_SSL_REJECT_UNAUTHORIZED") == "true",
+		PGSSL:                   getenvBool("PG_SSL", false),
+		PGSSLRejectUnauthorized: getenvBool("PG_SSL_REJECT_UNAUTHORIZED", true),
+		PGSSLRootCert:           getenv("PG_SSL_ROOT_CERT", ""),
 		PGConnectTimeout:        time.Duration(getenvInt("PG_CONNECT_TIMEOUT_MS", 10000)) * time.Millisecond,
 		PGQueryTimeout:          time.Duration(getenvInt("PG_QUERY_TIMEOUT_MS", 30000)) * time.Millisecond,
 		PGMaxConnections:        getenvInt("PG_MAX_CONNECTIONS", 10),
@@ -340,6 +343,14 @@ func getenv(key string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func getenvBool(key string, fallback bool) bool {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback
+	}
+	return value == "true"
 }
 
 func getenvInt(key string, fallback int) int {

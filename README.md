@@ -177,7 +177,8 @@ outboxer --help
 | `PG_PASSWORD` | empty | PostgreSQL password. |
 | `PG_DATABASE` | `postgres` | PostgreSQL database. |
 | `PG_SSL` | `false` | Enable PostgreSQL TLS. |
-| `PG_SSL_REJECT_UNAUTHORIZED` | `false` | Verify PostgreSQL TLS certificates. |
+| `PG_SSL_REJECT_UNAUTHORIZED` | `true` | Verify the PostgreSQL TLS certificate and hostname. |
+| `PG_SSL_ROOT_CERT` | empty | Path to a CA certificate (PEM) used to verify the server. |
 | `PG_CONNECT_TIMEOUT_MS` | `10000` | PostgreSQL connect timeout in milliseconds. |
 | `PG_QUERY_TIMEOUT_MS` | `30000` | Timeout for a single database query. `0` disables it. |
 | `PG_MAX_CONNECTIONS` | `10` | PostgreSQL max open connections. |
@@ -194,6 +195,18 @@ Google Pub/Sub uses Application Default Credentials.
 
 AWS SQS uses the AWS SDK default credential chain. If `AWS_ROLE_ARN` is set,
 Outboxer assumes that role before publishing to SQS.
+
+## PostgreSQL TLS
+
+TLS is off by default. Set `PG_SSL=true` to connect over TLS; the server must
+have SSL enabled. When TLS is on, Outboxer verifies the server certificate and
+hostname by default (`PG_SSL_REJECT_UNAUTHORIZED=true`):
+
+- If the server certificate is signed by a private or self-signed CA, point
+  `PG_SSL_ROOT_CERT` at the CA certificate (PEM). Otherwise the system trust
+  store is used.
+- The certificate must be valid for `PG_HOST`.
+- To skip verification (not recommended), set `PG_SSL_REJECT_UNAUTHORIZED=false`.
 
 ## Logging
 

@@ -3,8 +3,10 @@ package outboxer
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -24,7 +26,11 @@ func openDB(cfg appConfig) (*sql.DB, error) {
 	pgConfig.ConnectTimeout = cfg.PGConnectTimeout
 
 	if cfg.PGSSL {
-		pgConfig.TLSConfig = &tls.Config{InsecureSkipVerify: !cfg.PGSSLRejectUnauthorized}
+		tlsConfig, err := buildTLSConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+		pgConfig.TLSConfig = tlsConfig
 	} else {
 		pgConfig.TLSConfig = nil
 	}
@@ -33,6 +39,30 @@ func openDB(cfg appConfig) (*sql.DB, error) {
 	db.SetMaxOpenConns(cfg.PGMaxConnections)
 	db.SetMaxIdleConns(0)
 	return db, nil
+}
+
+func buildTLSConfig(cfg appConfig) (*tls.Config, error) {
+	// ServerName is required for certificate hostname verification. pgx only
+	// sets it when it builds the TLS config from a connection string, which we
+	// bypass by configuring TLS manually.
+	tlsConfig := &tls.Config{
+		ServerName:         cfg.PGHost,
+		InsecureSkipVerify: !cfg.PGSSLRejectUnauthorized,
+	}
+
+	if cfg.PGSSLRootCert != "" {
+		pem, err := os.ReadFile(cfg.PGSSLRootCert)
+		if err != nil {
+			return nil, fmt.Errorf("read PG SSL root cert: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("no certificates found in PG SSL root cert %q", cfg.PGSSLRootCert)
+		}
+		tlsConfig.RootCAs = pool
+	}
+
+	return tlsConfig, nil
 }
 
 func (a *app) checkDBWorks(ctx context.Context) error {
