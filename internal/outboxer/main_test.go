@@ -472,6 +472,56 @@ func TestResolveBackendRouting(t *testing.T) {
 	}
 }
 
+func TestValidateWatchdogMustExceedPollInterval(t *testing.T) {
+	cfg := testConfig()
+	cfg.PollInterval = time.Minute
+	cfg.WatchdogInterval = 5 * time.Minute
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when watchdog interval is less than 10x the poll interval")
+	}
+
+	cfg.WatchdogInterval = 10 * time.Minute
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected watchdog interval of exactly 10x poll interval to be valid, got %v", err)
+	}
+
+	// A zero poll interval (the default hot loop) imposes no constraint.
+	cfg.PollInterval = 0
+	cfg.WatchdogInterval = time.Millisecond
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected zero poll interval to skip the watchdog check, got %v", err)
+	}
+}
+
+func TestDeadlockDetectorConcurrentAccess(t *testing.T) {
+	// Exercises the watchdog counter from two goroutines so the race detector
+	// would flag a regression back to an unsynchronized int64.
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				deadlockDetector.Store(randomInt63())
+			}
+		}
+	}()
+
+	var previous int64
+	for i := 0; i < 100000; i++ {
+		previous = deadlockDetector.Load()
+	}
+	_ = previous
+
+	close(stop)
+	wg.Wait()
+}
+
 func TestParallelizeEventsKeepsOrderingKeysSequentialAndCapsLongJobs(t *testing.T) {
 	cfg := testConfig()
 	cfg.BatchWorkers = 1

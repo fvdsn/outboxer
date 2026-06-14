@@ -8,15 +8,24 @@ import (
 	"math/rand"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 var (
-	randomMu                 sync.Mutex
-	randomSource             = rand.New(rand.NewSource(time.Now().UnixNano()))
-	deadlockDetector         = randomInt63()
-	deadlockDetectorPrevious int64
+	randomMu     sync.Mutex
+	randomSource = rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	// deadlockDetector is bumped to a fresh random value on every batch. The
+	// watchdog goroutine reads it on a ticker; if it has not changed between two
+	// ticks the process is assumed stuck and exits. It is accessed from both the
+	// processing and watchdog goroutines, so it must be atomic.
+	deadlockDetector atomic.Int64
 )
+
+func init() {
+	deadlockDetector.Store(randomInt63())
+}
 
 type batchResult struct {
 	selected int
@@ -26,12 +35,14 @@ func startDeadlockDetector(interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		var previous int64
 		for range ticker.C {
-			if deadlockDetector == deadlockDetectorPrevious {
+			current := deadlockDetector.Load()
+			if current == previous {
 				slog.Error("Deadlock detected, shutting down")
 				os.Exit(1)
 			}
-			deadlockDetectorPrevious = deadlockDetector
+			previous = current
 			slog.Debug("Watchdog heartbeat")
 		}
 	}()
@@ -71,7 +82,7 @@ func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 }
 
 func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, error) {
-	deadlockDetector = randomInt63()
+	deadlockDetector.Store(randomInt63())
 
 	events, err := a.selectEvents(ctx, tx)
 	if err != nil {

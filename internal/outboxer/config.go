@@ -158,6 +158,9 @@ func (cfg appConfig) validate() error {
 	if cfg.SQSEnabled && cfg.DefaultSQSQueueURL == "" && cfg.EventDestination == "" {
 		return fmt.Errorf("SQS needs a destination: set EVENT_DESTINATION or DEFAULT_SQS_QUEUE_URL")
 	}
+	if cfg.PollInterval > 0 && cfg.WatchdogInterval < 10*cfg.PollInterval {
+		return fmt.Errorf("watchdog interval (%s) must be at least 10x the poll interval (%s) to avoid false deadlocks: increase WATCHDOG_INTERVAL_MS or decrease POLL_INTERVAL_MS", cfg.WatchdogInterval, cfg.PollInterval)
+	}
 	return nil
 }
 
