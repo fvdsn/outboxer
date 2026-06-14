@@ -165,6 +165,7 @@ outboxer --help
 | `SQS_ENABLED` | `false` | Enable publishing to AWS SQS. |
 | `DEFAULT_PUBSUB_TOPIC` | `default` | Pub/Sub topic used when an event has no destination. |
 | `DEFAULT_SQS_QUEUE_URL` | empty | SQS queue URL used when an event has no destination. |
+| `PUBSUB_PROJECT_ID` | empty | Google Cloud project for Pub/Sub. Detected from ADC when empty. |
 | `BATCH_SIZE` | `32` | Maximum rows selected per batch. |
 | `BATCH_WORKERS` | `8` | Number of parallel publisher workers per batch. |
 | `BATCH_MAX_SEQUENTIAL` | `8` | Maximum ordered events assigned to one worker in a batch. |
@@ -192,13 +193,20 @@ outboxer --help
 | `AWS_ROLE_SESSION_NAME` | `outboxer` | AWS assume-role session name. |
 | `AWS_ROLE_DURATION_SECONDS` | `3600` | AWS assumed-role duration. |
 | `AWS_CREDENTIAL_REFRESH_WINDOW_MS` | `300000` | Refresh assumed credentials before expiry. |
+| `AWS_WEB_IDENTITY_PROVIDER` | empty | Set to `google` to assume the AWS role with a Google OIDC token (GCP to AWS). |
+| `AWS_WEB_IDENTITY_AUDIENCE` | empty | Audience for the web identity token, matching the AWS IAM OIDC provider. |
 
 ## Authentication
 
-Google Pub/Sub uses Application Default Credentials.
+Google Pub/Sub uses Application Default Credentials. AWS SQS uses the AWS SDK
+default credential chain. If `AWS_ROLE_ARN` is set, Outboxer assumes that role
+before publishing to SQS.
 
-AWS SQS uses the AWS SDK default credential chain. If `AWS_ROLE_ARN` is set,
-Outboxer assumes that role before publishing to SQS.
+This covers the native cases (run on GCP and publish to Pub/Sub; run on AWS and
+publish to SQS) and local development (`gcloud auth application-default login`
+and/or `aws sso login`). Cross-cloud setups — publishing to SQS from GCP, or to
+Pub/Sub from AWS — use workload identity federation. See
+[`docs/auth.md`](docs/auth.md) for the full breakdown and required IAM.
 
 ## PostgreSQL TLS
 

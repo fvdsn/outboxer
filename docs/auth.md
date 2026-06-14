@@ -167,12 +167,49 @@ Minimal, mostly additive:
    `sqs:SendMessage` for SQS; plus the federation trust setup for each
    cross-cloud direction.
 
-## Open questions
+## Decisions
 
-- Do we need to support GCP→AWS with **static keys** as a first-class option, or
-  only the keyless web-identity path plus "set the standard AWS env vars
-  yourself"?
-- For GCP→AWS web identity, is targeting **Cloud Run's metadata ID token** enough,
-  or do we also want to support GKE workload identity / a generic token file?
-- Should `PUBSUB_PROJECT_ID` be required when both backends are enabled, or always
-  optional with detection as fallback?
+- **Static AWS keys: supported, but not recommended.** The keyless web-identity
+  path is the recommended way to reach AWS from GCP. Static keys still work
+  through the AWS SDK's standard env vars (`AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY`), so they are documented as an escape hatch for quick
+  starts and restricted environments, clearly marked as long-lived secrets. No
+  Outboxer code is needed for them.
+- **GCP→AWS token source: metadata server only.** Outboxer fetches the Google
+  OIDC token from the GCP metadata server, which covers Cloud Run (the primary
+  target), GCE, and GKE with Workload Identity. File-based tokens (e.g. GKE
+  federated to the cluster's own OIDC issuer, or custom brokers) are handled by
+  the AWS SDK's native `AWS_WEB_IDENTITY_TOKEN_FILE` path with no Outboxer code,
+  and Kubernetes keeps that file fresh.
+- **`PUBSUB_PROJECT_ID`: optional, with ADC detection as the fallback.** Setting
+  it (or using full `projects/…/topics/…` destinations) is how you target a
+  specific project when detection is ambiguous, e.g. cross-cloud.
+
+## Configuration
+
+GCP→AWS keyless federation is enabled with:
+
+| Variable | Purpose |
+| --- | --- |
+| `AWS_WEB_IDENTITY_PROVIDER` | Set to `google` to assume an AWS role using a Google OIDC token. |
+| `AWS_WEB_IDENTITY_AUDIENCE` | Audience requested in the Google ID token; must match the AWS IAM OIDC provider. |
+| `AWS_ROLE_ARN` | The AWS role to assume (the role whose trust policy trusts the Google provider). |
+
+When `AWS_WEB_IDENTITY_PROVIDER` is empty (the default), `AWS_ROLE_ARN` keeps its
+existing meaning: a role assumed on top of the AWS default credential chain
+(role chaining). `AWS_ROLE_SESSION_NAME` and `AWS_ROLE_DURATION_SECONDS` apply to
+both paths.
+
+`PUBSUB_PROJECT_ID` sets the Google Cloud project for Pub/Sub; leave it empty to
+detect it from ADC.
+
+## Required IAM
+
+- **Pub/Sub:** the identity needs `roles/pubsub.publisher` on the target topics.
+- **SQS:** the identity needs `sqs:SendMessage` on the target queues. Full queue
+  URLs are used, so `sqs:GetQueueUrl` is not required.
+- **AWS→GCP federation:** a workload identity pool with an AWS provider, plus the
+  Pub/Sub permission above on the federated identity.
+- **GCP→AWS federation:** an AWS IAM OIDC provider for Google
+  (`accounts.google.com`) and a role whose trust policy allows the Google service
+  account's subject, with the SQS permission above.

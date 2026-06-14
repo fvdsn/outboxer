@@ -30,7 +30,7 @@ func newPubSubClient(ctx context.Context, cfg appConfig) (*pubsub.Client, error)
 	if cfg.PubSubAPIEndpoint != "" {
 		options = append(options, option.WithEndpoint(cfg.PubSubAPIEndpoint))
 	}
-	return pubsub.NewClient(ctx, "", options...)
+	return pubsub.NewClient(ctx, cfg.PubSubProjectID, options...)
 }
 
 func (p *cloudPubSubPublisher) Publish(ctx context.Context, message pubsubMessage) (string, error) {

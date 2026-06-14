@@ -33,6 +33,7 @@ type appConfig struct {
 	SQSEnabled         bool
 	DefaultPubSubTopic string
 	DefaultSQSQueueURL string
+	PubSubProjectID    string
 	PubSubAPIEndpoint  string
 	ErrorCooldown      time.Duration
 	PollInterval       time.Duration
@@ -55,6 +56,8 @@ type appConfig struct {
 	AWSRoleSessionName         string
 	AWSRoleDuration            time.Duration
 	AWSCredentialRefreshWindow time.Duration
+	AWSWebIdentityProvider     string
+	AWSWebIdentityAudience     string
 }
 
 type cliOption struct {
@@ -120,6 +123,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 
 	addBoolFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubEnabled, "pubsub-enabled", cfg.PubSubEnabled, "Enable publishing to Google Pub/Sub.", "PUBSUB_ENABLED")
 	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.DefaultPubSubTopic, "default-pubsub-topic", cfg.DefaultPubSubTopic, "Pub/Sub topic used when an event has no destination.", "DEFAULT_PUBSUB_TOPIC")
+	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubProjectID, "pubsub-project-id", cfg.PubSubProjectID, "Google Cloud project for Pub/Sub. Detected from ADC when empty.", "PUBSUB_PROJECT_ID")
 	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubAPIEndpoint, "pubsub-api-endpoint", cfg.PubSubAPIEndpoint, "Optional Pub/Sub API endpoint override.", "PUBSUB_API_ENDPOINT")
 
 	addBoolFlag(flags, &options, "AWS SQS", &cfg.SQSEnabled, "sqs-enabled", cfg.SQSEnabled, "Enable publishing to AWS SQS.", "SQS_ENABLED")
@@ -129,6 +133,8 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRoleSessionName, "aws-role-session-name", cfg.AWSRoleSessionName, "AWS assume-role session name.", "AWS_ROLE_SESSION_NAME")
 	addIntFlag(flags, &options, "AWS SQS", &awsRoleDurationSeconds, "aws-role-duration-seconds", awsRoleDurationSeconds, "AWS assumed-role duration in seconds.", "AWS_ROLE_DURATION_SECONDS")
 	addIntFlag(flags, &options, "AWS SQS", &awsCredentialRefreshWindowMS, "aws-credential-refresh-window-ms", awsCredentialRefreshWindowMS, "Refresh assumed credentials before expiry in milliseconds.", "AWS_CREDENTIAL_REFRESH_WINDOW_MS")
+	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSWebIdentityProvider, "aws-web-identity-provider", cfg.AWSWebIdentityProvider, "Set to 'google' to assume the AWS role with a Google OIDC token (GCP to AWS).", "AWS_WEB_IDENTITY_PROVIDER")
+	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSWebIdentityAudience, "aws-web-identity-audience", cfg.AWSWebIdentityAudience, "Audience for the web identity token, matching the AWS IAM OIDC provider.", "AWS_WEB_IDENTITY_AUDIENCE")
 
 	if err := flags.Parse(args); err != nil {
 		return appConfig{}, err
@@ -171,6 +177,17 @@ func (cfg appConfig) validate() error {
 	if cfg.PollInterval > 0 && cfg.WatchdogInterval < 10*cfg.PollInterval {
 		return fmt.Errorf("watchdog interval (%s) must be at least 10x the poll interval (%s) to avoid false deadlocks: increase WATCHDOG_INTERVAL_MS or decrease POLL_INTERVAL_MS", cfg.WatchdogInterval, cfg.PollInterval)
 	}
+	if cfg.AWSWebIdentityProvider != "" {
+		if cfg.AWSWebIdentityProvider != awsWebIdentityProviderGoogle {
+			return fmt.Errorf("unsupported AWS_WEB_IDENTITY_PROVIDER %q: the only supported value is %q", cfg.AWSWebIdentityProvider, awsWebIdentityProviderGoogle)
+		}
+		if cfg.AWSRoleARN == "" {
+			return fmt.Errorf("AWS_WEB_IDENTITY_PROVIDER requires AWS_ROLE_ARN (the role to assume with the web identity token)")
+		}
+		if cfg.AWSWebIdentityAudience == "" {
+			return fmt.Errorf("AWS_WEB_IDENTITY_PROVIDER requires AWS_WEB_IDENTITY_AUDIENCE")
+		}
+	}
 	return nil
 }
 
@@ -198,6 +215,7 @@ func loadConfigFromEnv() appConfig {
 		SQSEnabled:         os.Getenv("SQS_ENABLED") == "true",
 		DefaultPubSubTopic: getenv("DEFAULT_PUBSUB_TOPIC", "default"),
 		DefaultSQSQueueURL: getenv("DEFAULT_SQS_QUEUE_URL", ""),
+		PubSubProjectID:    getenv("PUBSUB_PROJECT_ID", ""),
 		PubSubAPIEndpoint:  getenv("PUBSUB_API_ENDPOINT", ""),
 		ErrorCooldown:      time.Duration(getenvInt("ERROR_COOLDOWN_MS", 5000)) * time.Millisecond,
 		PollInterval:       time.Duration(getenvInt("POLL_INTERVAL_MS", 0)) * time.Millisecond,
@@ -220,6 +238,8 @@ func loadConfigFromEnv() appConfig {
 		AWSRoleSessionName:         getenv("AWS_ROLE_SESSION_NAME", "outboxer"),
 		AWSRoleDuration:            time.Duration(getenvInt("AWS_ROLE_DURATION_SECONDS", 3600)) * time.Second,
 		AWSCredentialRefreshWindow: time.Duration(getenvInt("AWS_CREDENTIAL_REFRESH_WINDOW_MS", 5*60*1000)) * time.Millisecond,
+		AWSWebIdentityProvider:     getenv("AWS_WEB_IDENTITY_PROVIDER", ""),
+		AWSWebIdentityAudience:     getenv("AWS_WEB_IDENTITY_AUDIENCE", ""),
 	}
 }
 

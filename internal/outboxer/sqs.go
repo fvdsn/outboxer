@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"cloud.google.com/go/compute/metadata"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
@@ -22,6 +24,8 @@ const (
 	eventTargetSQS      = "sqs"
 	sqsEventBatchSize   = 10
 	sqsEventMaxSizeByte = 256 * 1024
+
+	awsWebIdentityProviderGoogle = "google"
 )
 
 type sqsPublisher interface {
@@ -68,7 +72,20 @@ func newSQSClient(ctx context.Context, cfg appConfig) (*sqs.Client, error) {
 		return nil, err
 	}
 
-	if cfg.AWSRoleARN != "" {
+	switch {
+	case cfg.AWSWebIdentityProvider == awsWebIdentityProviderGoogle:
+		// GCP to AWS: assume the role with a Google OIDC token fetched from the
+		// GCP metadata server, instead of using the AWS default credential chain.
+		stsClient := sts.NewFromConfig(awsConfig)
+		retriever := &googleIDTokenRetriever{ctx: ctx, audience: cfg.AWSWebIdentityAudience}
+		provider := stscreds.NewWebIdentityRoleProvider(stsClient, cfg.AWSRoleARN, retriever, func(options *stscreds.WebIdentityRoleOptions) {
+			options.RoleSessionName = cfg.AWSRoleSessionName
+			options.Duration = cfg.AWSRoleDuration
+		})
+		awsConfig.Credentials = aws.NewCredentialsCache(provider, func(options *aws.CredentialsCacheOptions) {
+			options.ExpiryWindow = cfg.AWSCredentialRefreshWindow
+		})
+	case cfg.AWSRoleARN != "":
 		stsClient := sts.NewFromConfig(awsConfig)
 		provider := stscreds.NewAssumeRoleProvider(stsClient, cfg.AWSRoleARN, func(options *stscreds.AssumeRoleOptions) {
 			options.RoleSessionName = cfg.AWSRoleSessionName
@@ -80,6 +97,23 @@ func newSQSClient(ctx context.Context, cfg appConfig) (*sqs.Client, error) {
 	}
 
 	return sqs.NewFromConfig(awsConfig), nil
+}
+
+// googleIDTokenRetriever fetches a Google-signed OIDC ID token from the GCP
+// metadata server for use as an AWS web identity token. It works on Cloud Run,
+// GCE, and GKE with Workload Identity.
+type googleIDTokenRetriever struct {
+	ctx      context.Context
+	audience string
+}
+
+func (r *googleIDTokenRetriever) GetIdentityToken() ([]byte, error) {
+	path := fmt.Sprintf("instance/service-accounts/default/identity?audience=%s&format=full", url.QueryEscape(r.audience))
+	token, err := metadata.GetWithContext(r.ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("fetch Google ID token from metadata server: %w", err)
+	}
+	return []byte(token), nil
 }
 
 func (p *awsSQSPublisher) SendBatch(ctx context.Context, queueURL string, entries []sqsBatchEntry) (sqsBatchResponse, error) {

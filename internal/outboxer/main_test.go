@@ -630,6 +630,40 @@ func TestSendSQS10EventsRespectsPublishTimeout(t *testing.T) {
 	}
 }
 
+func TestValidateAWSWebIdentity(t *testing.T) {
+	base := testConfig()
+	base.AWSWebIdentityProvider = "google"
+	base.AWSWebIdentityAudience = "//iam.example/aws"
+	base.AWSRoleARN = "arn:aws:iam::123456789012:role/outboxer"
+
+	if err := base.validate(); err != nil {
+		t.Fatalf("expected a fully configured google web identity to be valid, got %v", err)
+	}
+
+	unsupported := base
+	unsupported.AWSWebIdentityProvider = "azure"
+	if err := unsupported.validate(); err == nil {
+		t.Fatal("expected error for an unsupported web identity provider")
+	}
+
+	noRole := base
+	noRole.AWSRoleARN = ""
+	if err := noRole.validate(); err == nil {
+		t.Fatal("expected error when web identity is set without a role ARN")
+	}
+
+	noAudience := base
+	noAudience.AWSWebIdentityAudience = ""
+	if err := noAudience.validate(); err == nil {
+		t.Fatal("expected error when web identity is set without an audience")
+	}
+
+	off := testConfig()
+	if err := off.validate(); err != nil {
+		t.Fatalf("expected web identity to be optional, got %v", err)
+	}
+}
+
 func TestValidateWatchdogMustExceedPollInterval(t *testing.T) {
 	cfg := testConfig()
 	cfg.PollInterval = time.Minute
