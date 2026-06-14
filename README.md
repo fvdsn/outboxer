@@ -26,22 +26,22 @@ The default table and column names are:
 CREATE TABLE events (
     id text PRIMARY KEY,
     timestamp timestamptz,
-    data text NOT NULL,
+    payload text NOT NULL,
     target text,
-    topic text,
+    destination text,
     ordering_key text,
     attributes jsonb
 );
 ```
 
-Only `id` and `data` are strictly required by Outboxer. `topic` defaults to
-`DEFAULT_TOPIC` for Pub/Sub events. For SQS events, `topic` must contain the SQS
-queue URL.
+Only `id` and `payload` are strictly required by Outboxer. `destination`
+defaults to `DEFAULT_TOPIC` for Pub/Sub events. For SQS events, `destination`
+must contain the SQS queue URL.
 
 ### Pub/Sub Example
 
 ```sql
-INSERT INTO events (id, timestamp, data, topic, ordering_key, attributes)
+INSERT INTO events (id, timestamp, payload, destination, ordering_key, attributes)
 VALUES (
     'event-1',
     now(),
@@ -55,7 +55,7 @@ VALUES (
 ### SQS Example
 
 ```sql
-INSERT INTO events (id, timestamp, data, target, topic, attributes)
+INSERT INTO events (id, timestamp, payload, target, destination, attributes)
 VALUES (
     'event-2',
     now(),
@@ -101,9 +101,9 @@ outboxer --help
 | `EVENT_TABLE` | `events` | Outbox table name. |
 | `EVENT_ID` | `id` | Event id column. |
 | `EVENT_TIMESTAMP` | `timestamp` | Event timestamp column, used for latency logs. |
-| `EVENT_DATA` | `data` | Event payload column. |
+| `EVENT_PAYLOAD` | `payload` | Event payload column. |
 | `EVENT_TARGET` | `target` | Target column. Use `sqs` for SQS, anything else for Pub/Sub. |
-| `EVENT_TOPIC` | `topic` | Pub/Sub topic name or SQS queue URL. |
+| `EVENT_DESTINATION` | `destination` | Pub/Sub topic name or SQS queue URL. |
 | `EVENT_ORDERING_KEY` | `ordering_key` | Ordering key / FIFO message group column. |
 | `EVENT_ATTRIBUTES` | `attributes` | JSON attributes column. |
 | `DEFAULT_TOPIC` | `default` | Pub/Sub topic used when an event has no topic. |
@@ -112,8 +112,8 @@ outboxer --help
 | `BATCH_MAX_SEQUENTIAL` | `8` | Maximum ordered events assigned to one worker in a batch. |
 | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors. |
 | `POLL_INTERVAL_MS` | `0` | Sleep after an empty batch. The default keeps polling immediately. |
-| `DEADLOCK_CHECK_INTERVAL_SEC` | `600` | Watchdog interval. |
-| `HEALTHCHECK_PORT` | `PORT` or `0` | HTTP health server port. `0` disables the server. |
+| `WATCHDOG_INTERVAL_MS` | `600000` | Watchdog interval. |
+| `HEALTH_PORT` | `PORT` or `0` | HTTP health server port. `0` disables the server. |
 | `PG_HOST` | `localhost` | PostgreSQL host. |
 | `PG_PORT` | `5432` | PostgreSQL port. |
 | `PG_USER` | `postgres` | PostgreSQL user. |
@@ -121,7 +121,7 @@ outboxer --help
 | `PG_DATABASE` | `postgres` | PostgreSQL database. |
 | `PG_SSL` | `false` | Enable PostgreSQL TLS. |
 | `PG_SSL_REJECT_UNAUTHORIZED` | `false` | Verify PostgreSQL TLS certificates. |
-| `PG_TIMEOUT` | `10000` | PostgreSQL connect timeout in milliseconds. |
+| `PG_CONNECT_TIMEOUT_MS` | `10000` | PostgreSQL connect timeout in milliseconds. |
 | `PG_MAX_CONNECTIONS` | `10` | PostgreSQL max open connections. |
 | `PUBSUB_API_ENDPOINT` | empty | Optional Pub/Sub API endpoint override. |
 | `AWS_REGION` | empty | AWS region for SQS and STS. |
@@ -139,8 +139,8 @@ Outboxer assumes that role before publishing to SQS.
 
 ## Health Endpoint
 
-The HTTP server starts only when `HEALTHCHECK_PORT`, `PORT`, or
-`--healthcheck-port` is set to a positive port. It returns `200 all good` for
+The HTTP server starts only when `HEALTH_PORT`, `PORT`, or
+`--health-port` is set to a positive port. It returns `200 all good` for
 health checks. Successful health checks are logged at debug level. `DELETE`
 requests ask the process to shut down gracefully and are logged at info level.
 

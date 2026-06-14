@@ -14,9 +14,9 @@ type appConfig struct {
 	EventTable       string
 	EventID          string
 	EventTimestamp   string
-	EventData        string
+	EventPayload     string
 	EventTarget      string
-	EventTopic       string
+	EventDestination string
 	EventOrderingKey string
 	EventAttributes  string
 
@@ -24,12 +24,12 @@ type appConfig struct {
 	BatchWorkers       int
 	BatchMaxSequential int
 
-	DeadlockCheckInterval time.Duration
-	HealthcheckPort       int
-	DefaultTopic          string
-	PubSubAPIEndpoint     string
-	ErrorCooldown         time.Duration
-	PollInterval          time.Duration
+	WatchdogInterval  time.Duration
+	HealthPort        int
+	DefaultTopic      string
+	PubSubAPIEndpoint string
+	ErrorCooldown     time.Duration
+	PollInterval      time.Duration
 
 	PGHost                  string
 	PGPort                  uint16
@@ -38,7 +38,7 @@ type appConfig struct {
 	PGDatabase              string
 	PGSSL                   bool
 	PGSSLRejectUnauthorized bool
-	PGTimeout               time.Duration
+	PGConnectTimeout        time.Duration
 	PGMaxConnections        int
 
 	AWSRegion                  string
@@ -68,9 +68,9 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addStringFlag(flags, &options, "Event table", &cfg.EventTable, "event-table", cfg.EventTable, "Outbox table name.", "EVENT_TABLE")
 	addStringFlag(flags, &options, "Event table", &cfg.EventID, "event-id", cfg.EventID, "Event id column.", "EVENT_ID")
 	addStringFlag(flags, &options, "Event table", &cfg.EventTimestamp, "event-timestamp", cfg.EventTimestamp, "Event timestamp column.", "EVENT_TIMESTAMP")
-	addStringFlag(flags, &options, "Event table", &cfg.EventData, "event-data", cfg.EventData, "Event payload column.", "EVENT_DATA")
+	addStringFlag(flags, &options, "Event table", &cfg.EventPayload, "event-payload", cfg.EventPayload, "Event payload column.", "EVENT_PAYLOAD")
 	addStringFlag(flags, &options, "Event table", &cfg.EventTarget, "event-target", cfg.EventTarget, "Target column. Use sqs for SQS, anything else for Pub/Sub.", "EVENT_TARGET")
-	addStringFlag(flags, &options, "Event table", &cfg.EventTopic, "event-topic", cfg.EventTopic, "Pub/Sub topic name or SQS queue URL column.", "EVENT_TOPIC")
+	addStringFlag(flags, &options, "Event table", &cfg.EventDestination, "event-destination", cfg.EventDestination, "Pub/Sub topic name or SQS queue URL column.", "EVENT_DESTINATION")
 	addStringFlag(flags, &options, "Event table", &cfg.EventOrderingKey, "event-ordering-key", cfg.EventOrderingKey, "Ordering key / FIFO message group column.", "EVENT_ORDERING_KEY")
 	addStringFlag(flags, &options, "Event table", &cfg.EventAttributes, "event-attributes", cfg.EventAttributes, "JSON attributes column.", "EVENT_ATTRIBUTES")
 
@@ -78,18 +78,18 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addIntFlag(flags, &options, "Batch processing", &cfg.BatchWorkers, "batch-workers", cfg.BatchWorkers, "Number of parallel publisher workers per batch.", "BATCH_WORKERS")
 	addIntFlag(flags, &options, "Batch processing", &cfg.BatchMaxSequential, "batch-max-sequential", cfg.BatchMaxSequential, "Maximum ordered events assigned to one worker in a batch.", "BATCH_MAX_SEQUENTIAL")
 
-	var deadlockCheckIntervalSec = int(cfg.DeadlockCheckInterval / time.Second)
+	var watchdogIntervalMS = int(cfg.WatchdogInterval / time.Millisecond)
 	var errorCooldownMS = int(cfg.ErrorCooldown / time.Millisecond)
 	var pollIntervalMS = int(cfg.PollInterval / time.Millisecond)
-	var pgTimeoutMS = int(cfg.PGTimeout / time.Millisecond)
+	var pgTimeoutMS = int(cfg.PGConnectTimeout / time.Millisecond)
 	var awsRoleDurationSeconds = int(cfg.AWSRoleDuration / time.Second)
 	var awsCredentialRefreshWindowMS = int(cfg.AWSCredentialRefreshWindow / time.Millisecond)
 
 	addIntFlag(flags, &options, "Batch processing", &errorCooldownMS, "error-cooldown-ms", errorCooldownMS, "Sleep after batch or database errors in milliseconds.", "ERROR_COOLDOWN_MS")
 	addIntFlag(flags, &options, "Batch processing", &pollIntervalMS, "poll-interval-ms", pollIntervalMS, "Sleep after an empty batch in milliseconds.", "POLL_INTERVAL_MS")
-	addIntFlag(flags, &options, "Batch processing", &deadlockCheckIntervalSec, "deadlock-check-interval-sec", deadlockCheckIntervalSec, "Watchdog interval in seconds.", "DEADLOCK_CHECK_INTERVAL_SEC")
+	addIntFlag(flags, &options, "Batch processing", &watchdogIntervalMS, "watchdog-interval-ms", watchdogIntervalMS, "Watchdog interval in milliseconds.", "WATCHDOG_INTERVAL_MS")
 
-	addIntFlag(flags, &options, "HTTP / health", &cfg.HealthcheckPort, "healthcheck-port", cfg.HealthcheckPort, "HTTP health server port. Set to 0 to disable.", "HEALTHCHECK_PORT, PORT")
+	addIntFlag(flags, &options, "HTTP / health", &cfg.HealthPort, "health-port", cfg.HealthPort, "HTTP health server port. Set to 0 to disable.", "HEALTH_PORT, PORT")
 
 	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGHost, "pg-host", cfg.PGHost, "PostgreSQL host.", "PG_HOST")
 	addValueFlag(flags, &options, "PostgreSQL", (*uint16Value)(&cfg.PGPort), "pg-port", "PostgreSQL port.", "PG_PORT", cfg.PGPort)
@@ -98,7 +98,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGDatabase, "pg-database", cfg.PGDatabase, "PostgreSQL database.", "PG_DATABASE")
 	addBoolFlag(flags, &options, "PostgreSQL", &cfg.PGSSL, "pg-ssl", cfg.PGSSL, "Enable PostgreSQL TLS.", "PG_SSL")
 	addBoolFlag(flags, &options, "PostgreSQL", &cfg.PGSSLRejectUnauthorized, "pg-ssl-reject-unauthorized", cfg.PGSSLRejectUnauthorized, "Verify PostgreSQL TLS certificates.", "PG_SSL_REJECT_UNAUTHORIZED")
-	addIntFlag(flags, &options, "PostgreSQL", &pgTimeoutMS, "pg-timeout", pgTimeoutMS, "PostgreSQL connect timeout in milliseconds.", "PG_TIMEOUT")
+	addIntFlag(flags, &options, "PostgreSQL", &pgTimeoutMS, "pg-connect-timeout-ms", pgTimeoutMS, "PostgreSQL connect timeout in milliseconds.", "PG_CONNECT_TIMEOUT_MS")
 	addIntFlag(flags, &options, "PostgreSQL", &cfg.PGMaxConnections, "pg-max-connections", cfg.PGMaxConnections, "PostgreSQL max open connections.", "PG_MAX_CONNECTIONS")
 
 	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.DefaultTopic, "default-topic", cfg.DefaultTopic, "Pub/Sub topic used when an event has no topic.", "DEFAULT_TOPIC")
@@ -114,10 +114,10 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 		return appConfig{}, err
 	}
 
-	cfg.DeadlockCheckInterval = time.Duration(deadlockCheckIntervalSec) * time.Second
+	cfg.WatchdogInterval = time.Duration(watchdogIntervalMS) * time.Millisecond
 	cfg.ErrorCooldown = time.Duration(errorCooldownMS) * time.Millisecond
 	cfg.PollInterval = time.Duration(pollIntervalMS) * time.Millisecond
-	cfg.PGTimeout = time.Duration(pgTimeoutMS) * time.Millisecond
+	cfg.PGConnectTimeout = time.Duration(pgTimeoutMS) * time.Millisecond
 	cfg.AWSRoleDuration = time.Duration(awsRoleDurationSeconds) * time.Second
 	cfg.AWSCredentialRefreshWindow = time.Duration(awsCredentialRefreshWindowMS) * time.Millisecond
 
@@ -129,9 +129,9 @@ func loadConfigFromEnv() appConfig {
 		EventTable:       getenv("EVENT_TABLE", "events"),
 		EventID:          getenv("EVENT_ID", "id"),
 		EventTimestamp:   getenv("EVENT_TIMESTAMP", "timestamp"),
-		EventData:        getenv("EVENT_DATA", "data"),
+		EventPayload:     getenv("EVENT_PAYLOAD", "payload"),
 		EventTarget:      getenv("EVENT_TARGET", "target"),
-		EventTopic:       getenv("EVENT_TOPIC", "topic"),
+		EventDestination: getenv("EVENT_DESTINATION", "destination"),
 		EventOrderingKey: getenv("EVENT_ORDERING_KEY", "ordering_key"),
 		EventAttributes:  getenv("EVENT_ATTRIBUTES", "attributes"),
 
@@ -139,12 +139,12 @@ func loadConfigFromEnv() appConfig {
 		BatchWorkers:       getenvInt("BATCH_WORKERS", 8),
 		BatchMaxSequential: getenvInt("BATCH_MAX_SEQUENTIAL", 8),
 
-		DeadlockCheckInterval: time.Duration(getenvInt("DEADLOCK_CHECK_INTERVAL_SEC", 10*60)) * time.Second,
-		HealthcheckPort:       getenvInt("HEALTHCHECK_PORT", getenvInt("PORT", 0)),
-		DefaultTopic:          getenv("DEFAULT_TOPIC", "default"),
-		PubSubAPIEndpoint:     getenv("PUBSUB_API_ENDPOINT", ""),
-		ErrorCooldown:         time.Duration(getenvInt("ERROR_COOLDOWN_MS", 5000)) * time.Millisecond,
-		PollInterval:          time.Duration(getenvInt("POLL_INTERVAL_MS", 0)) * time.Millisecond,
+		WatchdogInterval:  time.Duration(getenvInt("WATCHDOG_INTERVAL_MS", 10*60*1000)) * time.Millisecond,
+		HealthPort:        getenvInt("HEALTH_PORT", getenvInt("PORT", 0)),
+		DefaultTopic:      getenv("DEFAULT_TOPIC", "default"),
+		PubSubAPIEndpoint: getenv("PUBSUB_API_ENDPOINT", ""),
+		ErrorCooldown:     time.Duration(getenvInt("ERROR_COOLDOWN_MS", 5000)) * time.Millisecond,
+		PollInterval:      time.Duration(getenvInt("POLL_INTERVAL_MS", 0)) * time.Millisecond,
 
 		PGHost:                  getenv("PG_HOST", "localhost"),
 		PGPort:                  uint16(getenvInt("PG_PORT", 5432)),
@@ -153,7 +153,7 @@ func loadConfigFromEnv() appConfig {
 		PGDatabase:              getenv("PG_DATABASE", "postgres"),
 		PGSSL:                   os.Getenv("PG_SSL") == "true",
 		PGSSLRejectUnauthorized: os.Getenv("PG_SSL_REJECT_UNAUTHORIZED") == "true",
-		PGTimeout:               time.Duration(getenvInt("PG_TIMEOUT", 10000)) * time.Millisecond,
+		PGConnectTimeout:        time.Duration(getenvInt("PG_CONNECT_TIMEOUT_MS", 10000)) * time.Millisecond,
 		PGMaxConnections:        getenvInt("PG_MAX_CONNECTIONS", 10),
 
 		AWSRegion:                  getenv("AWS_REGION", ""),

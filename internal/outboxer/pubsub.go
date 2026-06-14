@@ -60,7 +60,7 @@ func (a *app) sendPubsubEvents(ctx context.Context, tx *sql.Tx, events []event, 
 
 func (a *app) sendPubsubEvent(ctx context.Context, tx *sql.Tx, evt event, addIDToDelete func(any)) error {
 	target := eventOptionalString(evt, a.cfg.EventTarget)
-	topicName := eventString(evt, a.cfg.EventTopic)
+	topicName := eventString(evt, a.cfg.EventDestination)
 	if topicName == "" {
 		topicName = a.cfg.DefaultTopic
 	}
@@ -68,7 +68,7 @@ func (a *app) sendPubsubEvent(ctx context.Context, tx *sql.Tx, evt event, addIDT
 	attributes := eventAttributes(evt, a.cfg.EventAttributes)
 	timestamp := eventValue(evt, a.cfg.EventTimestamp)
 	id := eventValue(evt, a.cfg.EventID)
-	data := eventBytes(evt, a.cfg.EventData)
+	data := eventBytes(evt, a.cfg.EventPayload)
 	latency := eventLatency(timestamp)
 
 	logDebug(map[string]any{
@@ -80,7 +80,7 @@ func (a *app) sendPubsubEvent(ctx context.Context, tx *sql.Tx, evt event, addIDT
 		"eventOrderingKey": orderingKey,
 		"eventAttributes":  attributes,
 		"eventTarget":      target,
-		"eventTopic":       topicName,
+		"eventDestination": topicName,
 	})
 
 	start := time.Now()
@@ -89,7 +89,7 @@ func (a *app) sendPubsubEvent(ctx context.Context, tx *sql.Tx, evt event, addIDT
 		logError(map[string]any{
 			"message":           "Some attributes were deleted",
 			"eventId":           id,
-			"eventTopic":        topicName,
+			"eventDestination":  topicName,
 			"deletedAttributes": deletedAttributes,
 		})
 	}
@@ -107,13 +107,13 @@ func (a *app) sendPubsubEvent(ctx context.Context, tx *sql.Tx, evt event, addIDT
 			"eventOrderingKey": orderingKey,
 			"eventAttributes":  stringAttributes,
 			"eventTarget":      target,
-			"eventTopic":       topicName,
+			"eventDestination": topicName,
 			"error":            err.Error(),
 		})
 		return err
 	}
 
-	pubsubLatency := time.Since(start).Seconds()
+	publishLatency := time.Since(start).Seconds()
 	if orderingKey != "" {
 		a.txMu.Lock()
 		err = a.deleteEvent(ctx, tx, id)
@@ -135,8 +135,8 @@ func (a *app) sendPubsubEvent(ctx context.Context, tx *sql.Tx, evt event, addIDT
 		"eventOrderingKey": orderingKey,
 		"eventAttributes":  stringAttributes,
 		"eventTarget":      target,
-		"eventTopic":       topicName,
-		"pubsubLatency":    pubsubLatency,
+		"eventDestination": topicName,
+		"publishLatency":   publishLatency,
 	})
 
 	return nil

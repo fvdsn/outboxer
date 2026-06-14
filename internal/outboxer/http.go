@@ -19,12 +19,12 @@ func (a *app) serveHTTPRequests() *http.Server {
 		}
 	}()
 
-	logInfo(map[string]any{"message": fmt.Sprintf("Server listening on http://0.0.0.0:%d", a.cfg.HealthcheckPort)})
+	logInfo(map[string]any{"message": fmt.Sprintf("Server listening on http://0.0.0.0:%d", a.cfg.HealthPort)})
 	return server
 }
 
 func (a *app) newHTTPServer() *http.Server {
-	server := &http.Server{Addr: fmt.Sprintf(":%d", a.cfg.HealthcheckPort)}
+	server := &http.Server{Addr: fmt.Sprintf(":%d", a.cfg.HealthPort)}
 
 	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		method := strings.ToUpper(req.Method)

@@ -76,9 +76,9 @@ func testConfig() appConfig {
 		EventTable:       "events",
 		EventID:          "id",
 		EventTimestamp:   "timestamp",
-		EventData:        "data",
+		EventPayload:     "payload",
 		EventTarget:      "target",
-		EventTopic:       "topic",
+		EventDestination: "destination",
 		EventOrderingKey: "ordering_key",
 		EventAttributes:  "attributes",
 
@@ -86,10 +86,10 @@ func testConfig() appConfig {
 		BatchWorkers:       4,
 		BatchMaxSequential: 8,
 
-		DeadlockCheckInterval: time.Hour,
-		HealthcheckPort:       9999,
-		DefaultTopic:          "default",
-		ErrorCooldown:         time.Millisecond,
+		WatchdogInterval: time.Hour,
+		HealthPort:       9999,
+		DefaultTopic:     "default",
+		ErrorCooldown:    time.Millisecond,
 	}
 }
 
@@ -111,7 +111,7 @@ func unsetEnv(t *testing.T, keys ...string) {
 }
 
 func TestLoadConfigUsesDefaults(t *testing.T) {
-	unsetEnv(t, "PG_HOST", "PG_USER", "HEALTHCHECK_PORT", "PORT", "POLL_INTERVAL_MS")
+	unsetEnv(t, "EVENT_PAYLOAD", "EVENT_DESTINATION", "PG_HOST", "PG_USER", "HEALTH_PORT", "PORT", "POLL_INTERVAL_MS", "WATCHDOG_INTERVAL_MS")
 
 	cfg, err := loadConfig(nil, io.Discard)
 	if err != nil {
@@ -124,11 +124,20 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	if cfg.PGUser != "postgres" {
 		t.Fatalf("expected default pg user, got %q", cfg.PGUser)
 	}
-	if cfg.HealthcheckPort != 0 {
-		t.Fatalf("expected default healthcheck port 0, got %d", cfg.HealthcheckPort)
+	if cfg.EventPayload != "payload" {
+		t.Fatalf("expected default event payload column, got %q", cfg.EventPayload)
+	}
+	if cfg.EventDestination != "destination" {
+		t.Fatalf("expected default event destination column, got %q", cfg.EventDestination)
+	}
+	if cfg.HealthPort != 0 {
+		t.Fatalf("expected default healthcheck port 0, got %d", cfg.HealthPort)
 	}
 	if cfg.PollInterval != 0 {
 		t.Fatalf("expected default poll interval 0, got %s", cfg.PollInterval)
+	}
+	if cfg.WatchdogInterval != 10*time.Minute {
+		t.Fatalf("expected default watchdog interval 10m, got %s", cfg.WatchdogInterval)
 	}
 }
 
@@ -136,7 +145,7 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	t.Setenv("PG_HOST", "db")
 	t.Setenv("POLL_INTERVAL_MS", "250")
 	t.Setenv("PORT", "9090")
-	t.Setenv("HEALTHCHECK_PORT", "")
+	t.Setenv("HEALTH_PORT", "")
 
 	cfg, err := loadConfig(nil, io.Discard)
 	if err != nil {
@@ -149,48 +158,62 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	if cfg.PollInterval != 250*time.Millisecond {
 		t.Fatalf("expected env poll interval, got %s", cfg.PollInterval)
 	}
-	if cfg.HealthcheckPort != 9090 {
-		t.Fatalf("expected PORT fallback, got %d", cfg.HealthcheckPort)
+	if cfg.HealthPort != 9090 {
+		t.Fatalf("expected PORT fallback, got %d", cfg.HealthPort)
 	}
 }
 
-func TestLoadConfigHealthcheckPortPrecedence(t *testing.T) {
+func TestLoadConfigHealthPortPrecedence(t *testing.T) {
 	t.Setenv("PORT", "8080")
-	t.Setenv("HEALTHCHECK_PORT", "9000")
+	t.Setenv("HEALTH_PORT", "9000")
 
 	cfg, err := loadConfig(nil, io.Discard)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.HealthcheckPort != 9000 {
-		t.Fatalf("expected HEALTHCHECK_PORT to override PORT, got %d", cfg.HealthcheckPort)
+	if cfg.HealthPort != 9000 {
+		t.Fatalf("expected HEALTH_PORT to override PORT, got %d", cfg.HealthPort)
 	}
 
-	cfg, err = loadConfig([]string{"--healthcheck-port=0"}, io.Discard)
+	cfg, err = loadConfig([]string{"--health-port=0"}, io.Discard)
 	if err != nil {
 		t.Fatalf("load config with flag: %v", err)
 	}
-	if cfg.HealthcheckPort != 0 {
-		t.Fatalf("expected CLI flag to disable healthcheck server, got %d", cfg.HealthcheckPort)
+	if cfg.HealthPort != 0 {
+		t.Fatalf("expected CLI flag to disable healthcheck server, got %d", cfg.HealthPort)
 	}
 }
 
 func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
+	t.Setenv("EVENT_PAYLOAD", "env_payload")
+	t.Setenv("EVENT_DESTINATION", "env_destination")
 	t.Setenv("PG_HOST", "env-db")
 	t.Setenv("PG_PORT", "5433")
+	t.Setenv("PG_CONNECT_TIMEOUT_MS", "1000")
 	t.Setenv("PG_SSL", "false")
 	t.Setenv("POLL_INTERVAL_MS", "250")
+	t.Setenv("WATCHDOG_INTERVAL_MS", "60000")
 
 	cfg, err := loadConfig([]string{
+		"--event-payload=flag_payload",
+		"--event-destination=flag_destination",
 		"--pg-host=flag-db",
 		"--pg-port=6543",
+		"--pg-connect-timeout-ms=2000",
 		"--pg-ssl=true",
 		"--poll-interval-ms=500",
+		"--watchdog-interval-ms=30000",
 	}, io.Discard)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
 
+	if cfg.EventPayload != "flag_payload" {
+		t.Fatalf("expected flag event payload column, got %q", cfg.EventPayload)
+	}
+	if cfg.EventDestination != "flag_destination" {
+		t.Fatalf("expected flag event destination column, got %q", cfg.EventDestination)
+	}
 	if cfg.PGHost != "flag-db" {
 		t.Fatalf("expected flag pg host, got %q", cfg.PGHost)
 	}
@@ -200,8 +223,14 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	if !cfg.PGSSL {
 		t.Fatal("expected flag pg ssl to override env")
 	}
+	if cfg.PGConnectTimeout != 2*time.Second {
+		t.Fatalf("expected flag pg connect timeout, got %s", cfg.PGConnectTimeout)
+	}
 	if cfg.PollInterval != 500*time.Millisecond {
 		t.Fatalf("expected flag poll interval, got %s", cfg.PollInterval)
+	}
+	if cfg.WatchdogInterval != 30*time.Second {
+		t.Fatalf("expected flag watchdog interval, got %s", cfg.WatchdogInterval)
 	}
 }
 
@@ -223,12 +252,20 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"PostgreSQL:",
 		"Google Pub/Sub:",
 		"AWS SQS:",
-		"--healthcheck-port",
-		"Env: HEALTHCHECK_PORT, PORT",
+		"--event-payload",
+		"Env: EVENT_PAYLOAD",
+		"--event-destination",
+		"Env: EVENT_DESTINATION",
+		"--health-port",
+		"Env: HEALTH_PORT, PORT",
 		"--pg-host",
 		"Env: PG_HOST",
+		"--pg-connect-timeout-ms",
+		"Env: PG_CONNECT_TIMEOUT_MS",
 		"--poll-interval-ms",
 		"Env: POLL_INTERVAL_MS",
+		"--watchdog-interval-ms",
+		"Env: WATCHDOG_INTERVAL_MS",
 		"--aws-role-session-name",
 		"Env: AWS_ROLE_SESSION_NAME",
 	} {
@@ -275,7 +312,7 @@ func TestSendPubsubEventUsesDefaultTopicAndSanitizesAttributes(t *testing.T) {
 
 	evt := event{columns: map[string]any{
 		"id":         "event-1",
-		"data":       "payload",
+		"payload":    "payload",
 		"attributes": []byte(`{"keep":"yes","drop":42}`),
 	}}
 
@@ -311,9 +348,9 @@ func TestSendPubsubEventReturnsPublisherError(t *testing.T) {
 	a := &app{cfg: cfg, pubsub: &fakePubSubPublisher{err: expectedErr}}
 
 	evt := event{columns: map[string]any{
-		"id":    "event-1",
-		"topic": "topic-1",
-		"data":  "payload",
+		"id":          "event-1",
+		"destination": "topic-1",
+		"payload":     "payload",
 	}}
 
 	err := a.sendPubsubEvent(context.Background(), nil, evt, func(any) {})
@@ -335,9 +372,9 @@ func TestSendSQS10EventsHandlesPartialResponsesAndFIFOGroupIDs(t *testing.T) {
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "topic": "queue-a", "data": "one", "ordering_key": "group-a", "attributes": []byte(`{"ok":"1","bad":true}`)}},
-		{columns: map[string]any{"id": "event-2", "topic": "queue-a", "data": "two", "ordering_key": "group-a"}},
-		{columns: map[string]any{"id": "event-3", "topic": "queue-a", "data": "three", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "ordering_key": "group-a", "attributes": []byte(`{"ok":"1","bad":true}`)}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a", "payload": "two", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-3", "destination": "queue-a", "payload": "three", "ordering_key": "group-a"}},
 	}
 
 	err := a.sendSQS10Events(context.Background(), nil, "queue-a", events, func(id any) {
@@ -383,9 +420,9 @@ func TestPostgresIntegrationProcessesAndDeletesEvents(t *testing.T) {
 		CREATE TABLE %s (
 			id text PRIMARY KEY,
 			timestamp timestamptz,
-			data text NOT NULL,
+			payload text NOT NULL,
 			target text,
-			topic text,
+			destination text,
 			ordering_key text,
 			attributes jsonb
 		)
@@ -396,7 +433,7 @@ func TestPostgresIntegrationProcessesAndDeletesEvents(t *testing.T) {
 	defer db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
 
 	_, err = db.ExecContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (id, timestamp, data, target, topic, ordering_key, attributes)
+		INSERT INTO %s (id, timestamp, payload, target, destination, ordering_key, attributes)
 		VALUES
 			('pubsub-1', now(), 'hello pubsub', null, 'topic-a', null, '{"trace":"abc"}'),
 			('sqs-1', now(), 'hello sqs', 'sqs', 'queue-a', null, '{"trace":"def"}')

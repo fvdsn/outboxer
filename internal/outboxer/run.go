@@ -17,7 +17,7 @@ func Run(ctx context.Context, args []string) {
 		os.Exit(2)
 	}
 
-	startDeadlockDetector(cfg.DeadlockCheckInterval)
+	startDeadlockDetector(cfg.WatchdogInterval)
 
 	db, err := openDB(cfg)
 	if err != nil {
@@ -56,7 +56,7 @@ func Run(ctx context.Context, args []string) {
 
 	go handleSignals(db)
 
-	if cfg.HealthcheckPort > 0 {
+	if cfg.HealthPort > 0 {
 		a.serveHTTPRequests()
 	}
 	a.processEvents(ctx)

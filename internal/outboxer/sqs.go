@@ -121,7 +121,7 @@ func (p *awsSQSPublisher) SendBatch(ctx context.Context, queueURL string, entrie
 func (a *app) sendSQSEvents(ctx context.Context, tx *sql.Tx, events []event, addIDToDelete func(any)) error {
 	eventsByQueue := map[string][]event{}
 	for _, evt := range events {
-		queue := eventString(evt, a.cfg.EventTopic)
+		queue := eventString(evt, a.cfg.EventDestination)
 		eventsByQueue[queue] = append(eventsByQueue[queue], evt)
 	}
 
@@ -163,7 +163,7 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 		timestamp := eventValue(evt, a.cfg.EventTimestamp)
 		id := eventValue(evt, a.cfg.EventID)
 		entryID := fmt.Sprint(id)
-		data := eventBytes(evt, a.cfg.EventData)
+		data := eventBytes(evt, a.cfg.EventPayload)
 		latency := eventLatency(timestamp)
 
 		if len(data) >= sqsEventMaxSizeByte {
@@ -175,10 +175,10 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 			}
 
 			logError(map[string]any{
-				"message":    "Failed to send event",
-				"eventId":    id,
-				"eventTopic": queueURL,
-				"error":      fmt.Sprintf("Event too big: %d bytes", len(data)),
+				"message":          "Failed to send event",
+				"eventId":          id,
+				"eventDestination": queueURL,
+				"error":            fmt.Sprintf("Event too big: %d bytes", len(data)),
 			})
 			continue
 		}
@@ -192,7 +192,7 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 			"eventOrderingKey": orderingKey,
 			"eventAttributes":  attributes,
 			"eventTarget":      eventTargetSQS,
-			"eventTopic":       queueURL,
+			"eventDestination": queueURL,
 		})
 
 		stringAttributes, deletedAttributes := sanitizeStringAttributes(attributes)
@@ -200,7 +200,7 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 			logError(map[string]any{
 				"message":           "Some attributes were deleted",
 				"eventId":           id,
-				"eventTopic":        queueURL,
+				"eventDestination":  queueURL,
 				"deletedAttributes": deletedAttributes,
 			})
 		}
@@ -229,14 +229,14 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 	response, err := a.sqs.SendBatch(ctx, queueURL, entries)
 	if err != nil {
 		logError(map[string]any{
-			"message":    "Failed to send event batch",
-			"eventTopic": queueURL,
-			"error":      err.Error(),
+			"message":          "Failed to send event batch",
+			"eventDestination": queueURL,
+			"error":            err.Error(),
 		})
 		return err
 	}
 
-	pubsubLatency := time.Since(start).Seconds()
+	publishLatency := time.Since(start).Seconds()
 	for _, entry := range response.Successful {
 		originalID := idsByEntryID[entry.ID]
 		addIDToDelete(originalID)
@@ -244,8 +244,8 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 			"message":          "Event sent",
 			"eventId":          entry.ID,
 			"eventPublishedId": entry.MessageID,
-			"eventTopic":       queueURL,
-			"pubsubLatency":    pubsubLatency,
+			"eventDestination": queueURL,
+			"publishLatency":   publishLatency,
 		})
 	}
 
@@ -254,10 +254,10 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 			addIDToDelete(idsByEntryID[entry.ID])
 		}
 		logError(map[string]any{
-			"message":    "Failed to send event",
-			"eventId":    entry.ID,
-			"eventTopic": queueURL,
-			"error":      fmt.Sprintf("%s: %s", entry.Code, entry.Message),
+			"message":          "Failed to send event",
+			"eventId":          entry.ID,
+			"eventDestination": queueURL,
+			"error":            fmt.Sprintf("%s: %s", entry.Code, entry.Message),
 		})
 	}
 

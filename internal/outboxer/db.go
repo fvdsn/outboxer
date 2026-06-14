@@ -21,7 +21,7 @@ func openDB(cfg appConfig) (*sql.DB, error) {
 	pgConfig.User = cfg.PGUser
 	pgConfig.Password = cfg.PGPassword
 	pgConfig.Database = cfg.PGDatabase
-	pgConfig.ConnectTimeout = cfg.PGTimeout
+	pgConfig.ConnectTimeout = cfg.PGConnectTimeout
 
 	if cfg.PGSSL {
 		pgConfig.TLSConfig = &tls.Config{InsecureSkipVerify: !cfg.PGSSLRejectUnauthorized}
