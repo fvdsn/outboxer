@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -27,10 +28,11 @@ type sqsPublisher interface {
 }
 
 type sqsBatchEntry struct {
-	ID             string
-	MessageBody    string
-	Attributes     map[string]string
-	MessageGroupID string
+	ID              string
+	MessageBody     string
+	Attributes      map[string]string
+	MessageGroupID  string
+	DeduplicationID string
 }
 
 type sqsBatchResponse struct {
@@ -89,6 +91,9 @@ func (p *awsSQSPublisher) SendBatch(ctx context.Context, queueURL string, entrie
 		}
 		if entry.MessageGroupID != "" {
 			awsEntry.MessageGroupId = aws.String(entry.MessageGroupID)
+		}
+		if entry.DeduplicationID != "" {
+			awsEntry.MessageDeduplicationId = aws.String(entry.DeduplicationID)
 		}
 		awsEntries = append(awsEntries, awsEntry)
 	}
@@ -149,13 +154,7 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 		return nil
 	}
 
-	isFIFO := false
-	for _, evt := range events {
-		if eventOptionalString(evt, a.cfg.EventOrderingKey) != "" {
-			isFIFO = true
-			break
-		}
-	}
+	isFIFO := strings.HasSuffix(queueURL, ".fifo")
 
 	start := time.Now()
 	entries := []sqsBatchEntry{}
@@ -220,6 +219,7 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 				groupID = strconv.FormatInt(randomInt63(), 10)
 			}
 			entry.MessageGroupID = groupID
+			entry.DeduplicationID = entryID
 		}
 
 		entries = append(entries, entry)

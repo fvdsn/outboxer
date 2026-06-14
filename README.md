@@ -101,6 +101,20 @@ VALUES (
 
 Attributes must be strings. Non-string attributes are dropped and logged.
 
+### SQS FIFO Queues
+
+Outboxer detects FIFO queues from the `.fifo` suffix on the queue URL, so
+standard and FIFO queues are handled correctly without extra configuration:
+
+- **FIFO queues** receive a `MessageGroupId` (the event's `ordering_key`, or a
+  random group when it has none) and a `MessageDeduplicationId` set to the event
+  `id`. Using the event id for deduplication means re-sends after a crash are
+  deduplicated by SQS, so content-based deduplication is not required on the
+  queue.
+- **Standard queues** never receive a `MessageGroupId` or
+  `MessageDeduplicationId`. An `ordering_key` on a standard-queue event is
+  ignored by SQS.
+
 ## Configuration
 
 Outboxer reads environment variables and also loads a local `.env` file when

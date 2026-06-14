@@ -563,12 +563,12 @@ func TestSendSQS10EventsHandlesPartialResponsesAndFIFOGroupIDs(t *testing.T) {
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "ordering_key": "group-a", "attributes": []byte(`{"ok":"1","bad":true}`)}},
-		{columns: map[string]any{"id": "event-2", "destination": "queue-a", "payload": "two", "ordering_key": "group-a"}},
-		{columns: map[string]any{"id": "event-3", "destination": "queue-a", "payload": "three", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "ordering_key": "group-a", "attributes": []byte(`{"ok":"1","bad":true}`)}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "ordering_key": "group-a"}},
 	}
 
-	err := a.sendSQS10Events(context.Background(), nil, "queue-a", events, func(id any) {
+	err := a.sendSQS10Events(context.Background(), nil, "queue-a.fifo", events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if err != nil {
@@ -585,9 +585,57 @@ func TestSendSQS10EventsHandlesPartialResponsesAndFIFOGroupIDs(t *testing.T) {
 		if entry.MessageGroupID != "group-a" {
 			t.Fatalf("expected FIFO message group id, got %q", entry.MessageGroupID)
 		}
+		if entry.DeduplicationID != entry.ID {
+			t.Fatalf("expected FIFO dedup id to equal event id, got %q for %q", entry.DeduplicationID, entry.ID)
+		}
 	}
 	if !reflect.DeepEqual(sqs.requests[0].entries[0].Attributes, map[string]string{"ok": "1"}) {
 		t.Fatalf("unexpected sanitized attributes: %#v", sqs.requests[0].entries[0].Attributes)
+	}
+}
+
+func TestSendSQS10EventsStandardQueueOmitsFIFOFields(t *testing.T) {
+	cfg := testConfig()
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+
+	// A standard queue must not get a group id even when an ordering key is set.
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "ordering_key": "group-a"}},
+	}
+
+	if err := a.sendSQS10Events(context.Background(), nil, "queue-a", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQS10Events returned error: %v", err)
+	}
+
+	entry := sqs.requests[0].entries[0]
+	if entry.MessageGroupID != "" {
+		t.Fatalf("expected no message group id on standard queue, got %q", entry.MessageGroupID)
+	}
+	if entry.DeduplicationID != "" {
+		t.Fatalf("expected no dedup id on standard queue, got %q", entry.DeduplicationID)
+	}
+}
+
+func TestSendSQS10EventsFIFOWithoutOrderingKeyGetsFallbackGroup(t *testing.T) {
+	cfg := testConfig()
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one"}},
+	}
+
+	if err := a.sendSQS10Events(context.Background(), nil, "queue-a.fifo", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQS10Events returned error: %v", err)
+	}
+
+	entry := sqs.requests[0].entries[0]
+	if entry.MessageGroupID == "" {
+		t.Fatal("expected a fallback message group id on FIFO queue")
+	}
+	if entry.DeduplicationID != "event-1" {
+		t.Fatalf("expected dedup id to equal event id, got %q", entry.DeduplicationID)
 	}
 }
 
