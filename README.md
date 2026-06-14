@@ -165,6 +165,8 @@ outboxer --help
 | `POLL_INTERVAL_MS` | `0` | Sleep after an empty batch. The default keeps polling immediately. |
 | `WATCHDOG_INTERVAL_MS` | `600000` | Watchdog interval. |
 | `HEALTH_PORT` | `PORT` or `0` | HTTP health server port. `0` disables the server. |
+| `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, or `error`. |
+| `LOG_FORMAT` | `text` | Log format: `text` or `json`. |
 | `PG_HOST` | `localhost` | PostgreSQL host. |
 | `PG_PORT` | `5432` | PostgreSQL port. |
 | `PG_USER` | `postgres` | PostgreSQL user. |
@@ -187,6 +189,14 @@ Google Pub/Sub uses Application Default Credentials.
 
 AWS SQS uses the AWS SDK default credential chain. If `AWS_ROLE_ARN` is set,
 Outboxer assumes that role before publishing to SQS.
+
+## Logging
+
+Outboxer logs to stdout using Go's `log/slog`. The level is set with
+`LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`) and the format
+with `LOG_FORMAT` (`text`, the default human-readable output, or `json` for log
+aggregators). Per-event publish logs are emitted at debug level, so the default
+`info` level stays quiet under load.
 
 ## Health Endpoint
 

@@ -1,36 +1,36 @@
 package outboxer
 
 import (
-	"encoding/json"
-	"fmt"
-	"time"
+	"log/slog"
+	"os"
+	"strings"
 )
 
-func logDebug(fields map[string]any) {
-	logWithLevel("DEBUG", fields)
-}
+// setupLogging configures the default slog logger from the given level and
+// format. Level is one of debug, info, warn, error. Format is text (the default,
+// human readable) or json. Unknown values fall back to info and text.
+func setupLogging(level string, format string) {
+	options := &slog.HandlerOptions{Level: parseLogLevel(level)}
 
-func logInfo(fields map[string]any) {
-	logWithLevel("INFO", fields)
-}
-
-func logError(fields map[string]any) {
-	logWithLevel("ERROR", fields)
-}
-
-func logWithLevel(level string, fields map[string]any) {
-	payload := map[string]any{
-		"log_level": level,
-		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
-	}
-	for key, value := range fields {
-		payload[key] = value
+	var handler slog.Handler
+	if strings.EqualFold(format, "json") {
+		handler = slog.NewJSONHandler(os.Stdout, options)
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, options)
 	}
 
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		fmt.Println(`{"log_level":"ERROR","message":"failed to encode log"}`)
-		return
+	slog.SetDefault(slog.New(handler))
+}
+
+func parseLogLevel(level string) slog.Level {
+	switch strings.ToLower(level) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
-	fmt.Println(string(encoded))
 }

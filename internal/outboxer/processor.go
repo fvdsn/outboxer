@@ -3,7 +3,7 @@ package outboxer
 import (
 	"context"
 	"database/sql"
-	"fmt"
+	"log/slog"
 	"math"
 	"math/rand"
 	"os"
@@ -28,17 +28,17 @@ func startDeadlockDetector(interval time.Duration) {
 		defer ticker.Stop()
 		for range ticker.C {
 			if deadlockDetector == deadlockDetectorPrevious {
-				logError(map[string]any{"message": "deadlock detected, shutting down"})
+				slog.Error("Deadlock detected, shutting down")
 				os.Exit(1)
 			}
 			deadlockDetectorPrevious = deadlockDetector
-			logInfo(map[string]any{"message": "all good"})
+			slog.Debug("Watchdog heartbeat")
 		}
 	}()
 }
 
 func (a *app) processEvents(ctx context.Context) {
-	logInfo(map[string]any{"message": fmt.Sprintf("Processing events from table '%s'", a.cfg.EventTable)})
+	slog.Info("Processing events", "table", a.cfg.EventTable)
 
 	for {
 		result, err := a.processOneBatch(ctx)
@@ -53,17 +53,17 @@ func (a *app) processEvents(ctx context.Context) {
 func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
-		logError(map[string]any{"message": "Error while starting event batch transaction", "error": err.Error()})
+		slog.Error("Failed to start batch transaction", "error", err.Error())
 		return batchResult{}, err
 	}
 
 	result, batchErr := a.processEventBatch(ctx, tx)
 	if batchErr != nil {
-		logError(map[string]any{"message": "Error during event batch transaction", "error": batchErr.Error()})
+		slog.Error("Failed during batch transaction", "error", batchErr.Error())
 	}
 
 	if err := tx.Commit(); err != nil {
-		logError(map[string]any{"message": "Error while committing event batch transaction", "error": err.Error()})
+		slog.Error("Failed to commit batch transaction", "error", err.Error())
 		return result, err
 	}
 
@@ -79,7 +79,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	}
 	result := batchResult{selected: len(events)}
 	if len(events) > 0 {
-		logInfo(map[string]any{"message": fmt.Sprintf("processing %d messages", len(events))})
+		slog.Info("Processing batch", "count", len(events))
 	}
 
 	var idsMu sync.Mutex
@@ -109,13 +109,12 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 				case backendSQS:
 					sqsEvents = append(sqsEvents, evt)
 				default:
-					logError(map[string]any{
-						"message":       "Event has no enabled backend for its target, leaving it in the table",
-						"eventId":       eventValue(evt, a.cfg.EventID),
-						"eventTarget":   eventOptionalString(evt, a.cfg.EventTarget),
-						"pubsubEnabled": a.cfg.PubSubEnabled,
-						"sqsEnabled":    a.cfg.SQSEnabled,
-					})
+					slog.Error("Event has no enabled backend for its target, leaving it in the table",
+						"event_id", eventValue(evt, a.cfg.EventID),
+						"event_target", eventOptionalString(evt, a.cfg.EventTarget),
+						"pubsub_enabled", a.cfg.PubSubEnabled,
+						"sqs_enabled", a.cfg.SQSEnabled,
+					)
 				}
 			}
 

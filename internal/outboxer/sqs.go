@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -177,35 +178,32 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 				return err
 			}
 
-			logError(map[string]any{
-				"message":          "Failed to send event",
-				"eventId":          id,
-				"eventDestination": queueURL,
-				"error":            fmt.Sprintf("Event too big: %d bytes", len(data)),
-			})
+			slog.Error("Failed to send event",
+				"event_id", id,
+				"event_destination", queueURL,
+				"error", fmt.Sprintf("Event too big: %d bytes", len(data)),
+			)
 			continue
 		}
 
-		logDebug(map[string]any{
-			"message":          "Sending event",
-			"eventId":          id,
-			"eventTimestamp":   timestamp,
-			"eventLatency":     latency,
-			"eventPayloadSize": len(data),
-			"eventOrderingKey": orderingKey,
-			"eventAttributes":  attributes,
-			"eventTarget":      eventTargetSQS,
-			"eventDestination": queueURL,
-		})
+		slog.Debug("Sending event",
+			"event_id", id,
+			"event_timestamp", timestamp,
+			"event_latency", latency,
+			"event_payload_size", len(data),
+			"event_ordering_key", orderingKey,
+			"event_attributes", attributes,
+			"event_target", eventTargetSQS,
+			"event_destination", queueURL,
+		)
 
 		stringAttributes, deletedAttributes := sanitizeStringAttributes(attributes)
 		if len(deletedAttributes) != 0 {
-			logError(map[string]any{
-				"message":           "Some attributes were deleted",
-				"eventId":           id,
-				"eventDestination":  queueURL,
-				"deletedAttributes": deletedAttributes,
-			})
+			slog.Error("Some attributes were dropped",
+				"event_id", id,
+				"event_destination", queueURL,
+				"dropped_attributes", deletedAttributes,
+			)
 		}
 
 		entry := sqsBatchEntry{
@@ -232,11 +230,10 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 
 	response, err := a.sqs.SendBatch(ctx, queueURL, entries)
 	if err != nil {
-		logError(map[string]any{
-			"message":          "Failed to send event batch",
-			"eventDestination": queueURL,
-			"error":            err.Error(),
-		})
+		slog.Error("Failed to send event batch",
+			"event_destination", queueURL,
+			"error", err.Error(),
+		)
 		return err
 	}
 
@@ -244,25 +241,23 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 	for _, entry := range response.Successful {
 		originalID := idsByEntryID[entry.ID]
 		addIDToDelete(originalID)
-		logDebug(map[string]any{
-			"message":          "Event sent",
-			"eventId":          entry.ID,
-			"eventPublishedId": entry.MessageID,
-			"eventDestination": queueURL,
-			"publishLatency":   publishLatency,
-		})
+		slog.Debug("Event sent",
+			"event_id", entry.ID,
+			"event_published_id", entry.MessageID,
+			"event_destination", queueURL,
+			"publish_latency", publishLatency,
+		)
 	}
 
 	for _, entry := range response.Failed {
 		if entry.SenderFault {
 			addIDToDelete(idsByEntryID[entry.ID])
 		}
-		logError(map[string]any{
-			"message":          "Failed to send event",
-			"eventId":          entry.ID,
-			"eventDestination": queueURL,
-			"error":            fmt.Sprintf("%s: %s", entry.Code, entry.Message),
-		})
+		slog.Error("Failed to send event",
+			"event_id", entry.ID,
+			"event_destination", queueURL,
+			"error", fmt.Sprintf("%s: %s", entry.Code, entry.Message),
+		)
 	}
 
 	return nil

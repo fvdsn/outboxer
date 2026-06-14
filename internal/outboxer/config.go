@@ -24,6 +24,9 @@ type appConfig struct {
 	BatchWorkers       int
 	BatchMaxSequential int
 
+	LogLevel  string
+	LogFormat string
+
 	WatchdogInterval   time.Duration
 	HealthPort         int
 	PubSubEnabled      bool
@@ -93,6 +96,9 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addIntFlag(flags, &options, "Batch processing", &watchdogIntervalMS, "watchdog-interval-ms", watchdogIntervalMS, "Watchdog interval in milliseconds.", "WATCHDOG_INTERVAL_MS")
 
 	addIntFlag(flags, &options, "HTTP / health", &cfg.HealthPort, "health-port", cfg.HealthPort, "HTTP health server port. Set to 0 to disable.", "HEALTH_PORT, PORT")
+
+	addStringFlag(flags, &options, "Logging", &cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug, info, warn, or error.", "LOG_LEVEL")
+	addStringFlag(flags, &options, "Logging", &cfg.LogFormat, "log-format", cfg.LogFormat, "Log format: text or json.", "LOG_FORMAT")
 
 	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGHost, "pg-host", cfg.PGHost, "PostgreSQL host.", "PG_HOST")
 	addValueFlag(flags, &options, "PostgreSQL", (*uint16Value)(&cfg.PGPort), "pg-port", "PostgreSQL port.", "PG_PORT", cfg.PGPort)
@@ -169,6 +175,9 @@ func loadConfigFromEnv() appConfig {
 		BatchSize:          getenvInt("BATCH_SIZE", 32),
 		BatchWorkers:       getenvInt("BATCH_WORKERS", 8),
 		BatchMaxSequential: getenvInt("BATCH_MAX_SEQUENTIAL", 8),
+
+		LogLevel:  getenv("LOG_LEVEL", "info"),
+		LogFormat: getenv("LOG_FORMAT", "text"),
 
 		WatchdogInterval:   time.Duration(getenvInt("WATCHDOG_INTERVAL_MS", 10*60*1000)) * time.Millisecond,
 		HealthPort:         getenvInt("HEALTH_PORT", getenvInt("PORT", 0)),

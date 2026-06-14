@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"outboxer-go/internal/outboxer"
+	"github.com/fvdsn/outboxer/internal/outboxer"
 )
 
 func main() {

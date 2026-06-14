@@ -2,6 +2,7 @@ package outboxer
 
 import (
 	"database/sql"
+	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
@@ -21,8 +22,8 @@ func handleSignals(db *sql.DB) {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM)
 	<-signals
-	logInfo(map[string]any{"message": "Shutdown requested by host"})
+	slog.Info("Shutdown requested by host")
 	_ = db.Close()
-	logInfo(map[string]any{"message": "Graceful shutdown"})
+	slog.Info("Graceful shutdown")
 	os.Exit(0)
 }

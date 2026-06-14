@@ -1,4 +1,4 @@
-module outboxer-go
+module github.com/fvdsn/outboxer
 
 go 1.25.8
 

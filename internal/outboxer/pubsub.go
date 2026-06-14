@@ -3,6 +3,7 @@ package outboxer
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"time"
 
 	"cloud.google.com/go/pubsub"
@@ -71,27 +72,25 @@ func (a *app) sendPubsubEvent(ctx context.Context, tx *sql.Tx, evt event, addIDT
 	data := eventBytes(evt, a.cfg.EventPayload)
 	latency := eventLatency(timestamp)
 
-	logDebug(map[string]any{
-		"message":          "Sending event",
-		"eventId":          id,
-		"eventTimestamp":   timestamp,
-		"eventLatency":     latency,
-		"eventPayloadSize": len(data),
-		"eventOrderingKey": orderingKey,
-		"eventAttributes":  attributes,
-		"eventTarget":      target,
-		"eventDestination": topicName,
-	})
+	slog.Debug("Sending event",
+		"event_id", id,
+		"event_timestamp", timestamp,
+		"event_latency", latency,
+		"event_payload_size", len(data),
+		"event_ordering_key", orderingKey,
+		"event_attributes", attributes,
+		"event_target", target,
+		"event_destination", topicName,
+	)
 
 	start := time.Now()
 	stringAttributes, deletedAttributes := sanitizeStringAttributes(attributes)
 	if len(deletedAttributes) != 0 {
-		logError(map[string]any{
-			"message":           "Some attributes were deleted",
-			"eventId":           id,
-			"eventDestination":  topicName,
-			"deletedAttributes": deletedAttributes,
-		})
+		slog.Error("Some attributes were dropped",
+			"event_id", id,
+			"event_destination", topicName,
+			"dropped_attributes", deletedAttributes,
+		)
 	}
 
 	messageID, err := a.pubsub.Publish(ctx, pubsubMessage{
@@ -101,15 +100,14 @@ func (a *app) sendPubsubEvent(ctx context.Context, tx *sql.Tx, evt event, addIDT
 		Attributes:  stringAttributes,
 	})
 	if err != nil {
-		logError(map[string]any{
-			"message":          "Failed to send event",
-			"eventId":          id,
-			"eventOrderingKey": orderingKey,
-			"eventAttributes":  stringAttributes,
-			"eventTarget":      target,
-			"eventDestination": topicName,
-			"error":            err.Error(),
-		})
+		slog.Error("Failed to send event",
+			"event_id", id,
+			"event_ordering_key", orderingKey,
+			"event_attributes", stringAttributes,
+			"event_target", target,
+			"event_destination", topicName,
+			"error", err.Error(),
+		)
 		return err
 	}
 
@@ -125,19 +123,18 @@ func (a *app) sendPubsubEvent(ctx context.Context, tx *sql.Tx, evt event, addIDT
 		addIDToDelete(id)
 	}
 
-	logDebug(map[string]any{
-		"message":          "Event sent",
-		"eventId":          id,
-		"eventTimestamp":   timestamp,
-		"eventLatency":     latency,
-		"eventPayloadSize": len(data),
-		"eventPublishedId": messageID,
-		"eventOrderingKey": orderingKey,
-		"eventAttributes":  stringAttributes,
-		"eventTarget":      target,
-		"eventDestination": topicName,
-		"publishLatency":   publishLatency,
-	})
+	slog.Debug("Event sent",
+		"event_id", id,
+		"event_timestamp", timestamp,
+		"event_latency", latency,
+		"event_payload_size", len(data),
+		"event_published_id", messageID,
+		"event_ordering_key", orderingKey,
+		"event_attributes", stringAttributes,
+		"event_target", target,
+		"event_destination", topicName,
+		"publish_latency", publishLatency,
+	)
 
 	return nil
 }
