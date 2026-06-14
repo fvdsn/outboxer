@@ -1,4 +1,4 @@
-package main
+package outboxer
 
 import (
 	"context"
@@ -6,11 +6,9 @@ import (
 	"time"
 )
 
-func main() {
+func Run(ctx context.Context) {
 	loadDotEnv(".env")
 	cfg := loadConfig()
-
-	ctx := context.Background()
 
 	startDeadlockDetector(cfg.DeadlockCheckInterval)
 

@@ -6,6 +6,13 @@ It reads events from a PostgreSQL outbox table, publishes them to Google Pub/Sub
 or AWS SQS, and deletes successfully published rows. The runtime configuration
 uses the same environment variable names and defaults as the JavaScript service.
 
+## Layout
+
+```text
+cmd/outboxer/       executable entrypoint
+internal/outboxer/  service implementation
+```
+
 ## Run
 
 ```sh

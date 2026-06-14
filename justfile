@@ -9,15 +9,15 @@ default:
 
 # Run the application locally.
 run:
-    go run .
+    go run ./cmd/outboxer
 
 # Build the app without leaving a local artifact.
 build:
-    go build -o /tmp/outboxer-go-check .
+    go build -o /tmp/outboxer-go-check ./cmd/outboxer
 
 # Build a local binary.
 binary:
-    go build -o outboxer-go .
+    go build -o outboxer-go ./cmd/outboxer
 
 # Build the Docker image.
 docker-build:
@@ -60,7 +60,7 @@ e2e-clean: integration-clean
 
 # Format Go code.
 fmt:
-    gofmt -w *.go
+    gofmt -w ./cmd/outboxer/*.go ./internal/outboxer/*.go
 
 # Tidy Go modules.
 tidy:
