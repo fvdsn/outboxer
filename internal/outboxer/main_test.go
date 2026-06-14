@@ -493,6 +493,35 @@ func TestValidateWatchdogMustExceedPollInterval(t *testing.T) {
 	}
 }
 
+func TestProcessEventsStopsOnContextCancel(t *testing.T) {
+	a := &app{cfg: testConfig()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		a.processEvents(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("processEvents did not return after context cancellation")
+	}
+}
+
+func TestSleepContextReturnsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	sleepContext(ctx, time.Hour)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("sleepContext blocked for %s on a cancelled context", elapsed)
+	}
+}
+
 func TestDeadlockDetectorConcurrentAccess(t *testing.T) {
 	// Exercises the watchdog counter from two goroutines so the race detector
 	// would flag a regression back to an unsynchronized int64.

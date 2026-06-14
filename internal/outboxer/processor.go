@@ -52,33 +52,60 @@ func (a *app) processEvents(ctx context.Context) {
 	slog.Info("Processing events", "table", a.cfg.EventTable)
 
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+
 		result, err := a.processOneBatch(ctx)
 		if err != nil {
-			time.Sleep(a.cfg.ErrorCooldown)
+			sleepContext(ctx, a.cfg.ErrorCooldown)
 		} else if result.selected == 0 && a.cfg.PollInterval > 0 {
-			time.Sleep(a.cfg.PollInterval)
+			sleepContext(ctx, a.cfg.PollInterval)
 		}
+	}
+}
+
+// sleepContext waits for the given duration but returns early if the context is
+// cancelled, so shutdown is not delayed by a cooldown or poll sleep.
+func sleepContext(ctx context.Context, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
 	}
 }
 
 func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
-		slog.Error("Failed to start batch transaction", "error", err.Error())
+		logBatchError(ctx, "Failed to start batch transaction", err)
 		return batchResult{}, err
 	}
 
 	result, batchErr := a.processEventBatch(ctx, tx)
 	if batchErr != nil {
-		slog.Error("Failed during batch transaction", "error", batchErr.Error())
+		logBatchError(ctx, "Failed during batch transaction", batchErr)
 	}
 
 	if err := tx.Commit(); err != nil {
-		slog.Error("Failed to commit batch transaction", "error", err.Error())
+		logBatchError(ctx, "Failed to commit batch transaction", err)
 		return result, err
 	}
 
 	return result, batchErr
+}
+
+// logBatchError logs a batch failure, unless the context has been cancelled, in
+// which case the error is just the expected fallout of shutting down.
+func logBatchError(ctx context.Context, message string, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+	slog.Error(message, "error", err.Error())
 }
 
 func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, error) {

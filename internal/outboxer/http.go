@@ -1,27 +1,30 @@
 package outboxer
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
-	"os"
 	"strings"
-	"time"
 )
 
-func (a *app) serveHTTPRequests() *http.Server {
+func (a *app) serveHTTPRequests() (*http.Server, error) {
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", a.cfg.HealthPort))
+	if err != nil {
+		return nil, err
+	}
+
 	server := a.newHTTPServer()
 
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			slog.Error("HTTP server failed", "error", err.Error())
-			os.Exit(1)
+			a.shutdown()
 		}
 	}()
 
 	slog.Info("Health server listening", "port", a.cfg.HealthPort)
-	return server
+	return server, nil
 }
 
 func (a *app) newHTTPServer() *http.Server {
@@ -39,16 +42,9 @@ func (a *app) newHTTPServer() *http.Server {
 				origin = "unknown"
 			}
 			slog.Info("Shutdown requested by client", "from", origin)
-			_ = a.db.Close()
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("Shutting down"))
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_ = server.Shutdown(ctx)
-				slog.Info("Graceful shutdown")
-				os.Exit(0)
-			}()
+			a.shutdown()
 		default:
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("all good"))

@@ -2,48 +2,51 @@ package outboxer
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 )
 
-func Run(ctx context.Context, args []string) {
+func Run(ctx context.Context, args []string) error {
 	cfg, err := loadConfig(args, os.Stderr)
 	if err != nil {
-		if err == flag.ErrHelp {
-			os.Exit(0)
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
 		}
-		slog.Error("Invalid configuration", "error", err.Error())
-		os.Exit(2)
+		return fmt.Errorf("invalid configuration: %w", err)
 	}
 
 	setupLogging(cfg.LogLevel, cfg.LogFormat)
 
 	if err := cfg.validate(); err != nil {
-		slog.Error("Invalid configuration", "error", err.Error())
-		os.Exit(2)
+		return fmt.Errorf("invalid configuration: %w", err)
 	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	startDeadlockDetector(cfg.WatchdogInterval)
 
 	db, err := openDB(cfg)
 	if err != nil {
-		slog.Error("Something is wrong with the database", "error", err.Error())
-		time.Sleep(100 * time.Millisecond)
-		os.Exit(1)
+		return fmt.Errorf("open database: %w", err)
 	}
+	defer db.Close()
 
 	a := &app{
-		cfg: cfg,
-		db:  db,
+		cfg:      cfg,
+		db:       db,
+		shutdown: cancel,
 	}
 
 	if cfg.PubSubEnabled {
 		pubsubClient, err := newPubSubClient(ctx, cfg)
 		if err != nil {
-			slog.Error("Failed to create Pub/Sub client", "error", err.Error())
-			os.Exit(1)
+			return fmt.Errorf("create Pub/Sub client: %w", err)
 		}
 		defer pubsubClient.Close()
 		a.pubsub = &cloudPubSubPublisher{client: pubsubClient}
@@ -52,8 +55,7 @@ func Run(ctx context.Context, args []string) {
 	if cfg.SQSEnabled {
 		sqsClient, err := newSQSClient(ctx, cfg)
 		if err != nil {
-			slog.Error("Failed to create SQS client", "error", err.Error())
-			os.Exit(1)
+			return fmt.Errorf("create SQS client: %w", err)
 		}
 		a.sqs = &awsSQSPublisher{client: sqsClient}
 	}
@@ -61,15 +63,24 @@ func Run(ctx context.Context, args []string) {
 	slog.Info("Startup", "pid", os.Getpid())
 
 	if err := a.checkDBWorks(ctx); err != nil {
-		slog.Error("Something is wrong with the database", "error", err.Error())
-		time.Sleep(100 * time.Millisecond)
-		os.Exit(1)
+		return fmt.Errorf("database check failed: %w", err)
 	}
-
-	go handleSignals(db)
 
 	if cfg.HealthPort > 0 {
-		a.serveHTTPRequests()
+		server, err := a.serveHTTPRequests()
+		if err != nil {
+			return fmt.Errorf("start health server: %w", err)
+		}
+		defer shutdownServer(server)
 	}
+
 	a.processEvents(ctx)
+	slog.Info("Graceful shutdown")
+	return nil
+}
+
+func shutdownServer(server *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = server.Shutdown(ctx)
 }
