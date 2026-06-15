@@ -84,10 +84,22 @@ The current collector already satisfies these, so we keep it:
   `WATCHDOG_INTERVAL_MS` vs `POLL_INTERVAL_MS`.
 - **S10 — Interruptible** — sending respects context cancellation; S0 covers
   interrupted in-flight events.
-- **S11 — Poison events are removed.** An event that can never be sent (poison,
-  see taxonomy) is removed from the main flow — dropped + logged now,
-  dead-lettered once a DLQ exists — so it cannot clog collection or block an
-  ordered queue. All other failures are retried (cadence per S12).
+- **S11 — Poison events are removed only where it is safe without losing
+  recoverable data.** Disposition depends on whether the event is recoverable
+  *without editing the event itself*:
+  - **Content-poison (P3–P7)** — the backend always rejects the content as-is;
+    only editing the event could fix it, and no future build helps. Dropped +
+    logged now (status quo for SQS oversized/sender-fault), dead-lettered once a
+    DLQ exists.
+  - **Routing-poison (P1, P2)** — unknown/ambiguous target, or missing
+    destination. Recoverable *without* editing the event: by config (P2: add a
+    default) or a future build (P1: e.g. a new `kafka` backend). Dropping these
+    before a DLQ exists would lose recoverable events (e.g. producing `kafka`
+    events before upgrading Outboxer), so they are **kept + logged (bounded)**,
+    not dropped, until a DLQ can hold them. They clog collection in the meantime
+    — the accepted interim cost; surface via metrics. **The DLQ is the
+    prerequisite for removing routing-poison.**
+  - All other failures are retried (cadence per S12).
 - **S12 — Back off on database errors only.** Busy-looping the DB is desired (it
   keeps latency low and is not harmful), so it is the default. Only a
   *database/transaction* error (BeginTx/SELECT/DELETE/COMMIT failing — connection
@@ -316,7 +328,7 @@ out-of-band from the DLQ; it never happens by leaving poison to clog the table.
 Until the DLQ exists, poison removal is a drop, so a misrouted-by-misconfig event
 (P1) is lost — an accepted trade to keep collection unblocked.
 
-### Poison (remove)
+### Poison (cannot be sent as-is; disposition per S11)
 
 Routing (never reaches a backend):
 
@@ -405,10 +417,12 @@ trades away the low-latency busy loop we want.
 ### Changes vs. current behavior
 
 - SQS oversized + sender-fault → already dropped. ✓
-- Unroutable-in-principle (P1) is currently *left* and accumulates → becomes
-  poison and is removed.
-- Pub/Sub oversized/known-invalid is currently retried forever → becomes poison;
-  ambiguous backend rejects are isolated before any event is removed as poison.
+- Unroutable-in-principle (P1, P2) is currently *left* and accumulates → stays
+  kept in Stage 1 (unchanged); removal is deferred to the DLQ, because dropping it
+  pre-DLQ would lose events recoverable by config or a future build.
+- Pub/Sub oversized/known-invalid (content-poison) is currently retried forever →
+  becomes dropped poison; ambiguous backend rejects are isolated before any event
+  is removed.
 - Disabled-backend target → stays retryable (unchanged: left in place).
 
 ## Staging
@@ -418,6 +432,9 @@ trades away the low-latency busy loop we want.
   and clearly correct. Satisfies S0–S5, S7–S13.
 - **Stage 2 — eager deletion.** Incremental commits: delete + commit each
   confirmed sub-group as it lands (S6), without changing the sender interface.
+- **Stage 3 — dead-letter queue.** Move poison (especially routing-poison P1/P2,
+  which Stage 1 keeps) out of the main table into a DLQ — unclogging collection
+  without losing recoverable events, and completing S11.
 
 ## Stage 1 design
 
@@ -460,14 +477,16 @@ Sender errors are classified outside the `done` set:
 1. `BEGIN` on the one connection — [collection: stable connections]
 2. `SELECT … ORDER BY id LIMIT N FOR UPDATE` — [collection: age-order progress,
    ordering]
-3. Route to `pubsub` / `sqs` / retryable-disabled-backend / poison using the
-   routing classification table; route-poison (P1, P2) → removed,
-   disabled-backend (R7) → kept — [S11, S0]
+3. Route to `pubsub` / `sqs` / retryable-disabled-backend / routing-poison using
+   the routing classification table. Routing-poison (P1, P2) is **kept** (logged,
+   bounded) until a DLQ exists, not removed; disabled-backend (R7) → kept — [S11,
+   S0]
 4. `pubsubSender.Send` and `sqsSender.Send` **concurrently** under the shutdown
    context. Senders apply `PUBLISH_TIMEOUT` per provider publish operation and
    configure any internal provider timeout needed to make that bound real. — [S3,
    S9, S10]
-5. `done = pubsubDone ∪ sqsDone ∪ routePoison`
+5. `done = pubsubDone ∪ sqsDone` (each sender's `done` already includes its own
+   content-poison P3–P7; routing-poison P1/P2 is not in `done` until a DLQ exists)
 6. `DELETE … WHERE id IN (done)` — [S0]
 7. `COMMIT` — [Stage 1 single commit; coarse half of S6]
 8. On a database/transaction error, back off (`ERROR_COOLDOWN`). Sender failures
@@ -552,7 +571,7 @@ Sender errors are classified outside the `done` set:
 | S8 | the `done` set |
 | S9 | per-operation provider publish timeout plus longer result wait where async clients need it |
 | S10 | shutdown ctx through Send; `Close` |
-| S11 | poison (P1–P7) → `done`/removed; retryable kept |
+| S11 | content-poison (P3–P7) → `done`/dropped; routing-poison (P1/P2) kept until DLQ; retryable kept |
 | S12 | cooldown only on DB error; senders paced by their clients |
 | S13 | per-signature failure-log rate limiter |
 
