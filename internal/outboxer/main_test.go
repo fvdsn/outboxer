@@ -100,6 +100,7 @@ func testConfig() appConfig {
 		SQSEnabled:         true,
 		DefaultPubSubTopic: "default",
 		ErrorCooldown:      time.Millisecond,
+		PublishTimeout:     30 * time.Second,
 	}
 }
 
@@ -682,6 +683,19 @@ func TestValidateWatchdogMustExceedPollInterval(t *testing.T) {
 	cfg.WatchdogInterval = time.Millisecond
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("expected zero poll interval to skip the watchdog check, got %v", err)
+	}
+}
+
+func TestValidateRequiresPositivePublishTimeout(t *testing.T) {
+	cfg := testConfig()
+	cfg.PublishTimeout = 0
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when publish timeout is zero")
+	}
+
+	cfg.PublishTimeout = -time.Millisecond
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when publish timeout is negative")
 	}
 }
 

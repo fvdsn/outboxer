@@ -73,33 +73,39 @@ The current collector already satisfies these, so we keep it:
   with internal async work, the timeout must bound that internal publish work,
   not only the caller waiting for a result. A caller-side wait timeout is only
   allowed after the provider's own publish timeout should already have resolved
-  the send. `PUBLISH_TIMEOUT_MS` must be positive when Pub/Sub is enabled;
-  disabling it would make ordered Pub/Sub outcomes unbounded (for SQS-only
-  deployments `0` is allowed). The worst-case batch send time is bounded by
-  `ORDERED_GROUP_BATCH_CAP × (PUBLISH_TIMEOUT_MS + PUBLISH_RESULT_GRACE_MS)` (one
-  slow ordered group sending its capped run sequentially). Because the watchdog
-  counter only advances once per batch, startup must validate that
-  `WATCHDOG_INTERVAL_MS` comfortably exceeds this worst case, or a legitimately
-  slow batch trips a false deadlock mid-batch — the same class of rule as
-  `WATCHDOG_INTERVAL_MS` vs `POLL_INTERVAL_MS`.
+  the send. `PUBLISH_TIMEOUT_MS` must be positive for every enabled backend.
+  Disabling it would leave SQS sends bounded only by SDK/transport defaults or
+  the process watchdog, and would make ordered Pub/Sub outcomes unbounded. The
+  worst-case batch send time must be derived from the enabled backend limits.
+  Since Pub/Sub and SQS send concurrently, the batch send bound is the maximum of
+  the enabled backend bounds, not their sum:
+  - `pubsubBound = ORDERED_GROUP_BATCH_CAP × (PUBLISH_TIMEOUT_MS +
+    PUBLISH_RESULT_GRACE_MS)` (one slow ordered key sending its capped run
+    sequentially).
+  - `sqsStandardBound = ceil(ceil(BATCH_SIZE / 10) / SQS_SEND_CONCURRENCY) ×
+    PUBLISH_TIMEOUT_MS` (standard queue batch requests in semaphore-limited
+    waves).
+  - `sqsFifoBound = ceil(BATCH_SIZE / SQS_SEND_CONCURRENCY) ×
+    PUBLISH_TIMEOUT_MS` (conservative FIFO case where every selected SQS event is
+    in a different message group; a single hot group is separately capped by
+    `ORDERED_GROUP_BATCH_CAP × PUBLISH_TIMEOUT_MS`).
+  - `batchSendBound = max(enabled(pubsubBound), enabled(sqsStandardBound),
+    enabled(sqsFifoBound))`.
+  Because the watchdog counter only advances once per batch, startup must
+  validate that `WATCHDOG_INTERVAL_MS` comfortably exceeds `batchSendBound`
+  (plus normal DB/delete/commit margin), or a legitimately slow batch trips a
+  false deadlock mid-batch — the same class of rule as `WATCHDOG_INTERVAL_MS` vs
+  `POLL_INTERVAL_MS`.
 - **S10 — Interruptible** — sending respects context cancellation; S0 covers
   interrupted in-flight events.
-- **S11 — Poison events are removed only where it is safe without losing
-  recoverable data.** Disposition depends on whether the event is recoverable
-  *without editing the event itself*:
-  - **Content-poison (P3–P7)** — the backend always rejects the content as-is;
-    only editing the event could fix it, and no future build helps. Dropped +
-    logged now (status quo for SQS oversized/sender-fault), dead-lettered once a
-    DLQ exists.
-  - **Routing-poison (P1, P2)** — unknown/ambiguous target, or missing
-    destination. Recoverable *without* editing the event: by config (P2: add a
-    default) or a future build (P1: e.g. a new `kafka` backend). Dropping these
-    before a DLQ exists would lose recoverable events (e.g. producing `kafka`
-    events before upgrading Outboxer), so they are **kept + logged (bounded)**,
-    not dropped, until a DLQ can hold them. They clog collection in the meantime
-    — the accepted interim cost; surface via metrics. **The DLQ is the
-    prerequisite for removing routing-poison.**
-  - All other failures are retried (cadence per S12).
+- **S11 — Poison events are removed.** Poison means the selected backend can
+  never accept the event content as-is (P3–P7). These events are dropped + logged
+  now (status quo for SQS oversized/sender-fault), and dead-lettered once a DLQ
+  exists. Routing failures are not poison: an unknown target might become
+  supported after an Outboxer upgrade, an ambiguous target might become routable
+  after configuration changes, and a missing destination can be fixed by adding a
+  default. Routing failures are kept + logged (bounded), even though they can clog
+  collection until fixed. All other failures are retried (cadence per S12).
 - **S12 — Back off on database errors only.** Busy-looping the DB is desired (it
   keeps latency low and is not harmful), so it is the default. Only a
   *database/transaction* error (BeginTx/SELECT/DELETE/COMMIT failing — connection
@@ -310,35 +316,33 @@ Do not classify these locally as poison:
 
 ## Failure taxonomy
 
-**Poison = can never be sent without changing or deleting the event itself;
+**Poison = the selected backend can never accept the event content as-is;
 retrying produces the identical permanent failure.** Poison must be removed
-(S11). Everything else is retried (S12). As a rule, an event is *retryable* if an
-operator action can make the **unchanged** event reach its **intended**
-destination on the **current** build — creating a destination, granting IAM,
-enabling a backend, fixing credentials, raising quota. It is *poison* if the only
-way to send it is to change the event (or its producer) or to ship new code.
-By this rule P1 is poison: an unknown target like `kafka` has no destination any
-current build can serve (only new code, not config, would add one), and an
-ambiguous empty target has no determinable destination without editing the event.
+(S11). Everything else is retried or kept for a future operator/code change
+(S12). As a rule, an event is *not poison* if the unchanged event could become
+sendable through configuration, infrastructure, credentials, quota, or an
+Outboxer upgrade. Unknown targets are therefore not poison: a future Outboxer
+version might support that target without requiring the event to be edited.
 
 Poison is **removed, not necessarily lost.** Removal means "out of the main flow"
-— dropped + logged today, dead-lettered once a DLQ exists. Recovery (fixing the
-producer, replaying after a future backend is added, manual repair) happens
-out-of-band from the DLQ; it never happens by leaving poison to clog the table.
-Until the DLQ exists, poison removal is a drop, so a misrouted-by-misconfig event
-(P1) is lost — an accepted trade to keep collection unblocked.
+— dropped + logged today, dead-lettered once a DLQ exists. Recovery after poison
+removal (manual repair, producer fix, replay) happens out-of-band from logs or
+the DLQ.
 
-### Poison (cannot be sent as-is; disposition per S11)
+### Routing failures (keep)
 
-Routing (never reaches a backend):
+Routing failures never reach a backend. They are kept + logged (bounded), because
+they may become sendable without editing the event itself:
 
-- **P1 — target cannot be routed in principle**: an unknown/unsupported target
-  value (not one of the known backend names), or an empty target with *both*
-  backends enabled (ambiguous). A target naming a known but disabled backend is
-  **not** poison — see R7.
-- **P2 — destination resolves to empty**: null destination and no default, after
-  the event has been routed to an enabled backend. Disabled-backend routing (R7)
-  takes precedence over destination validation.
+- **R10 — target unsupported by the current build**: an unknown target value
+  (e.g. `kafka`) might become routable after an Outboxer upgrade.
+- **R11 — target ambiguous in the current configuration**: empty target with
+  multiple enabled backends. A configuration change or later routing feature may
+  make the unchanged event routable.
+- **R12 — destination resolves to empty**: null destination and no default, after
+  the event has been routed to an enabled backend. Adding a default destination
+  can make the unchanged event sendable. Disabled-backend routing (R7) takes
+  precedence over destination validation.
 
 Routing classification:
 
@@ -349,8 +353,10 @@ Routing classification:
 | `pubsub` | Pub/Sub disabled | R7 retryable |
 | `sqs` | SQS disabled | R7 retryable |
 | empty | exactly one backend enabled | route to the enabled backend |
-| empty | both backends enabled | P1 poison (ambiguous) |
-| unknown value, e.g. `kafka` | any | P1 poison (unsupported target) |
+| empty | both backends enabled | R11 retryable (ambiguous target) |
+| unknown value, e.g. `kafka` | any | R10 retryable (unsupported by current build) |
+
+### Poison (remove)
 
 Backend permanent-reject (deterministic client error; identical retry fails
 identically). For SQS this can be a batch `SenderFault=true` or equivalent
@@ -387,6 +393,12 @@ without deleting/changing the event:
   else operator fixes credentials.
 - **R7 — target names a known but disabled backend** (`pubsub` while Pub/Sub is
   disabled, or `sqs` while SQS is disabled) → operator enables that backend.
+- **R10 — target unsupported by current build** → upgrade Outboxer to a build
+  that supports the target.
+- **R11 — target ambiguous in current configuration** → operator changes routing
+  configuration or upgrades to a routing feature that can resolve it.
+- **R12 — destination missing and no default configured** → operator configures a
+  default destination.
 
 Interruption — not really failures:
 
@@ -396,30 +408,33 @@ Interruption — not really failures:
 
 ### Residual risk
 
-Poison removal fixes the *never-drainable* clog. Operator-action failures
-(R4–R7) are **not** poison (they could succeed later), so we cannot drop them
-without risking loss — but with the global `ORDER BY id` collection, a
-badly-misconfigured destination's events accumulate at the front and can crowd
-the window until the operator fixes it. A large old backlog for one queue can
-also fill consecutive selected batches and delay newer events from other queues.
-These are accepted limitations of the committed collection model; surface them
-via metrics/alerting ("events failing for destination X for N minutes", "oldest
-event age by destination") rather than per-queue isolation.
+Poison removal fixes the *never-drainable content* clog. Operator/code-action
+failures (R4–R7, R10–R12) are **not** poison (they could succeed later), so we
+cannot drop them without risking loss — but with the global `ORDER BY id`
+collection, a badly-misconfigured destination or unsupported target can
+accumulate at the front and crowd the window until the operator fixes it or
+Outboxer is upgraded. A large old backlog for one queue can also fill consecutive
+selected batches and delay newer events from other queues. These are accepted
+limitations of the committed collection model; surface them via metrics/alerting
+("events failing for destination X for N minutes", "oldest event age by
+destination") rather than per-queue isolation.
 
 The SDK clients pace *throttling/transient* sender errors with their own
 backoff, but a *persistent fast-fail* (auth denied, queue not found — R4/R5/R7)
-returns immediately, so the busy loop re-hits that sender's API rapidly. The log
-flood from this is bounded by S13; the API re-hits are left to the managed
-service's own throttling. If this proves harmful in practice, add a small
-no-progress pace specifically for fast-failing sends — not done now, since it
-trades away the low-latency busy loop we want.
+returns immediately, so the busy loop re-hits that sender's API rapidly. Routing
+failures (R10–R12) do not hit a provider API, but can still fast-loop through
+collection and bounded logging. The log flood from this is bounded by S13; API
+re-hits are left to the managed service's own throttling. If this proves harmful
+in practice, add a small no-progress pace specifically for fast-failing sends or
+routing failures — not done now, since it trades away the low-latency busy loop
+we want.
 
 ### Changes vs. current behavior
 
 - SQS oversized + sender-fault → already dropped. ✓
-- Unroutable-in-principle (P1, P2) is currently *left* and accumulates → stays
-  kept in Stage 1 (unchanged); removal is deferred to the DLQ, because dropping it
-  pre-DLQ would lose events recoverable by config or a future build.
+- Routing failures (R10–R12) are currently *left* and accumulate → stay kept in
+  Stage 1 (unchanged), because dropping them would lose events recoverable by
+  config or a future Outboxer build.
 - Pub/Sub oversized/known-invalid (content-poison) is currently retried forever →
   becomes dropped poison; ambiguous backend rejects are isolated before any event
   is removed.
@@ -432,9 +447,9 @@ trades away the low-latency busy loop we want.
   and clearly correct. Satisfies S0–S5, S7–S13.
 - **Stage 2 — eager deletion.** Incremental commits: delete + commit each
   confirmed sub-group as it lands (S6), without changing the sender interface.
-- **Stage 3 — dead-letter queue.** Move poison (especially routing-poison P1/P2,
-  which Stage 1 keeps) out of the main table into a DLQ — unclogging collection
-  without losing recoverable events, and completing S11.
+- **Stage 3 — dead-letter queue.** Move poison (P3–P7) into a DLQ instead of
+  dropping it, completing S11 without changing retryable routing-failure
+  behavior.
 
 ## Stage 1 design
 
@@ -459,8 +474,8 @@ type sender interface {
 ```
 
 The `done` set is the result reporting [S8]; "delete only `done`" is what makes
-[S0] hold. Poison events are included in `done` (removed); retryable failures are
-omitted (kept). [S11]
+[S0] hold. Confirmed-sent events and content-poison events (P3–P7) are included
+in `done`; retryable failures and routing failures are omitted (kept). [S11]
 
 Sender errors are classified outside the `done` set:
 
@@ -477,16 +492,15 @@ Sender errors are classified outside the `done` set:
 1. `BEGIN` on the one connection — [collection: stable connections]
 2. `SELECT … ORDER BY id LIMIT N FOR UPDATE` — [collection: age-order progress,
    ordering]
-3. Route to `pubsub` / `sqs` / retryable-disabled-backend / routing-poison using
-   the routing classification table. Routing-poison (P1, P2) is **kept** (logged,
-   bounded) until a DLQ exists, not removed; disabled-backend (R7) → kept — [S11,
-   S0]
+3. Route to `pubsub` / `sqs` / retryable routing failure using the routing
+   classification table. Routing failures (R7, R10–R12) are **kept** and logged
+   through the bounded failure logger — [S11, S0, S13]
 4. `pubsubSender.Send` and `sqsSender.Send` **concurrently** under the shutdown
    context. Senders apply `PUBLISH_TIMEOUT` per provider publish operation and
    configure any internal provider timeout needed to make that bound real. — [S3,
    S9, S10]
 5. `done = pubsubDone ∪ sqsDone` (each sender's `done` already includes its own
-   content-poison P3–P7; routing-poison P1/P2 is not in `done` until a DLQ exists)
+   content-poison P3–P7; routing failures are not in `done`)
 6. `DELETE … WHERE id IN (done)` — [S0]
 7. `COMMIT` — [Stage 1 single commit; coarse half of S6]
 8. On a database/transaction error, back off (`ERROR_COOLDOWN`). Sender failures
@@ -571,7 +585,7 @@ Sender errors are classified outside the `done` set:
 | S8 | the `done` set |
 | S9 | per-operation provider publish timeout plus longer result wait where async clients need it |
 | S10 | shutdown ctx through Send; `Close` |
-| S11 | content-poison (P3–P7) → `done`/dropped; routing-poison (P1/P2) kept until DLQ; retryable kept |
+| S11 | content-poison (P3–P7) → `done`/dropped until DLQ; routing failures and retryable failures kept |
 | S12 | cooldown only on DB error; senders paced by their clients |
 | S13 | per-signature failure-log rate limiter |
 
@@ -587,11 +601,12 @@ Sender errors are classified outside the `done` set:
   results.
 
 `PUBLISH_TIMEOUT_MS` keeps its current default of `30000`. It must be positive
-**when Pub/Sub is enabled** (ordered Pub/Sub needs a bounded provider timeout
-before the result-wait grace can safely expire); for SQS-only deployments a
-non-positive value is allowed and disables the explicit bound, leaving the SDK's
-own retry/timeout in effect. See Design choices for why this stays one knob
-rather than splitting into `PUBSUB_PUBLISH_TIMEOUT_MS` / `SQS_PUBLISH_TIMEOUT_MS`.
+whenever any backend is enabled. For Pub/Sub, ordered sends need a bounded
+provider timeout before the result-wait grace can safely expire. For SQS, a
+non-positive value would remove Outboxer's explicit send bound and leave the
+watchdog as the only guaranteed escape from a stuck send. See Design choices for
+why this stays one knob rather than splitting into `PUBSUB_PUBLISH_TIMEOUT_MS` /
+`SQS_PUBLISH_TIMEOUT_MS`.
 
 ## Design choices
 
@@ -617,11 +632,11 @@ flushes every key's buffered messages, not just this key's).
 
 ### One `PUBLISH_TIMEOUT_MS` vs. per-backend timeouts
 
-- **Chosen: one knob**, with positivity validated only when Pub/Sub is enabled.
-  The "must be positive" constraint exists solely for ordered Pub/Sub; making the
-  *validation* conditional removes the wart for SQS-only setups without a second
-  knob, and keeps the watchdog worst-case formula single-termed.
+- **Chosen: one knob**, positive for every enabled backend. Pub/Sub needs the
+  bound for ordered-result recovery; SQS needs it so publish operations are
+  bounded by Outboxer rather than only by SDK/transport defaults or watchdog
+  process exit.
 - **Rejected (for now): `PUBSUB_PUBLISH_TIMEOUT_MS` / `SQS_PUBLISH_TIMEOUT_MS`.**
-  Cleaner per-backend semantics and independent tuning, but two knobs and a
-  two-termed watchdog bound, for a difference most single-backend deployments
-  never need. Easy to add later if real latency profiles diverge.
+  Cleaner per-backend semantics and independent tuning, but two knobs and a more
+  complex watchdog bound, for a difference most single-backend deployments never
+  need. Easy to add later if real latency profiles diverge.

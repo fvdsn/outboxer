@@ -172,7 +172,7 @@ outboxer --help
 | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors. |
 | `POLL_INTERVAL_MS` | `0` | Sleep after an empty batch. The default keeps polling immediately. |
 | `WATCHDOG_INTERVAL_MS` | `600000` | Watchdog interval. Must be at least 10x `POLL_INTERVAL_MS` when polling is enabled. |
-| `PUBLISH_TIMEOUT_MS` | `30000` | Timeout for a single publish call. `0` disables it. |
+| `PUBLISH_TIMEOUT_MS` | `30000` | Timeout for a single publish call. Must be positive. |
 | `HEALTH_PORT` | `PORT` or `0` | HTTP health server port. `0` disables the server. |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, or `error`. |
 | `LOG_FORMAT` | `text` | Log format: `text` or `json`. |
