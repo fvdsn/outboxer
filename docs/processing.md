@@ -75,20 +75,25 @@ false skip; the two-key advisory form can reduce this if needed.)
 
 ## Proposed shape
 
-**Dispatcher**
-1. Enumerate distinct queues that have pending events
-   (`SELECT DISTINCT destination …`, refined per backend/target).
-2. Hand each queue not already in progress to a bounded worker pool.
+There is no central dispatcher. A fixed pool of **`MAX_CONCURRENT_QUEUES`
+self-dispatching workers** each find and drain a queue:
 
-**Worker (per queue)**
-1. `pg_try_advisory_xact_lock` the queue; if not acquired, release the queue back
-   and move on.
-2. `SELECT … WHERE destination = $1 ORDER BY id LIMIT X FOR UPDATE` — the queue's
+**Worker loop**
+1. Enumerate candidate queues with pending events
+   (`SELECT DISTINCT destination …`, refined per backend/target).
+2. Walk candidates and `pg_try_advisory_xact_lock` each; take the first one
+   acquired (skipping queues already owned by another worker or instance).
+3. `SELECT … WHERE destination = $1 ORDER BY id LIMIT X FOR UPDATE` — the queue's
    next batch, in order.
-3. Publish via the backend (see below).
-4. Delete the events that were published (or are poison/dropped).
-5. Commit (releases the advisory lock); repeat for the same queue until it drains
-   or yields, then return to the pool.
+4. Publish via the backend (see below).
+5. Delete the events that were published (or are poison/dropped).
+6. Commit (releases the advisory lock); repeat for the same queue until it
+   drains, then go back to step 1.
+
+Self-dispatch (rather than a central dispatcher) means a worker uses exactly one
+connection for its own enumeration + claim + publish + delete, so there is no
+separate dispatcher connection to account for. The enumeration query is cheap
+because a healthy outbox table is near-empty.
 
 **Backends** expose a batch API so the orchestrator does not care how publishing
 works:
@@ -105,13 +110,29 @@ type publisher interface {
   true`), fire all `Publish()` then `Get()` all. The client batches/parallelizes;
   ordering keys are native (empty key stays fully concurrent). On an ordered-key
   failure, call `ResumePublish(key)` so the key is not paused across batches.
-- **SQS backend** — chunk into 10s and `SendMessageBatch`. FIFO queues send
-  sequentially per message group; standard queues may add bounded intra-queue
-  concurrency later if a single queue is hot (the AWS SDK does not parallelize on
-  its own).
+- **SQS backend** — chunk into 10s and `SendMessageBatch`. The AWS SDK does no
+  batching or concurrency of its own, so we do it: a queue worker sends its
+  batches concurrently, partitioned by message group (standard queues = every
+  message is its own group → full concurrency; FIFO = same-group batches stay
+  sequential, different groups parallel). All SQS sends — across every queue
+  worker — share **one global semaphore** (`SQS_SEND_CONCURRENCY`), so the total
+  in-flight `SendMessageBatch` count is stable and independent of how many queues
+  are active. A single hot queue can use the whole budget; many queues share it.
 
 `parallelizeEvents`, `BATCH_WORKERS`, `BATCH_MAX_SEQUENTIAL`, and `strHash` are
 removed.
+
+### Why SQS has a concurrency knob and Pub/Sub does not
+
+We own SQS sending and the SDK gives no built-in bound, so without a knob it is
+either sequential or unbounded — hence a single global `SQS_SEND_CONCURRENCY`.
+Pub/Sub is the opposite: the client manages its own concurrency
+(`NumGoroutines`) and applies **flow control** (max outstanding messages/bytes)
+for backpressure. A Pub/Sub equivalent would be per-topic (`NumGoroutines`),
+which would reintroduce the `topics × N` multiplication we explicitly avoid for
+SQS, and a stable global bound would mean gating in front of the client and
+fighting its batching. So Pub/Sub is left to its client; if tuning is ever
+needed, the right lever is flow-control settings, not a goroutine count.
 
 ## Ordering guarantees
 
@@ -133,6 +154,33 @@ removed.
   column (which would change the table contract). A lease-based "publish fully
   outside the transaction" mode remains a possible future opt-in.
 
+## Connection model
+
+Connections are a function of concurrency only. Each worker uses exactly one
+connection for its whole pass (enumerate → advisory-lock → claim → publish →
+delete → commit), held across the publish because the advisory lock and the
+`FOR UPDATE` rows must stay locked until commit. Nothing else touches the
+database (the watchdog and health endpoint do not; `checkDBWorks` runs once at
+startup).
+
+So:
+
+```
+connections in use = MAX_CONCURRENT_QUEUES
+```
+
+Because the count is fully derived, **`PG_MAX_CONNECTIONS` is removed**: the pool
+size is set internally to `MAX_CONCURRENT_QUEUES` (with `MaxIdleConns` tracking it
+so connections stay warm). The operator provisions `MAX_CONCURRENT_QUEUES`
+sessions on the server and that is the whole story. Setting
+`MAX_CONCURRENT_QUEUES=1` reproduces today's single-connection, one-queue-at-a-time
+footprint (still correctly ordered and isolated, just without cross-queue
+parallelism).
+
+The only thing that would decouple connections from in-flight queues is the
+lease model (claim in a short tx, release the connection, publish without one,
+delete in another tx) — deferred, since it needs a schema column.
+
 ## Schema / indexing
 
 - No new required columns.
@@ -143,21 +191,33 @@ removed.
 
 ## Configuration changes
 
-- **Remove**: `BATCH_WORKERS`, `BATCH_MAX_SEQUENTIAL`.
+- **Remove**: `BATCH_WORKERS`, `BATCH_MAX_SEQUENTIAL`, `PG_MAX_CONNECTIONS`.
 - **Keep**: `BATCH_SIZE` (rows claimed per queue per pass).
-- **Add (maybe)**: a cap on concurrently processed queues
-  (`MAX_CONCURRENT_QUEUES`, bounded by `PG_MAX_CONNECTIONS`); a per-SQS-queue
-  intra-queue concurrency knob only if needed.
+- **Add**:
+  - `MAX_CONCURRENT_QUEUES` — number of self-dispatching workers; also the
+    connection-pool size (set internally).
+  - `SQS_SEND_CONCURRENCY` — global cap on in-flight `SendMessageBatch` calls
+    across all queues.
+- **Not added**: a Pub/Sub send-concurrency knob (left to the client's flow
+  control — see above).
+
+## Decisions (resolved)
+
+- **Worker model**: a fixed pool of `MAX_CONCURRENT_QUEUES` self-dispatching
+  workers, no central dispatcher.
+- **Connections**: derived (`= MAX_CONCURRENT_QUEUES`); `PG_MAX_CONNECTIONS`
+  removed.
+- **Queue exclusivity**: `try`-advisory-lock and skip (no blocking `FOR UPDATE`
+  contention between instances).
+- **SQS concurrency**: one global semaphore, group-partitioned within a worker;
+  no per-queue knob.
+- **Pub/Sub concurrency**: left to the client; no knob.
 
 ## Open questions
 
-1. **Worker-pool cap** — a fixed `MAX_CONCURRENT_QUEUES`, or "one goroutine per
-   queue, bounded only by `PG_MAX_CONNECTIONS`"?
-2. **Advisory lock vs. blocking** — `try`-and-skip (preferred) vs. plain blocking
-   `FOR UPDATE` that serializes instances on a queue.
-3. **Queue enumeration** — `SELECT DISTINCT destination` each cycle, or a cheaper
-   rolling/cached view of active queues?
-4. **Intra-queue SQS concurrency** — start strictly sequential per queue, and add
-   bounded concurrency for standard queues only if a single queue is hot?
-5. **Advisory-lock hashing** — single-key `hash(backend+destination)` (simplest,
-   rare false skips) vs. two-key form to avoid collisions.
+1. **Queue enumeration** — `SELECT DISTINCT destination` each cycle, or a cheaper
+   rolling/cached view of active queues under heavy backlog?
+2. **Advisory-lock hashing** — single-key `hash(backend+destination)` (simplest,
+   rare harmless false skips) vs. two-key form to avoid collisions.
+3. **Worker idle behavior** — when no queue can be locked (all owned or empty),
+   how long/how to back off before re-enumerating (ties into `POLL_INTERVAL_MS`).
