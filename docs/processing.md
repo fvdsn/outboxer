@@ -63,10 +63,22 @@ The current collector already satisfies these, so we keep it:
   see taxonomy) is removed from the main flow — dropped + logged now,
   dead-lettered once a DLQ exists — so it cannot clog collection or block an
   ordered queue. All other failures are retried (cadence per S12).
-- **S12 — Back off, don't busy-loop.** After a batch that made no progress
-  (failure or empty table), wait before retrying, so a failing backend isn't
-  hammered and an idle table doesn't spin (`ERROR_COOLDOWN_MS`,
-  `POLL_INTERVAL_MS`).
+- **S12 — Back off on database errors only.** Busy-looping the DB is desired (it
+  keeps latency low and is not harmful), so it is the default. Only a
+  *database/transaction* error (BeginTx/SELECT/DELETE/COMMIT failing — connection
+  loss, timeout, too-many-connections) triggers a cooldown (`ERROR_COOLDOWN_MS`),
+  to avoid hammering an overloaded database. Send failures and empty batches do
+  **not** trigger backoff:
+  - Sender overload is handled by the SDK clients' own retry/backoff (AWS:
+    standard retryer, 3 attempts, exponential backoff + jitter; Pub/Sub: gax
+    retry + flow control). A throttled send just makes `Send` take longer
+    (bounded by `PUBLISH_TIMEOUT_MS`), which paces the loop naturally.
+  - An empty table keeps polling immediately unless `POLL_INTERVAL_MS` is set.
+- **S13 — Bound failure-log volume.** A retryable event stuck in the retry loop
+  must not emit a log per attempt. Failure logs are rate-limited / aggregated per
+  failure signature (e.g. first occurrence immediately, then a periodic summary
+  with a suppressed count), so a single recurring failure produces a bounded log
+  rate regardless of how fast the loop runs.
 
 ## Failure taxonomy
 
@@ -126,6 +138,14 @@ the window until the operator fixes it. This is an accepted limitation of the
 committed collection model; surface it via metrics/alerting ("events failing for
 destination X for N minutes") rather than per-queue isolation.
 
+The SDK clients pace *throttling/transient* sender errors with their own
+backoff, but a *persistent fast-fail* (auth denied, queue not found — R4/R5/R7)
+returns immediately, so the busy loop re-hits that sender's API rapidly. The log
+flood from this is bounded by S13; the API re-hits are left to the managed
+service's own throttling. If this proves harmful in practice, add a small
+no-progress pace specifically for fast-failing sends — not done now, since it
+trades away the low-latency busy loop we want.
+
 ### Changes vs. current behavior
 
 - SQS oversized + sender-fault → already dropped. ✓
@@ -138,7 +158,7 @@ destination X for N minutes") rather than per-queue isolation.
 
 - **Stage 1 — correctness.** A single commit at the end of each batch.
   Re-delivery on interrupt is coarse (a whole batch), but the model is simplest
-  and clearly correct. Satisfies S0–S5, S7–S12.
+  and clearly correct. Satisfies S0–S5, S7–S13.
 - **Stage 2 — eager deletion.** Incremental commits: delete + commit each
   confirmed sub-group as it lands (S6), without changing the sender interface.
 
@@ -174,7 +194,10 @@ omitted (kept). [S11]
 5. `done = pubsubDone ∪ sqsDone ∪ routePoison`
 6. `DELETE … WHERE id IN (done)` — [S0]
 7. `COMMIT` — [Stage 1 single commit; coarse half of S6]
-8. If err, or events were selected but `done` is empty, back off — [S12]
+8. On a database/transaction error, back off (`ERROR_COOLDOWN`); otherwise loop
+   immediately. Send failures and empty batches do not back off (the busy loop is
+   desired; senders are paced by their clients). — [S12]
+9. Failure logging goes through a per-signature rate limiter — [S13]
 
 ### Pub/Sub sender
 
@@ -211,7 +234,8 @@ omitted (kept). [S11]
 | S9 | `PUBLISH_TIMEOUT` per Send |
 | S10 | shutdown ctx through Send; `Close` |
 | S11 | poison (P1–P7) → `done`/removed; retryable kept |
-| S12 | step 8 backoff |
+| S12 | cooldown only on DB error; senders paced by their clients |
+| S13 | per-signature failure-log rate limiter |
 
 ### Config implied
 
