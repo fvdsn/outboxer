@@ -85,10 +85,10 @@ The current collector already satisfies these, so we keep it:
   - `sqsStandardBound = ceil(ceil(BATCH_SIZE / 10) / SQS_SEND_CONCURRENCY) ×
     PUBLISH_TIMEOUT_MS` (standard queue batch requests in semaphore-limited
     waves).
-  - `sqsFifoBound = ceil(BATCH_SIZE / SQS_SEND_CONCURRENCY) ×
-    PUBLISH_TIMEOUT_MS` (conservative FIFO case where every selected SQS event is
-    in a different message group; a single hot group is separately capped by
-    `ORDERED_GROUP_BATCH_CAP × PUBLISH_TIMEOUT_MS`).
+  - `sqsFifoBound = max(ceil(BATCH_SIZE / SQS_SEND_CONCURRENCY),
+    ORDERED_GROUP_BATCH_CAP) × PUBLISH_TIMEOUT_MS` (covers both many independent
+    FIFO groups limited by the global semaphore and one hot FIFO group sending
+    its capped run sequentially).
   - `batchSendBound = max(enabled(pubsubBound), enabled(sqsStandardBound),
     enabled(sqsFifoBound))`.
   Because the watchdog counter only advances once per batch, startup must
