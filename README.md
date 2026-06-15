@@ -242,6 +242,15 @@ that is mid-flight when shutdown begins may be interrupted; because delivery is
 at-least-once, any events that were published but not yet deleted are
 re-published on the next run.
 
+### Run under a supervisor
+
+Outboxer must run under a process supervisor that restarts it on exit
+(Kubernetes, ECS, systemd, etc.). It deliberately exits the process — rather than
+trying to recover in place — on unrecoverable conditions: a detected watchdog
+deadlock, an unrecoverable queue-client state, or an unknown in-flight ordered
+publish. Exiting and being restarted with fresh clients is the safe recovery
+path; without a supervisor the process would simply stay down.
+
 ## Layout
 
 ```text

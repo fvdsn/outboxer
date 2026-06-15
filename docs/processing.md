@@ -73,8 +73,15 @@ The current collector already satisfies these, so we keep it:
   with internal async work, the timeout must bound that internal publish work,
   not only the caller waiting for a result. A caller-side wait timeout is only
   allowed after the provider's own publish timeout should already have resolved
-  the send. `PUBLISH_TIMEOUT_MS` must be positive in this design; disabling it
-  would make ordered Pub/Sub outcomes unbounded.
+  the send. `PUBLISH_TIMEOUT_MS` must be positive when Pub/Sub is enabled;
+  disabling it would make ordered Pub/Sub outcomes unbounded (for SQS-only
+  deployments `0` is allowed). The worst-case batch send time is bounded by
+  `ORDERED_GROUP_BATCH_CAP × (PUBLISH_TIMEOUT_MS + PUBLISH_RESULT_GRACE_MS)` (one
+  slow ordered group sending its capped run sequentially). Because the watchdog
+  counter only advances once per batch, startup must validate that
+  `WATCHDOG_INTERVAL_MS` comfortably exceeds this worst case, or a legitimately
+  slow batch trips a false deadlock mid-batch — the same class of rule as
+  `WATCHDOG_INTERVAL_MS` vs `POLL_INTERVAL_MS`.
 - **S10 — Interruptible** — sending respects context cancellation; S0 covers
   interrupted in-flight events.
 - **S11 — Poison events are removed.** An event that can never be sent (poison,
@@ -278,8 +285,13 @@ Do not classify these locally as poison:
 - Raw event IDs that are too long or contain characters invalid for
   `MessageDeduplicationId` or batch entry `Id`. Those are Outboxer-generated
   transport identifiers, not event semantics: derive stable provider-safe values
-  from the event ID, using the raw ID only when already valid and a stable hash
-  otherwise.
+  from the event ID, using the raw ID only when already valid and a
+  **collision-resistant** digest otherwise (e.g. a full SHA-256 hex, 64 chars ≤
+  128). Collision-resistance is mandatory for `MessageDeduplicationId`: a
+  collision means SQS treats two distinct events as duplicates within its
+  5-minute dedup window and silently drops one — a S0 violation. (For batch entry
+  `Id` a collision is only a within-request error, not loss, but use the same
+  derivation.)
 - FIFO events with no ordering key. They have no cross-event ordering contract,
   but SQS requires a `MessageGroupId`, so derive a stable provider-safe synthetic
   group from the event ID.
@@ -288,10 +300,21 @@ Do not classify these locally as poison:
 
 **Poison = can never be sent without changing or deleting the event itself;
 retrying produces the identical permanent failure.** Poison must be removed
-(S11). Everything else is retried (S12). As a rule, if an event failure can be
-fixed by operator action other than deleting/changing that event — creating a
-destination, granting IAM, enabling a backend, fixing credentials, raising quota
-— it is retryable, not poison.
+(S11). Everything else is retried (S12). As a rule, an event is *retryable* if an
+operator action can make the **unchanged** event reach its **intended**
+destination on the **current** build — creating a destination, granting IAM,
+enabling a backend, fixing credentials, raising quota. It is *poison* if the only
+way to send it is to change the event (or its producer) or to ship new code.
+By this rule P1 is poison: an unknown target like `kafka` has no destination any
+current build can serve (only new code, not config, would add one), and an
+ambiguous empty target has no determinable destination without editing the event.
+
+Poison is **removed, not necessarily lost.** Removal means "out of the main flow"
+— dropped + logged today, dead-lettered once a DLQ exists. Recovery (fixing the
+producer, replaying after a future backend is added, manual repair) happens
+out-of-band from the DLQ; it never happens by leaving poison to clog the table.
+Until the DLQ exists, poison removal is a drop, so a misrouted-by-misconfig event
+(P1) is lost — an accepted trade to keep collection unblocked.
 
 ### Poison (remove)
 
@@ -500,8 +523,10 @@ Sender errors are classified outside the `done` set:
   **single-message** requests sequentially within each group. Different groups
   may run concurrently under the global semaphore. Do not batch multiple messages
   from the same FIFO group, because partial `SendMessageBatch` success can create
-  accepted holes in the outbox order. — [S2, S3, S4, provider: SQS partial
-  acceptance]
+  accepted holes in the outbox order. **Stop a group at its first non-`done`
+  event** (a failure): later events in that group are not sent this batch,
+  mirroring the Pub/Sub key rule, so a retry can't enqueue a later event ahead of
+  the failed one. — [S2, S3, S4, provider: SQS partial acceptance]
 - FIFO events with no ordering key still need an SQS `MessageGroupId`. They do
   not have an ordering contract with each other, so assign a stable synthetic
   group derived from the event id (not a random value). FIFO
@@ -542,6 +567,42 @@ Sender errors are classified outside the `done` set:
   `5000`), the extra wait after the provider publish timeout for async client
   results.
 
-`PUBLISH_TIMEOUT_MS` keeps its current default of `30000`, but `0` should no
-longer disable it. A non-positive value is invalid because ordered Pub/Sub sends
-need a bounded provider timeout before the result-wait grace can safely expire.
+`PUBLISH_TIMEOUT_MS` keeps its current default of `30000`. It must be positive
+**when Pub/Sub is enabled** (ordered Pub/Sub needs a bounded provider timeout
+before the result-wait grace can safely expire); for SQS-only deployments a
+non-positive value is allowed and disables the explicit bound, leaving the SDK's
+own retry/timeout in effect. See Design choices for why this stays one knob
+rather than splitting into `PUBSUB_PUBLISH_TIMEOUT_MS` / `SQS_PUBLISH_TIMEOUT_MS`.
+
+## Design choices
+
+Decisions where a reasonable alternative was considered; both sides recorded so
+the reasoning isn't lost.
+
+### Per-key flush vs. one flush per batch round (Pub/Sub ordered keys)
+
+Ordered keys are published one-in-flight-per-key (publish → `Flush` → `Get` →
+next). Each key's goroutine calls `Flush`, which is **publisher-global** (it
+flushes every key's buffered messages, not just this key's).
+
+- **Chosen: per-key flush.** Each ordered key advances independently; a slow key
+  only delays itself. The cost is redundant global `Flush` calls, but `Flush` on
+  an already-drained scheduler is near a no-op (other keys are blocked on their
+  own `Get` and have nothing buffered), so the waste is small.
+- **Rejected: synchronized rounds (one flush per round).** Process round *r* by
+  publishing the *r*-th event of every active key, flush once, then `Get` them
+  all. Fewer flushes, but it **couples key latencies**: a single slow key's
+  `Get` stalls the whole round, so every other key waits at the pace of the
+  slowest — which undercuts the spirit of S4 (no one ordered group dominates).
+  The marginal flush savings aren't worth trading away key isolation.
+
+### One `PUBLISH_TIMEOUT_MS` vs. per-backend timeouts
+
+- **Chosen: one knob**, with positivity validated only when Pub/Sub is enabled.
+  The "must be positive" constraint exists solely for ordered Pub/Sub; making the
+  *validation* conditional removes the wart for SQS-only setups without a second
+  knob, and keeps the watchdog worst-case formula single-termed.
+- **Rejected (for now): `PUBSUB_PUBLISH_TIMEOUT_MS` / `SQS_PUBLISH_TIMEOUT_MS`.**
+  Cleaner per-backend semantics and independent tuning, but two knobs and a
+  two-termed watchdog bound, for a difference most single-backend deployments
+  never need. Easy to add later if real latency profiles diverge.
