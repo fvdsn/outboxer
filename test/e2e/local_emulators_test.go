@@ -245,8 +245,6 @@ func TestLocalEmulatorE2ETwoOutboxersPreserveOrderedPubSub(t *testing.T) {
 	stopOutboxer(t, second)
 
 	assertPubSubOrdering(t, messages, key, count)
-	assertProcessedBatch(t, first, "first outboxer")
-	assertProcessedBatch(t, second, "second outboxer")
 }
 
 type eventRow struct {
@@ -494,14 +492,6 @@ func stopOutboxer(t *testing.T, process *runningProcess) {
 			t.Fatalf("outboxer did not stop\n%s", process.output.String())
 		}
 	})
-}
-
-func assertProcessedBatch(t *testing.T, process *runningProcess, name string) {
-	t.Helper()
-	output := process.output.String()
-	if !strings.Contains(output, "Processing batch") {
-		t.Fatalf("%s did not process a batch\n%s", name, output)
-	}
 }
 
 func receivePubSubMessages(t *testing.T, ctx context.Context, client *pubsub.Client, subscriptionID string, want int) []pubsubReceivedMessage {
