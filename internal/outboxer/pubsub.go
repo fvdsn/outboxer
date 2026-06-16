@@ -20,6 +20,7 @@ import (
 
 const (
 	pubsubMaxMessageDataBytes       = 10_000_000
+	pubsubMaxPublishRequestMessages = 1000
 	pubsubMaxAttributes             = 100
 	pubsubMaxAttributeKeyBytes      = 256
 	pubsubMaxAttributeValueBytes    = 1024

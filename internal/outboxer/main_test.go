@@ -50,6 +50,7 @@ type fakePubSubResult struct {
 	messageID string
 	err       error
 	block     bool
+	delay     time.Duration
 }
 
 func (p *fakePubSubPublisher) Publish(_ context.Context, message pubsubMessage) pubsubPublishResult {
@@ -92,6 +93,15 @@ func (r fakePubSubResult) Get(ctx context.Context) (string, error) {
 	if r.block {
 		<-ctx.Done()
 		return "", ctx.Err()
+	}
+	if r.delay > 0 {
+		timer := time.NewTimer(r.delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-timer.C:
+		}
 	}
 	if r.err != nil {
 		return "", r.err
@@ -1757,6 +1767,28 @@ func TestSendPubsubEventsUnorderedUnknownResultIsKept(t *testing.T) {
 	}
 }
 
+func TestSendPubsubEventsWaitsThroughPublishResultGrace(t *testing.T) {
+	cfg := testConfig()
+	cfg.PublishTimeout = 20 * time.Millisecond
+	cfg.PublishResultGrace = 80 * time.Millisecond
+	pubsub := &fakePubSubPublisher{results: []fakePubSubResult{{delay: 50 * time.Millisecond}}}
+	a := &app{cfg: cfg, pubsub: pubsub}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one"}},
+	}
+
+	if err := a.sendPubsubEvents(context.Background(), nil, events, func(id any) {
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendPubsubEvents returned error: %v", err)
+	}
+	if !reflect.DeepEqual(deleted, []any{"event-1"}) {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+}
+
 func TestSendPubsubEventsCanceledResultIsKept(t *testing.T) {
 	cfg := testConfig()
 	cfg.PublishTimeout = time.Hour
@@ -1778,6 +1810,44 @@ func TestSendPubsubEventsCanceledResultIsKept(t *testing.T) {
 	}
 	if len(deleted) != 0 {
 		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+}
+
+func TestSendPubsubEventsDoesNotPoisonMultiEventPublishLimits(t *testing.T) {
+	cfg := testConfig()
+	pubsub := &fakePubSubPublisher{}
+	a := &app{cfg: cfg, pubsub: pubsub}
+	var deleted []any
+
+	largeEvents := []event{
+		{columns: map[string]any{"id": "large-1", "destination": "topic-1", "payload": strings.Repeat("a", 6_000_000)}},
+		{columns: map[string]any{"id": "large-2", "destination": "topic-1", "payload": strings.Repeat("b", 6_000_000)}},
+	}
+	if err := a.sendPubsubEvents(context.Background(), nil, largeEvents, func(id any) {
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendPubsubEvents for large events returned error: %v", err)
+	}
+	if !reflect.DeepEqual(deleted, []any{"large-1", "large-2"}) {
+		t.Fatalf("unexpected deleted ids for large events: %#v", deleted)
+	}
+
+	manyEvents := make([]event, pubsubMaxPublishRequestMessages+1)
+	for i := range manyEvents {
+		manyEvents[i] = event{columns: map[string]any{
+			"id":          fmt.Sprintf("many-%04d", i),
+			"destination": "topic-1",
+			"payload":     "payload",
+		}}
+	}
+	deleted = nil
+	if err := a.sendPubsubEvents(context.Background(), nil, manyEvents, func(id any) {
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendPubsubEvents for many events returned error: %v", err)
+	}
+	if len(deleted) != len(manyEvents) {
+		t.Fatalf("expected all many events deleted, got %d of %d", len(deleted), len(manyEvents))
 	}
 }
 
@@ -2202,6 +2272,31 @@ func TestSendSQSEventsStandardSplitsByCount(t *testing.T) {
 	sort.Ints(sizes)
 	if !reflect.DeepEqual(sizes, []int{1, 10}) {
 		t.Fatalf("unexpected chunk sizes: %#v", sizes)
+	}
+}
+
+func TestSendSQSEventsStandardSendsTenInOneBatch(t *testing.T) {
+	cfg := testConfig()
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+
+	events := make([]event, 10)
+	for i := range events {
+		events[i] = event{columns: map[string]any{
+			"id":          fmt.Sprintf("event-%02d", i),
+			"destination": "queue-a",
+			"payload":     "payload",
+		}}
+	}
+
+	if err := a.sendSQSEvents(context.Background(), nil, events, func(any) {}); err != nil {
+		t.Fatalf("sendSQSEvents returned error: %v", err)
+	}
+	if len(sqs.requests) != 1 {
+		t.Fatalf("expected one SQS request, got %#v", sqs.requests)
+	}
+	if len(sqs.requests[0].entries) != 10 {
+		t.Fatalf("expected ten SQS entries, got %#v", sqs.requests[0].entries)
 	}
 }
 
