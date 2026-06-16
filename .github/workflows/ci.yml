@@ -19,7 +19,7 @@ jobs:
           go-version: stable
       - name: gofmt
         run: |
-          unformatted=$(gofmt -l ./cmd ./internal)
+          unformatted=$(gofmt -l ./cmd ./internal ./test)
           if [ -n "$unformatted" ]; then
             echo "These files are not gofmt-ed:"
             echo "$unformatted"
@@ -75,3 +75,19 @@ jobs:
         env:
           OUTBOXER_INTEGRATION_PG_DSN: postgres://outboxer:outboxer@localhost:5432/outboxer?sslmode=disable
         run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+  e2e:
+    name: Local emulator E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - name: Start local emulators
+        run: docker compose up -d postgres pubsub sqs
+      - name: Run E2E tests
+        run: go test -tags=e2e ./test/e2e -count=1 -v
+      - name: Stop local emulators
+        if: always()
+        run: docker compose down -v --remove-orphans
