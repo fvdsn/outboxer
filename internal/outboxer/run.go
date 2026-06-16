@@ -52,7 +52,8 @@ func Run(ctx context.Context, args []string) error {
 			return fmt.Errorf("create Pub/Sub client: %w", err)
 		}
 		defer pubsubClient.Close()
-		a.pubsub = &cloudPubSubPublisher{client: pubsubClient}
+		a.pubsub = newCloudPubSubPublisher(pubsubClient, cfg)
+		defer a.pubsub.Close()
 	}
 
 	if cfg.SQSEnabled {

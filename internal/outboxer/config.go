@@ -20,9 +20,9 @@ type appConfig struct {
 	EventOrderingKey string
 	EventAttributes  string
 
-	BatchSize          int
-	BatchWorkers       int
-	BatchMaxSequential int
+	BatchSize            int
+	SQSSendConcurrency   int
+	OrderedGroupBatchCap int
 
 	LogLevel  string
 	LogFormat string
@@ -38,6 +38,7 @@ type appConfig struct {
 	ErrorCooldown      time.Duration
 	PollInterval       time.Duration
 	PublishTimeout     time.Duration
+	PublishResultGrace time.Duration
 
 	PGHost                  string
 	PGPort                  uint16
@@ -87,13 +88,14 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addStringFlag(flags, &options, "Event table", &cfg.EventAttributes, "event-attributes", cfg.EventAttributes, "JSON attributes column.", "EVENT_ATTRIBUTES")
 
 	addIntFlag(flags, &options, "Batch processing", &cfg.BatchSize, "batch-size", cfg.BatchSize, "Maximum rows selected per batch.", "BATCH_SIZE")
-	addIntFlag(flags, &options, "Batch processing", &cfg.BatchWorkers, "batch-workers", cfg.BatchWorkers, "Number of parallel publisher workers per batch.", "BATCH_WORKERS")
-	addIntFlag(flags, &options, "Batch processing", &cfg.BatchMaxSequential, "batch-max-sequential", cfg.BatchMaxSequential, "Maximum ordered events assigned to one worker in a batch.", "BATCH_MAX_SEQUENTIAL")
+	addIntFlag(flags, &options, "Batch processing", &cfg.SQSSendConcurrency, "sqs-send-concurrency", cfg.SQSSendConcurrency, "Maximum concurrent SQS send requests.", "SQS_SEND_CONCURRENCY")
+	addIntFlag(flags, &options, "Batch processing", &cfg.OrderedGroupBatchCap, "ordered-group-batch-cap", cfg.OrderedGroupBatchCap, "Maximum events sent for one ordered key/group in one batch.", "ORDERED_GROUP_BATCH_CAP")
 
 	var watchdogIntervalMS = int(cfg.WatchdogInterval / time.Millisecond)
 	var errorCooldownMS = int(cfg.ErrorCooldown / time.Millisecond)
 	var pollIntervalMS = int(cfg.PollInterval / time.Millisecond)
 	var publishTimeoutMS = int(cfg.PublishTimeout / time.Millisecond)
+	var publishResultGraceMS = int(cfg.PublishResultGrace / time.Millisecond)
 	var pgTimeoutMS = int(cfg.PGConnectTimeout / time.Millisecond)
 	var pgQueryTimeoutMS = int(cfg.PGQueryTimeout / time.Millisecond)
 	var awsRoleDurationSeconds = int(cfg.AWSRoleDuration / time.Second)
@@ -103,6 +105,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addIntFlag(flags, &options, "Batch processing", &pollIntervalMS, "poll-interval-ms", pollIntervalMS, "Sleep after an empty batch in milliseconds.", "POLL_INTERVAL_MS")
 	addIntFlag(flags, &options, "Batch processing", &watchdogIntervalMS, "watchdog-interval-ms", watchdogIntervalMS, "Watchdog interval in milliseconds.", "WATCHDOG_INTERVAL_MS")
 	addIntFlag(flags, &options, "Batch processing", &publishTimeoutMS, "publish-timeout-ms", publishTimeoutMS, "Timeout for a single publish call in milliseconds. Must be positive.", "PUBLISH_TIMEOUT_MS")
+	addIntFlag(flags, &options, "Batch processing", &publishResultGraceMS, "publish-result-grace-ms", publishResultGraceMS, "Extra wait after provider publish timeout for async publish results.", "PUBLISH_RESULT_GRACE_MS")
 
 	addIntFlag(flags, &options, "HTTP / health", &cfg.HealthPort, "health-port", cfg.HealthPort, "HTTP health server port. Set to 0 to disable.", "HEALTH_PORT, PORT")
 
@@ -144,6 +147,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	cfg.ErrorCooldown = time.Duration(errorCooldownMS) * time.Millisecond
 	cfg.PollInterval = time.Duration(pollIntervalMS) * time.Millisecond
 	cfg.PublishTimeout = time.Duration(publishTimeoutMS) * time.Millisecond
+	cfg.PublishResultGrace = time.Duration(publishResultGraceMS) * time.Millisecond
 	cfg.PGConnectTimeout = time.Duration(pgTimeoutMS) * time.Millisecond
 	cfg.PGQueryTimeout = time.Duration(pgQueryTimeoutMS) * time.Millisecond
 	cfg.AWSRoleDuration = time.Duration(awsRoleDurationSeconds) * time.Second
@@ -174,11 +178,27 @@ func (cfg appConfig) validate() error {
 	if cfg.SQSEnabled && cfg.DefaultSQSQueueURL == "" && cfg.EventDestination == "" {
 		return fmt.Errorf("SQS needs a destination: set EVENT_DESTINATION or DEFAULT_SQS_QUEUE_URL")
 	}
+	if cfg.BatchSize <= 0 {
+		return fmt.Errorf("batch size (%d) must be positive: set BATCH_SIZE", cfg.BatchSize)
+	}
 	if cfg.PublishTimeout <= 0 {
 		return fmt.Errorf("publish timeout (%s) must be positive: set PUBLISH_TIMEOUT_MS", cfg.PublishTimeout)
 	}
+	if cfg.PublishResultGrace < 0 {
+		return fmt.Errorf("publish result grace (%s) must not be negative: set PUBLISH_RESULT_GRACE_MS", cfg.PublishResultGrace)
+	}
+	if cfg.OrderedGroupBatchCap <= 0 {
+		return fmt.Errorf("ordered group batch cap (%d) must be positive: set ORDERED_GROUP_BATCH_CAP", cfg.OrderedGroupBatchCap)
+	}
+	if cfg.SQSEnabled && cfg.SQSSendConcurrency <= 0 {
+		return fmt.Errorf("SQS send concurrency (%d) must be positive: set SQS_SEND_CONCURRENCY", cfg.SQSSendConcurrency)
+	}
 	if cfg.PollInterval > 0 && cfg.WatchdogInterval < 10*cfg.PollInterval {
 		return fmt.Errorf("watchdog interval (%s) must be at least 10x the poll interval (%s) to avoid false deadlocks: increase WATCHDOG_INTERVAL_MS or decrease POLL_INTERVAL_MS", cfg.WatchdogInterval, cfg.PollInterval)
+	}
+	bound := cfg.batchSendBound()
+	if bound > 0 && cfg.WatchdogInterval <= bound {
+		return fmt.Errorf("watchdog interval (%s) must exceed worst-case batch send bound (%s): increase WATCHDOG_INTERVAL_MS or reduce BATCH_SIZE/PUBLISH_TIMEOUT_MS", cfg.WatchdogInterval, bound)
 	}
 	if cfg.AWSWebIdentityProvider != "" {
 		if cfg.AWSWebIdentityProvider != awsWebIdentityProviderGoogle {
@@ -205,9 +225,9 @@ func loadConfigFromEnv() appConfig {
 		EventOrderingKey: getenv("EVENT_ORDERING_KEY", "ordering_key"),
 		EventAttributes:  getenv("EVENT_ATTRIBUTES", "attributes"),
 
-		BatchSize:          getenvInt("BATCH_SIZE", 32),
-		BatchWorkers:       getenvInt("BATCH_WORKERS", 8),
-		BatchMaxSequential: getenvInt("BATCH_MAX_SEQUENTIAL", 8),
+		BatchSize:            getenvInt("BATCH_SIZE", 32),
+		SQSSendConcurrency:   getenvInt("SQS_SEND_CONCURRENCY", 8),
+		OrderedGroupBatchCap: getenvInt("ORDERED_GROUP_BATCH_CAP", 8),
 
 		LogLevel:  getenv("LOG_LEVEL", "info"),
 		LogFormat: getenv("LOG_FORMAT", "text"),
@@ -223,6 +243,7 @@ func loadConfigFromEnv() appConfig {
 		ErrorCooldown:      time.Duration(getenvInt("ERROR_COOLDOWN_MS", 5000)) * time.Millisecond,
 		PollInterval:       time.Duration(getenvInt("POLL_INTERVAL_MS", 0)) * time.Millisecond,
 		PublishTimeout:     time.Duration(getenvInt("PUBLISH_TIMEOUT_MS", 30000)) * time.Millisecond,
+		PublishResultGrace: time.Duration(getenvInt("PUBLISH_RESULT_GRACE_MS", 5000)) * time.Millisecond,
 
 		PGHost:                  getenv("PG_HOST", "localhost"),
 		PGPort:                  uint16(getenvInt("PG_PORT", 5432)),
@@ -244,6 +265,41 @@ func loadConfigFromEnv() appConfig {
 		AWSWebIdentityProvider:     getenv("AWS_WEB_IDENTITY_PROVIDER", ""),
 		AWSWebIdentityAudience:     getenv("AWS_WEB_IDENTITY_AUDIENCE", ""),
 	}
+}
+
+func (cfg appConfig) batchSendBound() time.Duration {
+	var bounds []time.Duration
+	if cfg.PubSubEnabled {
+		bounds = append(bounds, time.Duration(cfg.OrderedGroupBatchCap)*(cfg.PublishTimeout+cfg.PublishResultGrace))
+	}
+	if cfg.SQSEnabled {
+		standardWaves := ceilDiv(cfg.BatchSize, cfg.SQSSendConcurrency)
+		bounds = append(bounds, time.Duration(standardWaves)*cfg.PublishTimeout)
+
+		fifoWaves := ceilDiv(cfg.BatchSize, cfg.SQSSendConcurrency)
+		if cfg.OrderedGroupBatchCap > fifoWaves {
+			fifoWaves = cfg.OrderedGroupBatchCap
+		}
+		bounds = append(bounds, time.Duration(fifoWaves)*cfg.PublishTimeout)
+	}
+
+	var max time.Duration
+	for _, bound := range bounds {
+		if bound > max {
+			max = bound
+		}
+	}
+	return max
+}
+
+func ceilDiv(n int, d int) int {
+	if d <= 0 {
+		return 0
+	}
+	if n <= 0 {
+		return 0
+	}
+	return (n + d - 1) / d
 }
 
 func optionHelp(description string, envVar string, defaultValue any) string {

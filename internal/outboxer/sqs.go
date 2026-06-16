@@ -2,13 +2,18 @@ package outboxer
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
-	"strconv"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"cloud.google.com/go/compute/metadata"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -23,9 +28,16 @@ const (
 	eventTargetPubSub   = "pubsub"
 	eventTargetSQS      = "sqs"
 	sqsEventBatchSize   = 10
-	sqsEventMaxSizeByte = 256 * 1024
+	sqsEventMaxSizeByte = 1024 * 1024
+	sqsMaxAttributes    = 10
 
 	awsWebIdentityProviderGoogle = "google"
+)
+
+var (
+	sqsBatchEntryIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
+	sqsFIFOIDPattern       = regexp.MustCompile(`^[A-Za-z0-9!"#$%&'()*+,\-./:;<=>?@\[\\\]\^_` + "`" + `{|}~]{1,128}$`)
+	sqsAttributeNameRe     = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,256}$`)
 )
 
 type sqsPublisher interface {
@@ -162,34 +174,157 @@ func (p *awsSQSPublisher) SendBatch(ctx context.Context, queueURL string, entrie
 func (a *app) sendSQSEvents(ctx context.Context, tx *sql.Tx, events []event, addIDToDelete func(any)) error {
 	eventsByQueue := map[string][]event{}
 	for _, evt := range events {
-		queue := eventString(evt, a.cfg.EventDestination)
-		if queue == "" {
-			queue = a.cfg.DefaultSQSQueueURL
-		}
+		queue := a.destinationForBackend(evt, backendSQS)
 		eventsByQueue[queue] = append(eventsByQueue[queue], evt)
 	}
 
+	sem := make(chan struct{}, a.cfg.SQSSendConcurrency)
+	errs := make(chan error, len(eventsByQueue))
+	var wg sync.WaitGroup
 	for queue, queueEvents := range eventsByQueue {
-		for i := 0; i < len(queueEvents); i += sqsEventBatchSize {
-			end := i + sqsEventBatchSize
-			if end > len(queueEvents) {
-				end = len(queueEvents)
+		queue := queue
+		queueEvents := append([]event(nil), queueEvents...)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var err error
+			if strings.HasSuffix(queue, ".fifo") {
+				err = a.sendSQSFIFOEvents(ctx, tx, sem, queue, queueEvents, addIDToDelete)
+			} else {
+				err = a.sendSQSStandardEvents(ctx, tx, sem, queue, queueEvents, addIDToDelete)
 			}
-			if err := a.sendSQS10Events(ctx, tx, queue, queueEvents[i:end], addIDToDelete); err != nil {
-				return err
+			if err != nil {
+				errs <- err
 			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	var joined error
+	for err := range errs {
+		joined = errors.Join(joined, err)
+	}
+	return joined
+}
+
+func (a *app) sendSQSStandardEvents(ctx context.Context, tx *sql.Tx, sem chan struct{}, queue string, queueEvents []event, addIDToDelete func(any)) error {
+	chunks := chunkSQSStandardEvents(queueEvents, a.cfg)
+	errs := make(chan error, len(chunks))
+	var wg sync.WaitGroup
+	for _, chunk := range chunks {
+		chunk := append([]event(nil), chunk...)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := a.sendSQSBatchWithSemaphore(ctx, tx, sem, queue, chunk, false, addIDToDelete); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	var joined error
+	for err := range errs {
+		joined = errors.Join(joined, err)
+	}
+	return joined
+}
+
+func chunkSQSStandardEvents(events []event, cfg appConfig) [][]event {
+	chunks := [][]event{}
+	current := []event{}
+	currentSize := 0
+
+	for _, evt := range events {
+		size := sqsEventMessageSize(evt, cfg)
+		if len(current) > 0 && (len(current) >= sqsEventBatchSize || currentSize+size > sqsEventMaxSizeByte) {
+			chunks = append(chunks, current)
+			current = nil
+			currentSize = 0
+		}
+		current = append(current, evt)
+		currentSize += size
+	}
+
+	if len(current) > 0 {
+		chunks = append(chunks, current)
+	}
+	return chunks
+}
+
+func (a *app) sendSQSFIFOEvents(ctx context.Context, tx *sql.Tx, sem chan struct{}, queue string, queueEvents []event, addIDToDelete func(any)) error {
+	groups := map[string][]event{}
+	groupOrder := []string{}
+	for _, evt := range queueEvents {
+		groupID := sqsMessageGroupID(evt, a.cfg)
+		if _, ok := groups[groupID]; !ok {
+			groupOrder = append(groupOrder, groupID)
+		}
+		if len(groups[groupID]) < a.cfg.OrderedGroupBatchCap {
+			groups[groupID] = append(groups[groupID], evt)
 		}
 	}
 
-	return nil
+	errs := make(chan error, len(groupOrder))
+	var wg sync.WaitGroup
+	for _, groupID := range groupOrder {
+		groupEvents := append([]event(nil), groups[groupID]...)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, evt := range groupEvents {
+				done, err := a.sendSQSBatchWithSemaphore(ctx, tx, sem, queue, []event{evt}, true, addIDToDelete)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if !done {
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	var joined error
+	for err := range errs {
+		joined = errors.Join(joined, err)
+	}
+	return joined
+}
+
+func (a *app) sendSQSBatchWithSemaphore(ctx context.Context, tx *sql.Tx, sem chan struct{}, queue string, events []event, isFIFO bool, addIDToDelete func(any)) (bool, error) {
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	return a.sendSQSBatch(ctx, tx, queue, events, isFIFO, addIDToDelete)
 }
 
 func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, events []event, addIDToDelete func(any)) error {
-	if len(events) == 0 {
-		return nil
-	}
+	_, err := a.sendSQSBatch(ctx, tx, queueURL, events, strings.HasSuffix(queueURL, ".fifo"), addIDToDelete)
+	return err
+}
 
-	isFIFO := strings.HasSuffix(queueURL, ".fifo")
+func (a *app) sendSQSBatch(ctx context.Context, tx *sql.Tx, queueURL string, events []event, isFIFO bool, addIDToDelete func(any)) (bool, error) {
+	if len(events) == 0 {
+		return false, nil
+	}
+	if !validSQSQueueURL(queueURL) {
+		for _, evt := range events {
+			addIDToDelete(eventValue(evt, a.cfg.EventID))
+		}
+		slog.Error("Failed to send event batch",
+			"event_destination", queueURL,
+			"error", "SQS queue URL is syntactically invalid",
+		)
+		return true, nil
+	}
 
 	start := time.Now()
 	entries := []sqsBatchEntry{}
@@ -200,22 +335,25 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 		attributes := eventAttributes(evt, a.cfg.EventAttributes)
 		timestamp := eventValue(evt, a.cfg.EventTimestamp)
 		id := eventValue(evt, a.cfg.EventID)
-		entryID := fmt.Sprint(id)
+		eventID := fmt.Sprint(id)
+		entryID := providerSafeID(eventID, sqsBatchEntryIDPattern)
 		data := eventBytes(evt, a.cfg.EventPayload)
 		latency := eventLatency(timestamp)
+		stringAttributes, deletedAttributes := sanitizeStringAttributes(attributes)
 
-		if len(data) >= sqsEventMaxSizeByte {
-			a.txMu.Lock()
-			err := a.deleteEvent(ctx, tx, id)
-			a.txMu.Unlock()
-			if err != nil {
-				return err
-			}
-
+		if len(deletedAttributes) != 0 {
+			slog.Error("Some attributes were dropped",
+				"event_id", id,
+				"event_destination", queueURL,
+				"dropped_attributes", deletedAttributes,
+			)
+		}
+		if isSQSPoison(data, stringAttributes, isFIFO, orderingKey) {
+			addIDToDelete(id)
 			slog.Error("Failed to send event",
 				"event_id", id,
 				"event_destination", queueURL,
-				"error", fmt.Sprintf("Event too big: %d bytes", len(data)),
+				"error", "Event is invalid for SQS",
 			)
 			continue
 		}
@@ -231,15 +369,6 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 			"event_destination", queueURL,
 		)
 
-		stringAttributes, deletedAttributes := sanitizeStringAttributes(attributes)
-		if len(deletedAttributes) != 0 {
-			slog.Error("Some attributes were dropped",
-				"event_id", id,
-				"event_destination", queueURL,
-				"dropped_attributes", deletedAttributes,
-			)
-		}
-
 		entry := sqsBatchEntry{
 			ID:          entryID,
 			MessageBody: string(data),
@@ -248,10 +377,10 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 		if isFIFO {
 			groupID := orderingKey
 			if groupID == "" {
-				groupID = strconv.FormatInt(randomInt63(), 10)
+				groupID = syntheticFIFOGroupID(eventID)
 			}
 			entry.MessageGroupID = groupID
-			entry.DeduplicationID = entryID
+			entry.DeduplicationID = providerSafeID(eventID, sqsFIFOIDPattern)
 		}
 
 		entries = append(entries, entry)
@@ -259,24 +388,38 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 	}
 
 	if len(entries) == 0 {
-		return nil
+		return true, nil
 	}
 
 	sendCtx, cancel := withTimeout(ctx, a.cfg.PublishTimeout)
 	defer cancel()
 	response, err := a.sqs.SendBatch(sendCtx, queueURL, entries)
 	if err != nil {
+		if isSQSPermanentRequestError(err) {
+			if len(events) == 1 {
+				addIDToDelete(eventValue(events[0], a.cfg.EventID))
+				slog.Error("Failed to send event",
+					"event_id", eventValue(events[0], a.cfg.EventID),
+					"event_destination", queueURL,
+					"error", err.Error(),
+				)
+				return true, nil
+			}
+			return a.sendSQSBatchIsolated(ctx, tx, queueURL, events, isFIFO, addIDToDelete)
+		}
 		slog.Error("Failed to send event batch",
 			"event_destination", queueURL,
 			"error", err.Error(),
 		)
-		return err
+		return false, err
 	}
 
 	publishLatency := time.Since(start).Seconds()
+	anyDone := false
 	for _, entry := range response.Successful {
 		originalID := idsByEntryID[entry.ID]
 		addIDToDelete(originalID)
+		anyDone = true
 		slog.Debug("Event sent",
 			"event_id", entry.ID,
 			"event_published_id", entry.MessageID,
@@ -288,6 +431,7 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 	for _, entry := range response.Failed {
 		if entry.SenderFault {
 			addIDToDelete(idsByEntryID[entry.ID])
+			anyDone = true
 		}
 		slog.Error("Failed to send event",
 			"event_id", entry.ID,
@@ -296,7 +440,22 @@ func (a *app) sendSQS10Events(ctx context.Context, tx *sql.Tx, queueURL string, 
 		)
 	}
 
-	return nil
+	return anyDone, nil
+}
+
+func (a *app) sendSQSBatchIsolated(ctx context.Context, tx *sql.Tx, queueURL string, events []event, isFIFO bool, addIDToDelete func(any)) (bool, error) {
+	anyDone := false
+	var joined error
+	for _, evt := range events {
+		done, err := a.sendSQSBatch(ctx, tx, queueURL, []event{evt}, isFIFO, addIDToDelete)
+		if done {
+			anyDone = true
+		}
+		if err != nil {
+			joined = errors.Join(joined, err)
+		}
+	}
+	return anyDone, joined
 }
 
 func convertAttributesToAWSSQS(attributes map[string]string) map[string]sqstypes.MessageAttributeValue {
@@ -330,4 +489,133 @@ func sanitizeStringAttributes(attributes map[string]any) (map[string]string, map
 		}
 	}
 	return kept, deleted
+}
+
+func isSQSPoison(body []byte, attributes map[string]string, isFIFO bool, orderingKey string) bool {
+	if len(body) == 0 || !sqsAllowedUnicodeBytes(body) {
+		return true
+	}
+	if sqsMessageSize(body, attributes) > sqsEventMaxSizeByte {
+		return true
+	}
+	if !validSQSAttributes(attributes) {
+		return true
+	}
+	if isFIFO && orderingKey != "" && !sqsFIFOIDPattern.MatchString(orderingKey) {
+		return true
+	}
+	return false
+}
+
+func sqsMessageSize(body []byte, attributes map[string]string) int {
+	size := len(body)
+	for key, value := range attributes {
+		size += len(key) + len("String") + len(value)
+	}
+	return size
+}
+
+func sqsEventMessageSize(evt event, cfg appConfig) int {
+	stringAttributes, _ := sanitizeStringAttributes(eventAttributes(evt, cfg.EventAttributes))
+	return sqsMessageSize(eventBytes(evt, cfg.EventPayload), stringAttributes)
+}
+
+func validSQSAttributes(attributes map[string]string) bool {
+	if len(attributes) > sqsMaxAttributes {
+		return false
+	}
+	for key, value := range attributes {
+		if key == "" || value == "" {
+			return false
+		}
+		if !sqsAttributeNameRe.MatchString(key) {
+			return false
+		}
+		lower := strings.ToLower(key)
+		if strings.HasPrefix(lower, "aws.") || strings.HasPrefix(lower, "amazon.") {
+			return false
+		}
+		if strings.HasPrefix(key, ".") || strings.HasSuffix(key, ".") || strings.Contains(key, "..") {
+			return false
+		}
+		if !sqsAllowedUnicodeBytes([]byte(value)) {
+			return false
+		}
+	}
+	return true
+}
+
+func sqsAllowedUnicodeBytes(value []byte) bool {
+	if !utf8.Valid(value) {
+		return false
+	}
+	for _, r := range string(value) {
+		if r == '\t' || r == '\n' || r == '\r' {
+			continue
+		}
+		if r >= 0x20 && r <= 0xD7FF {
+			continue
+		}
+		if r >= 0xE000 && r <= 0xFFFD {
+			continue
+		}
+		if r >= 0x10000 && r <= 0x10FFFF {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func sqsMessageGroupID(evt event, cfg appConfig) string {
+	eventID := fmt.Sprint(eventValue(evt, cfg.EventID))
+	orderingKey := eventOptionalString(evt, cfg.EventOrderingKey)
+	if orderingKey != "" {
+		return orderingKey
+	}
+	return syntheticFIFOGroupID(eventID)
+}
+
+func syntheticFIFOGroupID(eventID string) string {
+	return "outboxer-" + stableDigest(eventID)
+}
+
+func providerSafeID(value string, pattern *regexp.Regexp) string {
+	if pattern.MatchString(value) {
+		return value
+	}
+	return stableDigest(value)
+}
+
+func stableDigest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func validSQSQueueURL(queueURL string) bool {
+	if queueURL == "" || strings.ContainsAny(queueURL, " \t\r\n") {
+		return false
+	}
+
+	parsed, err := url.Parse(queueURL)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme == "" {
+		return true
+	}
+	return (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && strings.Trim(parsed.Path, "/") != ""
+}
+
+func isSQSPermanentRequestError(err error) bool {
+	var apiErr interface{ ErrorCode() string }
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.ErrorCode() {
+	case "InvalidMessageContents", "BatchRequestTooLong", "InvalidBatchEntryId", "BatchEntryIdsNotDistinct", "TooManyEntriesInBatchRequest":
+		return true
+	default:
+		return false
+	}
 }

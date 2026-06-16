@@ -57,7 +57,7 @@ These are cross-cutting assertions that many scenarios should verify.
 Watchdog bound cases:
 
 - Pub/Sub only: `batchSendBound = ORDERED_GROUP_BATCH_CAP * (PUBLISH_TIMEOUT_MS + PUBLISH_RESULT_GRACE_MS)`.
-- SQS standard only: `batchSendBound = ceil(ceil(BATCH_SIZE / 10) / SQS_SEND_CONCURRENCY) * PUBLISH_TIMEOUT_MS`.
+- SQS standard only: `batchSendBound = ceil(BATCH_SIZE / SQS_SEND_CONCURRENCY) * PUBLISH_TIMEOUT_MS` as a conservative bound for byte-size splits.
 - SQS FIFO only: `batchSendBound = max(ceil(BATCH_SIZE / SQS_SEND_CONCURRENCY), ORDERED_GROUP_BATCH_CAP) * PUBLISH_TIMEOUT_MS`.
 - Both backends: `batchSendBound` is the max of the enabled backend bounds, not
   their sum.

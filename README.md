@@ -167,12 +167,13 @@ outboxer --help
 | `DEFAULT_SQS_QUEUE_URL` | empty | SQS queue URL used when an event has no destination. |
 | `PUBSUB_PROJECT_ID` | empty | Google Cloud project for Pub/Sub. Detected from ADC when empty. |
 | `BATCH_SIZE` | `32` | Maximum rows selected per batch. |
-| `BATCH_WORKERS` | `8` | Number of parallel publisher workers per batch. |
-| `BATCH_MAX_SEQUENTIAL` | `8` | Maximum ordered events assigned to one worker in a batch. |
+| `SQS_SEND_CONCURRENCY` | `8` | Maximum concurrent SQS send requests. |
+| `ORDERED_GROUP_BATCH_CAP` | `8` | Maximum events sent for one ordered key/group in one batch. |
 | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors. |
 | `POLL_INTERVAL_MS` | `0` | Sleep after an empty batch. The default keeps polling immediately. |
 | `WATCHDOG_INTERVAL_MS` | `600000` | Watchdog interval. Must be at least 10x `POLL_INTERVAL_MS` when polling is enabled. |
 | `PUBLISH_TIMEOUT_MS` | `30000` | Timeout for a single publish call. Must be positive. |
+| `PUBLISH_RESULT_GRACE_MS` | `5000` | Extra wait after the provider timeout for async Pub/Sub publish results. |
 | `HEALTH_PORT` | `PORT` or `0` | HTTP health server port. `0` disables the server. |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, or `error`. |
 | `LOG_FORMAT` | `text` | Log format: `text` or `json`. |

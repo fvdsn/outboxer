@@ -82,9 +82,10 @@ The current collector already satisfies these, so we keep it:
   - `pubsubBound = ORDERED_GROUP_BATCH_CAP × (PUBLISH_TIMEOUT_MS +
     PUBLISH_RESULT_GRACE_MS)` (one slow ordered key sending its capped run
     sequentially).
-  - `sqsStandardBound = ceil(ceil(BATCH_SIZE / 10) / SQS_SEND_CONCURRENCY) ×
-    PUBLISH_TIMEOUT_MS` (standard queue batch requests in semaphore-limited
-    waves).
+  - `sqsStandardBound = ceil(BATCH_SIZE / SQS_SEND_CONCURRENCY) ×
+    PUBLISH_TIMEOUT_MS` (conservative bound for standard queue batch requests in
+    semaphore-limited waves; count chunks are 10 messages, but byte-size splits
+    can force one-message requests).
   - `sqsFifoBound = max(ceil(BATCH_SIZE / SQS_SEND_CONCURRENCY),
     ORDERED_GROUP_BATCH_CAP) × PUBLISH_TIMEOUT_MS` (covers both many independent
     FIFO groups limited by the global semaphore and one hot FIFO group sending

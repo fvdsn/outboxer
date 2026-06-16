@@ -3,8 +3,8 @@ package outboxer
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
-	"math"
 	"math/rand"
 	"os"
 	"sync"
@@ -21,6 +21,11 @@ var (
 	// ticks the process is assumed stuck and exits. It is accessed from both the
 	// processing and watchdog goroutines, so it must be atomic.
 	deadlockDetector atomic.Int64
+)
+
+var (
+	errDatabaseBatch    = errors.New("database batch error")
+	errFatalAfterCommit = errors.New("fatal after commit")
 )
 
 func init() {
@@ -58,7 +63,13 @@ func (a *app) processEvents(ctx context.Context) {
 
 		result, err := a.processOneBatch(ctx)
 		if err != nil {
-			sleepContext(ctx, a.cfg.ErrorCooldown)
+			if errors.Is(err, errFatalAfterCommit) {
+				slog.Error("Fatal sender error after commit, stopping processor", "error", err.Error())
+				return
+			}
+			if errors.Is(err, errDatabaseBatch) {
+				sleepContext(ctx, a.cfg.ErrorCooldown)
+			}
 		} else if result.selected == 0 && a.cfg.PollInterval > 0 {
 			sleepContext(ctx, a.cfg.PollInterval)
 		}
@@ -83,7 +94,7 @@ func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		logBatchError(ctx, "Failed to start batch transaction", err)
-		return batchResult{}, err
+		return batchResult{}, fmtDBError(err)
 	}
 
 	result, batchErr := a.processEventBatch(ctx, tx)
@@ -93,7 +104,7 @@ func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 
 	if err := tx.Commit(); err != nil {
 		logBatchError(ctx, "Failed to commit batch transaction", err)
-		return result, err
+		return result, fmtDBError(err)
 	}
 
 	return result, batchErr
@@ -113,7 +124,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 
 	events, err := a.selectEvents(ctx, tx)
 	if err != nil {
-		return batchResult{}, err
+		return batchResult{}, fmtDBError(err)
 	}
 	result := batchResult{selected: len(events)}
 	if len(events) > 0 {
@@ -128,38 +139,43 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		idsToDelete = append(idsToDelete, id)
 	}
 
-	jobs := parallelizeEvents(a.cfg, events)
-	errs := make(chan error, len(jobs))
+	pubsubEvents := []event{}
+	sqsEvents := []event{}
+	for _, evt := range events {
+		route := a.classifyRoute(evt)
+		switch route.backend {
+		case backendPubSub:
+			pubsubEvents = append(pubsubEvents, evt)
+		case backendSQS:
+			sqsEvents = append(sqsEvents, evt)
+		default:
+			slog.Error("Event cannot be routed, leaving it in the table",
+				"event_id", eventValue(evt, a.cfg.EventID),
+				"event_target", eventOptionalString(evt, a.cfg.EventTarget),
+				"routing_failure", route.failure,
+				"pubsub_enabled", a.cfg.PubSubEnabled,
+				"sqs_enabled", a.cfg.SQSEnabled,
+			)
+		}
+	}
+
+	errs := make(chan error, 2)
 	var wg sync.WaitGroup
 
-	for _, jobEvents := range jobs {
-		jobEvents := jobEvents
+	if len(pubsubEvents) > 0 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-
-			pubsubEvents := []event{}
-			sqsEvents := []event{}
-			for _, evt := range jobEvents {
-				switch a.resolveBackend(evt) {
-				case backendPubSub:
-					pubsubEvents = append(pubsubEvents, evt)
-				case backendSQS:
-					sqsEvents = append(sqsEvents, evt)
-				default:
-					slog.Error("Event has no enabled backend for its target, leaving it in the table",
-						"event_id", eventValue(evt, a.cfg.EventID),
-						"event_target", eventOptionalString(evt, a.cfg.EventTarget),
-						"pubsub_enabled", a.cfg.PubSubEnabled,
-						"sqs_enabled", a.cfg.SQSEnabled,
-					)
-				}
-			}
-
 			if err := a.sendPubsubEvents(ctx, tx, pubsubEvents, addIDToDelete); err != nil {
 				errs <- err
-				return
 			}
+		}()
+	}
+
+	if len(sqsEvents) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			if err := a.sendSQSEvents(ctx, tx, sqsEvents, addIDToDelete); err != nil {
 				errs <- err
 			}
@@ -174,7 +190,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	idsMu.Unlock()
 
 	if err := a.deleteEvents(ctx, tx, deleteIDs); err != nil {
-		return result, err
+		return result, fmtDBError(err)
 	}
 
 	for err := range errs {
@@ -186,6 +202,10 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	return result, nil
 }
 
+func fmtDBError(err error) error {
+	return errors.Join(errDatabaseBatch, err)
+}
+
 type backend int
 
 const (
@@ -194,71 +214,72 @@ const (
 	backendSQS
 )
 
-// resolveBackend decides where an event should be published based on the
-// enabled backends and the event's target column. When only one backend is
-// enabled the target is optional and every event routes there. When both are
-// enabled the target must explicitly name a backend. Anything that cannot be
-// routed returns backendNone so the caller can leave the row in place.
-func (a *app) resolveBackend(evt event) backend {
-	switch eventOptionalString(evt, a.cfg.EventTarget) {
+type routingFailure string
+
+const (
+	routingFailureNone          routingFailure = ""
+	routingFailureDisabled      routingFailure = "R7"
+	routingFailureUnsupported   routingFailure = "R10"
+	routingFailureAmbiguous     routingFailure = "R11"
+	routingFailureNoDestination routingFailure = "R12"
+)
+
+type routeResult struct {
+	backend backend
+	failure routingFailure
+}
+
+func (a *app) classifyRoute(evt event) routeResult {
+	target := eventOptionalString(evt, a.cfg.EventTarget)
+	switch target {
 	case eventTargetPubSub:
 		if a.cfg.PubSubEnabled {
-			return backendPubSub
+			return a.routeToBackend(evt, backendPubSub)
 		}
+		return routeResult{failure: routingFailureDisabled}
 	case eventTargetSQS:
 		if a.cfg.SQSEnabled {
-			return backendSQS
+			return a.routeToBackend(evt, backendSQS)
 		}
+		return routeResult{failure: routingFailureDisabled}
 	case "":
 		if a.cfg.PubSubEnabled && !a.cfg.SQSEnabled {
-			return backendPubSub
+			return a.routeToBackend(evt, backendPubSub)
 		}
 		if a.cfg.SQSEnabled && !a.cfg.PubSubEnabled {
-			return backendSQS
+			return a.routeToBackend(evt, backendSQS)
 		}
+		return routeResult{failure: routingFailureAmbiguous}
 	}
-	return backendNone
+	return routeResult{failure: routingFailureUnsupported}
 }
 
-func parallelizeEvents(cfg appConfig, events []event) [][]event {
-	jobs := make([][]event, cfg.BatchWorkers)
-	seed := int(randomInt63() % 100000)
-
-	for _, evt := range events {
-		orderingKey := eventOptionalString(evt, cfg.EventOrderingKey)
-		if orderingKey != "" {
-			jobIdx := strHash(seed, orderingKey) % cfg.BatchWorkers
-			if len(jobs[jobIdx]) >= cfg.BatchMaxSequential {
-				continue
-			}
-			jobs[jobIdx] = append(jobs[jobIdx], evt)
-			continue
-		}
-
-		jobIdx := 0
-		for i := range jobs {
-			if len(jobs[i]) < len(jobs[jobIdx]) {
-				jobIdx = i
-			}
-		}
-		jobs[jobIdx] = append(jobs[jobIdx], evt)
+func (a *app) routeToBackend(evt event, selected backend) routeResult {
+	if a.destinationForBackend(evt, selected) == "" {
+		return routeResult{failure: routingFailureNoDestination}
 	}
-
-	return jobs
+	return routeResult{backend: selected}
 }
 
-func strHash(seed int, str string) int {
-	hash := int32(seed)
-	for _, char := range str {
-		hash = (hash << 5) - hash + char
+func (a *app) destinationForBackend(evt event, selected backend) string {
+	destination := eventString(evt, a.cfg.EventDestination)
+	if destination != "" {
+		return destination
 	}
-	if hash == math.MinInt32 {
-		return math.MaxInt32
+	switch selected {
+	case backendPubSub:
+		return a.cfg.DefaultPubSubTopic
+	case backendSQS:
+		return a.cfg.DefaultSQSQueueURL
+	default:
+		return ""
 	}
-	if hash < 0 {
-		return int(-hash)
-	}
-	return int(hash)
+}
+
+// resolveBackend is kept as a small compatibility shim for existing tests and
+// call sites that only need the selected backend.
+func (a *app) resolveBackend(evt event) backend {
+	return a.classifyRoute(evt).backend
 }
 
 func randomInt63() int64 {
