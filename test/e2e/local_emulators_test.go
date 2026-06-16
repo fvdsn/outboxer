@@ -175,6 +175,80 @@ func TestLocalEmulatorE2EMixedBackendsDestinationsAndOrdering(t *testing.T) {
 	assertSQSOrdering(t, sqsFIFO, "blue", 6)
 }
 
+func TestLocalEmulatorE2ETwoOutboxersPreserveOrderedPubSub(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	root := repoRoot(t)
+	binary := buildOutboxer(t, root)
+	runID := strings.ReplaceAll(fmt.Sprintf("e2e-%d", time.Now().UnixNano()), "-", "_")
+
+	db := openE2EDB(t, ctx)
+	defer db.Close()
+	table := "outboxer_" + runID
+	createEventsTable(t, ctx, db, table)
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
+	})
+
+	t.Setenv("PUBSUB_EMULATOR_HOST", e2ePubSubEndpoint)
+	pubsubClient := newPubSubClient(t, ctx)
+	defer pubsubClient.Close()
+
+	topic := "ps_two_outboxers_ordered_" + runID
+	subscription := topic + "_sub"
+	createPubSubTopicAndSubscription(t, ctx, pubsubClient, topic, subscription)
+
+	overrides := map[string]string{
+		"PUBSUB_ENABLED":            "true",
+		"SQS_ENABLED":               "false",
+		"DEFAULT_PUBSUB_TOPIC":      topic,
+		"BATCH_SIZE":                "10",
+		"ORDERED_GROUP_BATCH_CAP":   "10",
+		"SQS_SEND_CONCURRENCY":      "1",
+		"POLL_INTERVAL_MS":          "10",
+		"PUBLISH_TIMEOUT_MS":        "5000",
+		"PUBLISH_RESULT_GRACE_MS":   "500",
+		"WATCHDOG_INTERVAL_MS":      "60000",
+		"EVENT_TARGET":              "target",
+		"EVENT_DESTINATION":         "destination",
+		"EVENT_ORDERING_KEY":        "ordering_key",
+		"EVENT_ATTRIBUTES":          "attributes",
+		"EVENT_PAYLOAD":             "payload",
+		"EVENT_ID":                  "id",
+		"EVENT_TIMESTAMP":           "timestamp",
+		"DEFAULT_SQS_QUEUE_URL":     "",
+		"AWS_WEB_IDENTITY_PROVIDER": "",
+	}
+	first := startOutboxer(t, ctx, binary, table, overrides)
+	second := startOutboxer(t, ctx, binary, table, overrides)
+
+	const count = 50
+	const key = "shared"
+	events := make([]eventRow, 0, count)
+	for i := 0; i < count; i++ {
+		events = append(events, eventRow{
+			id:          fmt.Sprintf("pubsub-ordered-%s-%02d", key, i),
+			target:      "pubsub",
+			destination: topic,
+			orderingKey: key,
+			payload:     fmt.Sprintf("pubsub-ordered-%s-%02d", key, i),
+			attributes:  fmt.Sprintf(`{"kind":"pubsub-ordered","key":"%s"}`, key),
+		})
+	}
+	insertEvents(t, ctx, db, table, events)
+
+	messages := receivePubSubMessages(t, ctx, pubsubClient, subscription, count)
+
+	waitForEmptyTable(t, ctx, db, table)
+	stopOutboxer(t, first)
+	stopOutboxer(t, second)
+
+	assertPubSubOrdering(t, messages, key, count)
+	assertProcessedBatch(t, first, "first outboxer")
+	assertProcessedBatch(t, second, "second outboxer")
+}
+
 type eventRow struct {
 	id          string
 	target      string
@@ -323,37 +397,43 @@ func createSQSQueue(t *testing.T, ctx context.Context, client *sqs.Client, name 
 	return queueURL
 }
 
-func startOutboxer(t *testing.T, ctx context.Context, binary string, table string) *runningProcess {
+func startOutboxer(t *testing.T, ctx context.Context, binary string, table string, overrides ...map[string]string) *runningProcess {
 	t.Helper()
 	var output bytes.Buffer
 	cmd := exec.CommandContext(ctx, binary)
-	cmd.Env = append(os.Environ(),
-		"EVENT_TABLE="+table,
-		"PUBSUB_ENABLED=true",
-		"SQS_ENABLED=true",
-		"PUBSUB_PROJECT_ID="+e2eProjectID,
-		"PUBSUB_EMULATOR_HOST="+getenv("OUTBOXER_E2E_PUBSUB_ENDPOINT", e2ePubSubEndpoint),
-		"SQS_API_ENDPOINT="+getenv("OUTBOXER_E2E_SQS_ENDPOINT", e2eSQSEndpoint),
-		"AWS_REGION="+e2eAWSRegion,
-		"AWS_ACCESS_KEY_ID=test",
-		"AWS_SECRET_ACCESS_KEY=test",
-		"PG_HOST="+getenv("OUTBOXER_E2E_PG_HOST", "localhost"),
-		"PG_PORT="+getenv("OUTBOXER_E2E_PG_PORT", "54329"),
-		"PG_USER="+getenv("OUTBOXER_E2E_PG_USER", "outboxer"),
-		"PG_PASSWORD="+getenv("OUTBOXER_E2E_PG_PASSWORD", "outboxer"),
-		"PG_DATABASE="+getenv("OUTBOXER_E2E_PG_DATABASE", "outboxer"),
-		"PG_SSL=false",
-		"BATCH_SIZE=16",
-		"ORDERED_GROUP_BATCH_CAP=8",
-		"SQS_SEND_CONCURRENCY=4",
-		"POLL_INTERVAL_MS=50",
-		"ERROR_COOLDOWN_MS=50",
-		"PUBLISH_TIMEOUT_MS=5000",
-		"PUBLISH_RESULT_GRACE_MS=500",
-		"WATCHDOG_INTERVAL_MS=60000",
-		"HEALTH_PORT=0",
-		"LOG_LEVEL=info",
-	)
+	env := map[string]string{
+		"EVENT_TABLE":             table,
+		"PUBSUB_ENABLED":          "true",
+		"SQS_ENABLED":             "true",
+		"PUBSUB_PROJECT_ID":       e2eProjectID,
+		"PUBSUB_EMULATOR_HOST":    getenv("OUTBOXER_E2E_PUBSUB_ENDPOINT", e2ePubSubEndpoint),
+		"SQS_API_ENDPOINT":        getenv("OUTBOXER_E2E_SQS_ENDPOINT", e2eSQSEndpoint),
+		"AWS_REGION":              e2eAWSRegion,
+		"AWS_ACCESS_KEY_ID":       "test",
+		"AWS_SECRET_ACCESS_KEY":   "test",
+		"PG_HOST":                 getenv("OUTBOXER_E2E_PG_HOST", "localhost"),
+		"PG_PORT":                 getenv("OUTBOXER_E2E_PG_PORT", "54329"),
+		"PG_USER":                 getenv("OUTBOXER_E2E_PG_USER", "outboxer"),
+		"PG_PASSWORD":             getenv("OUTBOXER_E2E_PG_PASSWORD", "outboxer"),
+		"PG_DATABASE":             getenv("OUTBOXER_E2E_PG_DATABASE", "outboxer"),
+		"PG_SSL":                  "false",
+		"BATCH_SIZE":              "16",
+		"ORDERED_GROUP_BATCH_CAP": "8",
+		"SQS_SEND_CONCURRENCY":    "4",
+		"POLL_INTERVAL_MS":        "50",
+		"ERROR_COOLDOWN_MS":       "50",
+		"PUBLISH_TIMEOUT_MS":      "5000",
+		"PUBLISH_RESULT_GRACE_MS": "500",
+		"WATCHDOG_INTERVAL_MS":    "60000",
+		"HEALTH_PORT":             "0",
+		"LOG_LEVEL":               "info",
+	}
+	for _, override := range overrides {
+		for key, value := range override {
+			env[key] = value
+		}
+	}
+	cmd.Env = mergedEnv(os.Environ(), env)
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	if err := cmd.Start(); err != nil {
@@ -362,6 +442,31 @@ func startOutboxer(t *testing.T, ctx context.Context, binary string, table strin
 	process := &runningProcess{cmd: cmd, output: &output}
 	t.Cleanup(func() { stopOutboxer(t, process) })
 	return process
+}
+
+func mergedEnv(base []string, overrides map[string]string) []string {
+	env := make([]string, 0, len(base)+len(overrides))
+	seen := map[string]struct{}{}
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if value, ok := overrides[key]; ok {
+			env = append(env, key+"="+value)
+			seen[key] = struct{}{}
+			continue
+		}
+		env = append(env, entry)
+		seen[key] = struct{}{}
+	}
+	for key, value := range overrides {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		env = append(env, key+"="+value)
+	}
+	return env
 }
 
 type runningProcess struct {
@@ -389,6 +494,14 @@ func stopOutboxer(t *testing.T, process *runningProcess) {
 			t.Fatalf("outboxer did not stop\n%s", process.output.String())
 		}
 	})
+}
+
+func assertProcessedBatch(t *testing.T, process *runningProcess, name string) {
+	t.Helper()
+	output := process.output.String()
+	if !strings.Contains(output, "Processing batch") {
+		t.Fatalf("%s did not process a batch\n%s", name, output)
+	}
 }
 
 func receivePubSubMessages(t *testing.T, ctx context.Context, client *pubsub.Client, subscriptionID string, want int) []pubsubReceivedMessage {
