@@ -278,6 +278,26 @@ To build a local binary:
 just binary
 ```
 
+## Container Image
+
+Release images are published to GitHub Container Registry:
+
+```text
+ghcr.io/fvdsn/outboxer:v0.1.0
+ghcr.io/fvdsn/outboxer:0.1.0
+ghcr.io/fvdsn/outboxer:latest
+```
+
+Images are built for `linux/amd64` and `linux/arm64`. The runtime image uses a
+small Alpine Linux base, runs as a non-root user, and includes CA certificates
+for TLS connections to PostgreSQL, Pub/Sub, SQS, and metadata services.
+
+To build locally:
+
+```sh
+docker build -t outboxer:local .
+```
+
 ## Test
 
 ```sh
