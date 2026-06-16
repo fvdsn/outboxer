@@ -1072,6 +1072,72 @@ func TestProcessEventsStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestProcessEventsStopsAfterFatalAfterCommit(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}}
+
+	rows := mockEventRows().
+		AddRow("event-1", "pubsub", "topic-1", "one", "key-a", nil).
+		AddRow("event-2", "pubsub", "topic-1", "two", "key-a", nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	done := make(chan struct{})
+	go func() {
+		a.processEvents(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("processEvents did not stop after fatal-after-commit error")
+	}
+}
+
+func TestProcessEventsDoesNotCooldownAfterNonFatalSenderError(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	cfg.ErrorCooldown = time.Hour
+	expectedErr := errors.New("retryable pubsub")
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = &fakePubSubPublisher{errs: []error{nil, expectedErr}}
+
+	firstRows := mockEventRows().
+		AddRow("event-1", "pubsub", "topic-1", "one", nil, nil).
+		AddRow("event-2", "pubsub", "topic-1", "two", nil, nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(firstRows)
+	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	secondErr := errors.New("second select failed")
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnError(secondErr)
+	mock.ExpectRollback()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		a.processEvents(ctx)
+		close(done)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("processEvents did not return after cancellation")
+	}
+}
+
 func TestSleepContextReturnsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
