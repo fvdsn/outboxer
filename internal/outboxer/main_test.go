@@ -2080,6 +2080,58 @@ func TestProcessOneBatchRoutingFailuresOnlyCommitWithoutSendOrDelete(t *testing.
 	}
 }
 
+func TestProcessOneBatchDeduplicatesDoneIDs(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubEnabled = false
+	sqs := &fakeSQSPublisher{response: sqsBatchResponse{
+		Successful: []sqsBatchSuccess{
+			{ID: "event-1", MessageID: "message-1"},
+			{ID: "event-1", MessageID: "message-1-duplicate"},
+		},
+	}}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.sqs = sqs
+
+	rows := mockEventRows().AddRow("event-1", "sqs", "queue-a", "one", nil, nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 1 {
+		t.Fatalf("expected one selected event, got %d", result.selected)
+	}
+}
+
+func TestProcessOneBatchIgnoresDoneIDOutsideSelectedBatch(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubEnabled = false
+	sqs := &fakeSQSPublisher{response: sqsBatchResponse{
+		Successful: []sqsBatchSuccess{{ID: "unknown-entry", MessageID: "message-unknown"}},
+	}}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.sqs = sqs
+
+	rows := mockEventRows().AddRow("event-1", "sqs", "queue-a", "one", nil, nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 1 {
+		t.Fatalf("expected one selected event, got %d", result.selected)
+	}
+}
+
 func TestProcessOneBatchRunsEnabledBackendsConcurrently(t *testing.T) {
 	cfg := testConfig()
 	pubsub := &trackingPubSubPublisher{

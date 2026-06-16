@@ -140,9 +140,26 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 
 	var idsMu sync.Mutex
 	idsToDelete := []any{}
+	selectedIDs := map[string]struct{}{}
+	for _, evt := range events {
+		selectedIDs[eventIDKey(eventValue(evt, a.cfg.EventID))] = struct{}{}
+	}
+	idsSeen := map[string]struct{}{}
 	addIDToDelete := func(id any) {
+		key := eventIDKey(id)
 		idsMu.Lock()
 		defer idsMu.Unlock()
+		if _, ok := selectedIDs[key]; !ok {
+			a.logFailure(ctx, "Sender reported an ID outside the selected batch, ignoring it",
+				fmt.Sprintf("sender-outside-selection|%s", key),
+				"event_id", id,
+			)
+			return
+		}
+		if _, ok := idsSeen[key]; ok {
+			return
+		}
+		idsSeen[key] = struct{}{}
 		idsToDelete = append(idsToDelete, id)
 	}
 
@@ -212,6 +229,10 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 
 func fmtDBError(err error) error {
 	return errors.Join(errDatabaseBatch, err)
+}
+
+func eventIDKey(id any) string {
+	return fmt.Sprintf("%T:%v", id, id)
 }
 
 type backend int
