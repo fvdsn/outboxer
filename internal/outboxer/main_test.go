@@ -1042,6 +1042,131 @@ func TestFailureLoggerRateLimitsBySignature(t *testing.T) {
 	}
 }
 
+func TestPubSubLocalPrevalidationBoundaries(t *testing.T) {
+	attrs := map[string]string{}
+	for i := 0; i < pubsubMaxAttributes; i++ {
+		attrs[fmt.Sprintf("attr%d", i)] = "value"
+	}
+	if !validPubSubAttributes(attrs) {
+		t.Fatal("expected exactly max Pub/Sub attributes to be valid")
+	}
+	attrs["overflow"] = "value"
+	if validPubSubAttributes(attrs) {
+		t.Fatal("expected too many Pub/Sub attributes to be invalid")
+	}
+
+	if !validPubSubAttributes(map[string]string{strings.Repeat("k", pubsubMaxAttributeKeyBytes): "value"}) {
+		t.Fatal("expected max-length Pub/Sub attribute key to be valid")
+	}
+	if validPubSubAttributes(map[string]string{strings.Repeat("k", pubsubMaxAttributeKeyBytes+1): "value"}) {
+		t.Fatal("expected overlong Pub/Sub attribute key to be invalid")
+	}
+	if !validPubSubAttributes(map[string]string{"key": strings.Repeat("v", pubsubMaxAttributeValueBytes)}) {
+		t.Fatal("expected max-length Pub/Sub attribute value to be valid")
+	}
+	if validPubSubAttributes(map[string]string{"key": strings.Repeat("v", pubsubMaxAttributeValueBytes+1)}) {
+		t.Fatal("expected overlong Pub/Sub attribute value to be invalid")
+	}
+	if validPubSubAttributes(map[string]string{"googclient": "value"}) {
+		t.Fatal("expected goog-prefixed Pub/Sub attribute key to be invalid")
+	}
+
+	if reason, poison := pubsubPoisonReason(pubsubMessage{Topic: "topic-1", Data: make([]byte, pubsubMaxMessageDataBytes)}); poison {
+		t.Fatalf("expected exactly max Pub/Sub data to be accepted, got poison: %s", reason)
+	}
+	if _, poison := pubsubPoisonReason(pubsubMessage{Topic: "topic-1", Data: make([]byte, pubsubMaxMessageDataBytes+1)}); !poison {
+		t.Fatal("expected overlarge Pub/Sub data to be poison")
+	}
+	if _, poison := pubsubPoisonReason(pubsubMessage{Topic: "topic-1", OrderingKey: "key-a"}); poison {
+		t.Fatal("expected ordering-key-only Pub/Sub message not to be local poison")
+	}
+	if _, poison := pubsubPoisonReason(pubsubMessage{Topic: "topic-1"}); !poison {
+		t.Fatal("expected empty Pub/Sub message with no attributes or key to be poison")
+	}
+}
+
+func TestPubSubTopicSyntaxValidation(t *testing.T) {
+	valid := []string{
+		"abc",
+		"topic-1",
+		"projects/project-a/topics/topic-1",
+		"projects/123/topics/a.b_c~d+e%f",
+	}
+	for _, topic := range valid {
+		if !validPubSubTopic(topic) {
+			t.Fatalf("expected Pub/Sub topic %q to be valid", topic)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"ab",
+		"1topic",
+		"googtopic",
+		"bad/topic",
+		"projects/project-a/topics/1bad",
+		"projects//topics/topic-1",
+		"projects/project-a/subscriptions/sub-1",
+	}
+	for _, topic := range invalid {
+		if validPubSubTopic(topic) {
+			t.Fatalf("expected Pub/Sub topic %q to be invalid", topic)
+		}
+	}
+}
+
+func TestSQSLocalPrevalidationBoundaries(t *testing.T) {
+	attrs := map[string]string{}
+	for i := 0; i < sqsMaxAttributes; i++ {
+		attrs[fmt.Sprintf("attr%d", i)] = "value"
+	}
+	if !validSQSAttributes(attrs) {
+		t.Fatal("expected exactly max SQS attributes to be valid")
+	}
+	attrs["overflow"] = "value"
+	if validSQSAttributes(attrs) {
+		t.Fatal("expected too many SQS attributes to be invalid")
+	}
+
+	invalidAttrs := []map[string]string{
+		{"": "value"},
+		{".bad": "value"},
+		{"bad.": "value"},
+		{"bad..name": "value"},
+		{"AWS.trace": "value"},
+		{"Amazon.trace": "value"},
+		{"bad name": "value"},
+		{"empty": ""},
+	}
+	for _, attr := range invalidAttrs {
+		if validSQSAttributes(attr) {
+			t.Fatalf("expected SQS attributes %#v to be invalid", attr)
+		}
+	}
+
+	if isSQSPoison([]byte("body"), nil, false, "") {
+		t.Fatal("expected ordinary SQS body to be valid")
+	}
+	if !isSQSPoison(nil, nil, false, "") {
+		t.Fatal("expected empty SQS body to be poison")
+	}
+	if !isSQSPoison([]byte{0xff}, nil, false, "") {
+		t.Fatal("expected invalid UTF-8 SQS body to be poison")
+	}
+	if isSQSPoison([]byte("body\t\n\r"), nil, false, "") {
+		t.Fatal("expected allowed SQS boundary characters to be valid")
+	}
+	if !isSQSPoison([]byte(strings.Repeat("x", sqsEventMaxSizeByte+1)), nil, false, "") {
+		t.Fatal("expected oversized SQS message to be poison")
+	}
+	if !isSQSPoison([]byte("body"), nil, true, strings.Repeat("x", 129)) {
+		t.Fatal("expected overlong FIFO group id to be poison")
+	}
+	if !isSQSPoison([]byte("body"), nil, true, "bad\nkey") {
+		t.Fatal("expected invalid FIFO group id to be poison")
+	}
+}
+
 func TestSendPubsubEventUsesDefaultTopicAndSanitizesAttributes(t *testing.T) {
 	cfg := testConfig()
 	pubsub := &fakePubSubPublisher{}
@@ -1094,6 +1219,29 @@ func TestSendPubsubEventReturnsPublisherError(t *testing.T) {
 	err := a.sendPubsubEvent(context.Background(), nil, evt, func(any) {})
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected publisher error, got %v", err)
+	}
+}
+
+func TestSendPubsubEventKeepsSyntacticallyValidMissingTopic(t *testing.T) {
+	cfg := testConfig()
+	expectedErr := errors.New("topic not found")
+	a := &app{cfg: cfg, pubsub: &fakePubSubPublisher{err: expectedErr}}
+	var deleted []any
+
+	evt := event{columns: map[string]any{
+		"id":          "event-1",
+		"destination": "topic-1",
+		"payload":     "payload",
+	}}
+
+	err := a.sendPubsubEvent(context.Background(), nil, evt, func(id any) {
+		deleted = append(deleted, id)
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected publisher error, got %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("expected missing topic event to be kept, got deleted ids %#v", deleted)
 	}
 }
 
@@ -1690,6 +1838,31 @@ func TestSendSQS10EventsDropsInvalidQueueURLWithoutProviderCall(t *testing.T) {
 	}
 	if len(sqs.requests) != 0 {
 		t.Fatalf("expected no provider calls for invalid queue URL, got %#v", sqs.requests)
+	}
+}
+
+func TestSendSQS10EventsKeepsSyntacticallyValidMissingQueue(t *testing.T) {
+	cfg := testConfig()
+	expectedErr := fakeSQSAPIError{code: "QueueDoesNotExist"}
+	sqs := &fakeSQSPublisher{err: expectedErr}
+	a := &app{cfg: cfg, sqs: sqs}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "https://sqs.us-east-1.amazonaws.com/123456789012/missing", "payload": "payload"}},
+	}
+
+	err := a.sendSQS10Events(context.Background(), nil, "https://sqs.us-east-1.amazonaws.com/123456789012/missing", events, func(id any) {
+		deleted = append(deleted, id)
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected missing queue error, got %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("expected missing queue event to be kept, got deleted ids %#v", deleted)
+	}
+	if len(sqs.requests) != 1 {
+		t.Fatalf("expected provider call for syntactically valid queue URL, got %#v", sqs.requests)
 	}
 }
 
