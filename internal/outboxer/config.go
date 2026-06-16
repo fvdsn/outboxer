@@ -35,6 +35,7 @@ type appConfig struct {
 	DefaultSQSQueueURL string
 	PubSubProjectID    string
 	PubSubAPIEndpoint  string
+	SQSAPIEndpoint     string
 	ErrorCooldown      time.Duration
 	PollInterval       time.Duration
 	PublishTimeout     time.Duration
@@ -131,6 +132,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 
 	addBoolFlag(flags, &options, "AWS SQS", &cfg.SQSEnabled, "sqs-enabled", cfg.SQSEnabled, "Enable publishing to AWS SQS.", "SQS_ENABLED")
 	addStringFlag(flags, &options, "AWS SQS", &cfg.DefaultSQSQueueURL, "default-sqs-queue-url", cfg.DefaultSQSQueueURL, "SQS queue URL used when an event has no destination.", "DEFAULT_SQS_QUEUE_URL")
+	addStringFlag(flags, &options, "AWS SQS", &cfg.SQSAPIEndpoint, "sqs-api-endpoint", cfg.SQSAPIEndpoint, "Optional SQS API endpoint override.", "SQS_API_ENDPOINT")
 	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRegion, "aws-region", cfg.AWSRegion, "AWS region for SQS and STS.", "AWS_REGION")
 	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRoleARN, "aws-role-arn", cfg.AWSRoleARN, "Optional AWS role to assume before publishing to SQS.", "AWS_ROLE_ARN")
 	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRoleSessionName, "aws-role-session-name", cfg.AWSRoleSessionName, "AWS assume-role session name.", "AWS_ROLE_SESSION_NAME")
@@ -240,6 +242,7 @@ func loadConfigFromEnv() appConfig {
 		DefaultSQSQueueURL: getenv("DEFAULT_SQS_QUEUE_URL", ""),
 		PubSubProjectID:    getenv("PUBSUB_PROJECT_ID", ""),
 		PubSubAPIEndpoint:  getenv("PUBSUB_API_ENDPOINT", ""),
+		SQSAPIEndpoint:     getenv("SQS_API_ENDPOINT", ""),
 		ErrorCooldown:      time.Duration(getenvInt("ERROR_COOLDOWN_MS", 5000)) * time.Millisecond,
 		PollInterval:       time.Duration(getenvInt("POLL_INTERVAL_MS", 0)) * time.Millisecond,
 		PublishTimeout:     time.Duration(getenvInt("PUBLISH_TIMEOUT_MS", 30000)) * time.Millisecond,

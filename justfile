@@ -47,6 +47,14 @@ db-logs:
 integration: db-up
     OUTBOXER_INTEGRATION_PG_DSN='{{integration_pg_dsn}}' go test ./... -count=1 -v
 
+# Start the full local end-to-end stack.
+e2e-local-up:
+    docker compose up -d postgres pubsub sqs
+
+# Run process-level E2E tests against local Postgres, Pub/Sub emulator, and ElasticMQ SQS.
+e2e-local: e2e-local-up
+    go test -tags=e2e ./test/e2e -count=1 -v
+
 # Alias for integration tests.
 e2e: integration
 
@@ -58,9 +66,14 @@ integration-clean:
 # Alias for clean e2e tests.
 e2e-clean: integration-clean
 
+# Run local emulator E2E tests and clean up afterwards.
+e2e-local-clean:
+    just e2e-local
+    just db-down
+
 # Format Go code.
 fmt:
-    gofmt -w ./cmd/outboxer/*.go ./internal/outboxer/*.go
+    gofmt -w ./cmd/outboxer/*.go ./internal/outboxer/*.go ./test/e2e/*.go
 
 # Tidy Go modules.
 tidy:

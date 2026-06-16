@@ -15,3 +15,23 @@ services:
     tmpfs:
       - /var/lib/postgresql/data
 
+  pubsub:
+    image: google/cloud-sdk:emulators
+    platform: linux/amd64
+    command:
+      [
+        "gcloud",
+        "beta",
+        "emulators",
+        "pubsub",
+        "start",
+        "--project=outboxer-test",
+        "--host-port=0.0.0.0:8085"
+      ]
+    ports:
+      - "8085:8085"
+
+  sqs:
+    image: softwaremill/elasticmq-native:latest
+    ports:
+      - "9324:9324"

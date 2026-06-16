@@ -189,6 +189,7 @@ outboxer --help
 | `PG_QUERY_TIMEOUT_MS` | `30000` | Timeout for a single database query. `0` disables it. |
 | `PG_MAX_CONNECTIONS` | `10` | PostgreSQL max open connections. |
 | `PUBSUB_API_ENDPOINT` | empty | Optional Pub/Sub API endpoint override. |
+| `SQS_API_ENDPOINT` | empty | Optional SQS API endpoint override, useful for local emulators such as ElasticMQ. |
 | `AWS_REGION` | empty | AWS region for SQS and STS. |
 | `AWS_ROLE_ARN` | empty | Optional AWS role to assume before publishing to SQS. |
 | `AWS_ROLE_SESSION_NAME` | `outboxer` | AWS assume-role session name. |
@@ -300,6 +301,34 @@ OUTBOXER_INTEGRATION_PG_DSN='postgres://outboxer:outboxer@localhost:54329/outbox
 ```
 
 To stop and remove the test database:
+
+```sh
+just db-down
+```
+
+## Local E2E Test
+
+The local E2E suite runs the real Outboxer binary against real PostgreSQL plus
+local queue emulators:
+
+- Google Pub/Sub emulator on `localhost:8085`
+- ElasticMQ SQS on `localhost:9324`
+
+It creates Pub/Sub topics/subscriptions and SQS standard/FIFO queues, inserts
+events into PostgreSQL, starts Outboxer, and verifies the messages received from
+the queues.
+
+```sh
+just e2e-local
+```
+
+This runs:
+
+```sh
+go test -tags=e2e ./test/e2e -count=1 -v
+```
+
+To stop and remove the local services:
 
 ```sh
 just db-down

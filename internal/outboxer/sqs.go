@@ -107,7 +107,14 @@ func newSQSClient(ctx context.Context, cfg appConfig) (*sqs.Client, error) {
 		})
 	}
 
-	return sqs.NewFromConfig(awsConfig), nil
+	clientOptions := []func(*sqs.Options){}
+	if cfg.SQSAPIEndpoint != "" {
+		clientOptions = append(clientOptions, func(options *sqs.Options) {
+			options.BaseEndpoint = aws.String(cfg.SQSAPIEndpoint)
+		})
+	}
+
+	return sqs.NewFromConfig(awsConfig, clientOptions...), nil
 }
 
 // googleIDTokenRetriever fetches a Google-signed OIDC ID token from the GCP

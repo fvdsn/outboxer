@@ -247,6 +247,8 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"Env: WATCHDOG_INTERVAL_MS",
 		"--sqs-send-concurrency",
 		"Env: SQS_SEND_CONCURRENCY",
+		"--sqs-api-endpoint",
+		"Env: SQS_API_ENDPOINT",
 		"--ordered-group-batch-cap",
 		"Env: ORDERED_GROUP_BATCH_CAP",
 		"--publish-result-grace-ms",
