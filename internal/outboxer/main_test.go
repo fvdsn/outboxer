@@ -35,6 +35,7 @@ type fakePubSubPublisher struct {
 	mu       sync.Mutex
 	err      error
 	errs     []error
+	results  []fakePubSubResult
 	messages []pubsubMessage
 	flushes  []string
 	resumes  []fakePubSubResume
@@ -55,6 +56,14 @@ func (p *fakePubSubPublisher) Publish(_ context.Context, message pubsubMessage) 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.messages = append(p.messages, message)
+	if len(p.results) > 0 {
+		result := p.results[0]
+		p.results = p.results[1:]
+		if result.messageID == "" {
+			result.messageID = fmt.Sprintf("published-%d", len(p.messages))
+		}
+		return result
+	}
 	err := p.err
 	if len(p.errs) > 0 {
 		err = p.errs[0]
@@ -151,6 +160,23 @@ func (p *fakeSQSPublisher) SendBatch(_ context.Context, queueURL string, entries
 	return p.response, nil
 }
 
+type keyedSQSPublisher struct {
+	mu        sync.Mutex
+	requests  []fakeSQSRequest
+	responses map[string]sqsBatchResponse
+}
+
+func (p *keyedSQSPublisher) SendBatch(_ context.Context, queueURL string, entries []sqsBatchEntry) (sqsBatchResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.requests = append(p.requests, fakeSQSRequest{queueURL: queueURL, entries: append([]sqsBatchEntry(nil), entries...)})
+	if len(entries) == 0 {
+		return sqsBatchResponse{}, nil
+	}
+	return p.responses[entries[0].ID], nil
+}
+
 type trackingSQSPublisher struct {
 	mu       sync.Mutex
 	inFlight int
@@ -217,6 +243,40 @@ func (r trackingPubSubResult) Get(context.Context) (string, error) {
 	r.started <- struct{}{}
 	<-r.release
 	return "message-1", nil
+}
+
+type concurrentPubSubPublisher struct {
+	mu       sync.Mutex
+	messages []pubsubMessage
+	started  chan string
+	release  chan struct{}
+}
+
+type concurrentPubSubResult struct {
+	key     string
+	started chan string
+	release chan struct{}
+}
+
+func (p *concurrentPubSubPublisher) Publish(_ context.Context, message pubsubMessage) pubsubPublishResult {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.messages = append(p.messages, message)
+	return concurrentPubSubResult{key: message.OrderingKey, started: p.started, release: p.release}
+}
+
+func (p *concurrentPubSubPublisher) Flush(string) {}
+
+func (p *concurrentPubSubPublisher) ResumePublish(string, string) {}
+
+func (p *concurrentPubSubPublisher) Close() error {
+	return nil
+}
+
+func (r concurrentPubSubResult) Get(context.Context) (string, error) {
+	r.started <- r.key
+	<-r.release
+	return "message-" + r.key, nil
 }
 
 type fakeTopicPublisher struct {
@@ -983,15 +1043,27 @@ func TestValidateWatchdogMustExceedBatchSendBound(t *testing.T) {
 }
 
 func TestValidateRequiresPositivePublishTimeout(t *testing.T) {
-	cfg := testConfig()
-	cfg.PublishTimeout = 0
-	if err := cfg.validate(); err == nil {
-		t.Fatal("expected error when publish timeout is zero")
-	}
+	for _, tc := range []struct {
+		name string
+		edit func(*appConfig)
+	}{
+		{"both backends", func(*appConfig) {}},
+		{"pubsub only", func(cfg *appConfig) { cfg.SQSEnabled = false }},
+		{"sqs only", func(cfg *appConfig) { cfg.PubSubEnabled = false }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig()
+			tc.edit(&cfg)
+			cfg.PublishTimeout = 0
+			if err := cfg.validate(); err == nil {
+				t.Fatal("expected error when publish timeout is zero")
+			}
 
-	cfg.PublishTimeout = -time.Millisecond
-	if err := cfg.validate(); err == nil {
-		t.Fatal("expected error when publish timeout is negative")
+			cfg.PublishTimeout = -time.Millisecond
+			if err := cfg.validate(); err == nil {
+				t.Fatal("expected error when publish timeout is negative")
+			}
+		})
 	}
 }
 
@@ -1199,6 +1271,18 @@ func TestFailureLoggerRateLimitsBySignature(t *testing.T) {
 	}
 	if ok, suppressed := logger.shouldLog("destination-a|retryable"); ok || suppressed != 0 {
 		t.Fatalf("post-summary repeat = (%t, %d), want (false, 0)", ok, suppressed)
+	}
+}
+
+func TestFailureLoggerSkipsContextCancellationFallout(t *testing.T) {
+	logger := newFailureLogger(time.Minute)
+	a := &app{failureLogger: logger}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	a.logFailure(ctx, "should be skipped", "signature")
+	if len(logger.entries) != 0 {
+		t.Fatalf("expected canceled failure log to be skipped, got %#v", logger.entries)
 	}
 }
 
@@ -1488,6 +1572,179 @@ func TestSendPubsubEventsFlushesUnorderedBatch(t *testing.T) {
 	}
 }
 
+func TestSendPubsubEventsFlushesEachUnorderedTopic(t *testing.T) {
+	cfg := testConfig()
+	pubsub := &fakePubSubPublisher{}
+	a := &app{cfg: cfg, pubsub: pubsub}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one"}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-2", "payload": "two"}},
+	}
+
+	if err := a.sendPubsubEvents(context.Background(), nil, events, func(id any) {
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendPubsubEvents returned error: %v", err)
+	}
+
+	sort.Strings(pubsub.flushes)
+	if !reflect.DeepEqual(pubsub.flushes, []string{"topic-1", "topic-2"}) {
+		t.Fatalf("expected flush per unordered topic, got %#v", pubsub.flushes)
+	}
+	if !reflect.DeepEqual(deleted, []any{"event-1", "event-2"}) {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+}
+
+func TestSendPubsubEventsOrderedKeySuccessIsSequentialAndCapped(t *testing.T) {
+	cfg := testConfig()
+	cfg.OrderedGroupBatchCap = 2
+	pubsub := &fakePubSubPublisher{}
+	a := &app{cfg: cfg, pubsub: pubsub}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "ordering_key": "key-a"}},
+	}
+
+	if err := a.sendPubsubEvents(context.Background(), nil, events, func(id any) {
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendPubsubEvents returned error: %v", err)
+	}
+
+	if !reflect.DeepEqual(deleted, []any{"event-1", "event-2"}) {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+	if len(pubsub.messages) != 2 {
+		t.Fatalf("expected cap to publish two messages, got %#v", pubsub.messages)
+	}
+	for i, message := range pubsub.messages {
+		if got, want := string(message.Data), []string{"one", "two"}[i]; got != want {
+			t.Fatalf("message %d data = %q, want %q", i, got, want)
+		}
+	}
+	if !reflect.DeepEqual(pubsub.flushes, []string{"topic-1", "topic-1"}) {
+		t.Fatalf("expected per-message ordered flushes, got %#v", pubsub.flushes)
+	}
+}
+
+func TestSendPubsubEventsOrderedKeysProgressConcurrently(t *testing.T) {
+	cfg := testConfig()
+	pubsub := &concurrentPubSubPublisher{
+		started: make(chan string, 2),
+		release: make(chan struct{}, 2),
+	}
+	a := &app{cfg: cfg, pubsub: pubsub}
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "ordering_key": "key-b"}},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- a.sendPubsubEvents(context.Background(), nil, events, func(any) {})
+	}()
+
+	started := []string{}
+	for i := 0; i < 2; i++ {
+		select {
+		case key := <-pubsub.started:
+			started = append(started, key)
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for ordered keys to start")
+		}
+	}
+	sort.Strings(started)
+	if !reflect.DeepEqual(started, []string{"key-a", "key-b"}) {
+		t.Fatalf("expected both ordered keys to wait concurrently, got %#v", started)
+	}
+
+	pubsub.release <- struct{}{}
+	pubsub.release <- struct{}{}
+	if err := <-done; err != nil {
+		t.Fatalf("sendPubsubEvents returned error: %v", err)
+	}
+}
+
+func TestSendPubsubEventsMixedOrderedAndUnorderedSuccess(t *testing.T) {
+	cfg := testConfig()
+	pubsub := &fakePubSubPublisher{}
+	a := &app{cfg: cfg, pubsub: pubsub}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "ordered-1", "destination": "topic-1", "payload": "ordered", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "unordered-1", "destination": "topic-1", "payload": "unordered"}},
+	}
+
+	if err := a.sendPubsubEvents(context.Background(), nil, events, func(id any) {
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendPubsubEvents returned error: %v", err)
+	}
+	sort.Slice(deleted, func(i, j int) bool { return fmt.Sprint(deleted[i]) < fmt.Sprint(deleted[j]) })
+	if !reflect.DeepEqual(deleted, []any{"ordered-1", "unordered-1"}) {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+	if len(pubsub.messages) != 2 {
+		t.Fatalf("expected two Pub/Sub messages, got %#v", pubsub.messages)
+	}
+}
+
+func TestSendPubsubEventsUnorderedUnknownResultIsKept(t *testing.T) {
+	cfg := testConfig()
+	cfg.PublishTimeout = 20 * time.Millisecond
+	cfg.PublishResultGrace = 0
+	pubsub := &fakePubSubPublisher{results: []fakePubSubResult{{block: true}, {}}}
+	a := &app{cfg: cfg, pubsub: pubsub}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one"}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two"}},
+	}
+
+	err := a.sendPubsubEvents(context.Background(), nil, events, func(id any) {
+		deleted = append(deleted, id)
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline error, got %v", err)
+	}
+	if !reflect.DeepEqual(deleted, []any{"event-2"}) {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+}
+
+func TestSendPubsubEventsCanceledResultIsKept(t *testing.T) {
+	cfg := testConfig()
+	cfg.PublishTimeout = time.Hour
+	pubsub := &fakePubSubPublisher{results: []fakePubSubResult{{block: true}}}
+	a := &app{cfg: cfg, pubsub: pubsub}
+	var deleted []any
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one"}},
+	}
+
+	err := a.sendPubsubEvents(ctx, nil, events, func(id any) {
+		deleted = append(deleted, id)
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation error, got %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+}
+
 func TestSendPubsubEventsDropsLocalPoisonWithoutProviderCall(t *testing.T) {
 	cfg := testConfig()
 	pubsub := &fakePubSubPublisher{}
@@ -1725,6 +1982,28 @@ func TestSendSQS10EventsIsolatesPermanentBatchRequestError(t *testing.T) {
 	}
 }
 
+func TestSendSQS10EventsRetryableRequestErrorKeepsEvents(t *testing.T) {
+	cfg := testConfig()
+	expectedErr := errors.New("temporary SQS outage")
+	sqs := &fakeSQSPublisher{err: expectedErr}
+	a := &app{cfg: cfg, sqs: sqs}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one"}},
+	}
+
+	err := a.sendSQS10Events(context.Background(), nil, "queue-a", events, func(id any) {
+		deleted = append(deleted, id)
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected retryable SQS error, got %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+}
+
 func TestSendSQSEventsStandardUsesConcurrencyLimit(t *testing.T) {
 	cfg := testConfig()
 	cfg.SQSSendConcurrency = 2
@@ -1831,6 +2110,34 @@ func TestSendSQSEventsStandardSplitsByBatchSize(t *testing.T) {
 	}
 }
 
+func TestSendSQSEventsStandardSplitsByCount(t *testing.T) {
+	cfg := testConfig()
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+
+	events := make([]event, 11)
+	for i := range events {
+		events[i] = event{columns: map[string]any{
+			"id":          fmt.Sprintf("event-%02d", i),
+			"destination": "queue-a",
+			"payload":     "payload",
+		}}
+	}
+
+	if err := a.sendSQSEvents(context.Background(), nil, events, func(any) {}); err != nil {
+		t.Fatalf("sendSQSEvents returned error: %v", err)
+	}
+
+	if len(sqs.requests) != 2 {
+		t.Fatalf("expected 11 events to split into two requests, got %#v", sqs.requests)
+	}
+	sizes := []int{len(sqs.requests[0].entries), len(sqs.requests[1].entries)}
+	sort.Ints(sizes)
+	if !reflect.DeepEqual(sizes, []int{1, 10}) {
+		t.Fatalf("unexpected chunk sizes: %#v", sizes)
+	}
+}
+
 func TestSendSQSEventsFIFOStopsGroupAfterRetryableFailure(t *testing.T) {
 	cfg := testConfig()
 	sqs := &fakeSQSPublisher{responses: []sqsBatchResponse{
@@ -1870,6 +2177,100 @@ func TestSendSQSEventsFIFOStopsGroupAfterRetryableFailure(t *testing.T) {
 		if entry.DeduplicationID != entry.ID {
 			t.Fatalf("expected raw valid event id as dedup id, got %q for %q", entry.DeduplicationID, entry.ID)
 		}
+	}
+}
+
+func TestSendSQSEventsFIFOProcessesDifferentGroups(t *testing.T) {
+	cfg := testConfig()
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+	var deletedMu sync.Mutex
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-b"}},
+	}
+
+	if err := a.sendSQSEvents(context.Background(), nil, events, func(id any) {
+		deletedMu.Lock()
+		defer deletedMu.Unlock()
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendSQSEvents returned error: %v", err)
+	}
+
+	deletedMu.Lock()
+	deletedCopy := append([]any(nil), deleted...)
+	deletedMu.Unlock()
+	sort.Slice(deletedCopy, func(i, j int) bool { return fmt.Sprint(deletedCopy[i]) < fmt.Sprint(deletedCopy[j]) })
+	if !reflect.DeepEqual(deletedCopy, []any{"event-1", "event-2"}) {
+		t.Fatalf("unexpected deleted ids: %#v", deletedCopy)
+	}
+	if len(sqs.requests) != 2 {
+		t.Fatalf("expected one request per FIFO group event, got %#v", sqs.requests)
+	}
+	groups := []string{sqs.requests[0].entries[0].MessageGroupID, sqs.requests[1].entries[0].MessageGroupID}
+	sort.Strings(groups)
+	if !reflect.DeepEqual(groups, []string{"group-a", "group-b"}) {
+		t.Fatalf("unexpected FIFO groups: %#v", groups)
+	}
+}
+
+func TestSendSQSEventsFIFOAppliesGroupBatchCap(t *testing.T) {
+	cfg := testConfig()
+	cfg.OrderedGroupBatchCap = 2
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "ordering_key": "group-a"}},
+	}
+
+	if err := a.sendSQSEvents(context.Background(), nil, events, func(id any) {
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendSQSEvents returned error: %v", err)
+	}
+
+	if !reflect.DeepEqual(deleted, []any{"event-1", "event-2"}) {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+	if len(sqs.requests) != 2 {
+		t.Fatalf("expected cap to send two requests, got %#v", sqs.requests)
+	}
+}
+
+func TestSendSQSEventsFIFODifferentGroupCanSucceedWhenOneFails(t *testing.T) {
+	cfg := testConfig()
+	sqs := &keyedSQSPublisher{responses: map[string]sqsBatchResponse{
+		"event-1": {Failed: []sqsBatchFailure{{ID: "event-1", Code: "InternalError", Message: "retry", SenderFault: false}}},
+		"event-2": {Successful: []sqsBatchSuccess{{ID: "event-2", MessageID: "message-2"}}},
+	}}
+	a := &app{cfg: cfg, sqs: sqs}
+	var deletedMu sync.Mutex
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-b"}},
+	}
+
+	if err := a.sendSQSEvents(context.Background(), nil, events, func(id any) {
+		deletedMu.Lock()
+		defer deletedMu.Unlock()
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendSQSEvents returned error: %v", err)
+	}
+
+	deletedMu.Lock()
+	defer deletedMu.Unlock()
+	if !reflect.DeepEqual(deleted, []any{"event-2"}) {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
 	}
 }
 
