@@ -37,6 +37,32 @@ type batchResult struct {
 	selected int
 }
 
+type sender interface {
+	Send(ctx context.Context, events []event) (done []event, err error)
+	Close() error
+}
+
+type appSender struct {
+	send  func(ctx context.Context, events []event) ([]event, error)
+	close func() error
+}
+
+func (s appSender) Send(ctx context.Context, events []event) ([]event, error) {
+	return s.send(ctx, events)
+}
+
+func (s appSender) Close() error {
+	if s.close == nil {
+		return nil
+	}
+	return s.close()
+}
+
+type senderResult struct {
+	done []event
+	err  error
+}
+
 func startDeadlockDetector(interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -138,31 +164,6 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		slog.Info("Processing batch", "count", len(events))
 	}
 
-	var idsMu sync.Mutex
-	idsToDelete := []any{}
-	selectedIDs := map[string]struct{}{}
-	for _, evt := range events {
-		selectedIDs[eventIDKey(eventValue(evt, a.cfg.EventID))] = struct{}{}
-	}
-	idsSeen := map[string]struct{}{}
-	addIDToDelete := func(id any) {
-		key := eventIDKey(id)
-		idsMu.Lock()
-		defer idsMu.Unlock()
-		if _, ok := selectedIDs[key]; !ok {
-			a.logFailure(ctx, "Sender reported an ID outside the selected batch, ignoring it",
-				fmt.Sprintf("sender-outside-selection|%s", key),
-				"event_id", id,
-			)
-			return
-		}
-		if _, ok := idsSeen[key]; ok {
-			return
-		}
-		idsSeen[key] = struct{}{}
-		idsToDelete = append(idsToDelete, id)
-	}
-
 	pubsubEvents := []event{}
 	sqsEvents := []event{}
 	for _, evt := range events {
@@ -184,16 +185,15 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		}
 	}
 
-	errs := make(chan error, 2)
+	results := make(chan senderResult, 2)
 	var wg sync.WaitGroup
 
 	if len(pubsubEvents) > 0 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := a.sendPubsubEvents(ctx, tx, pubsubEvents, addIDToDelete); err != nil {
-				errs <- err
-			}
+			done, err := a.pubsubSender().Send(ctx, pubsubEvents)
+			results <- senderResult{done: done, err: err}
 		}()
 	}
 
@@ -201,30 +201,96 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := a.sendSQSEvents(ctx, tx, sqsEvents, addIDToDelete); err != nil {
-				errs <- err
-			}
+			done, err := a.sqsSender().Send(ctx, sqsEvents)
+			results <- senderResult{done: done, err: err}
 		}()
 	}
 
 	wg.Wait()
-	close(errs)
+	close(results)
 
-	idsMu.Lock()
-	deleteIDs := append([]any(nil), idsToDelete...)
-	idsMu.Unlock()
+	deleteIDs := []any{}
+	var senderErr error
+	for result := range results {
+		for _, evt := range result.done {
+			deleteIDs = append(deleteIDs, eventValue(evt, a.cfg.EventID))
+		}
+		if result.err != nil {
+			senderErr = errors.Join(senderErr, result.err)
+		}
+	}
 
 	if err := a.deleteEvents(ctx, tx, deleteIDs); err != nil {
 		return result, fmtDBError(err)
 	}
 
-	for err := range errs {
-		if err != nil {
-			return result, err
-		}
+	if senderErr != nil {
+		return result, senderErr
 	}
 
 	return result, nil
+}
+
+func (a *app) pubsubSender() sender {
+	return appSender{
+		send: func(ctx context.Context, events []event) ([]event, error) {
+			return a.collectSenderDoneEvents(ctx, events, func(addDoneID func(any)) error {
+				return a.sendPubsubEvents(ctx, nil, events, addDoneID)
+			})
+		},
+		close: func() error {
+			if a.pubsub == nil {
+				return nil
+			}
+			return a.pubsub.Close()
+		},
+	}
+}
+
+func (a *app) sqsSender() sender {
+	return appSender{
+		send: func(ctx context.Context, events []event) ([]event, error) {
+			return a.collectSenderDoneEvents(ctx, events, func(addDoneID func(any)) error {
+				return a.sendSQSEvents(ctx, nil, events, addDoneID)
+			})
+		},
+	}
+}
+
+func (a *app) collectSenderDoneEvents(ctx context.Context, events []event, send func(addDoneID func(any)) error) ([]event, error) {
+	eventsByID := map[string]event{}
+	for _, evt := range events {
+		eventsByID[eventIDKey(eventValue(evt, a.cfg.EventID))] = evt
+	}
+
+	seen := map[string]struct{}{}
+	done := []event{}
+	var doneMu sync.Mutex
+	addDoneID := func(id any) {
+		key := eventIDKey(id)
+
+		doneMu.Lock()
+		defer doneMu.Unlock()
+		evt, ok := eventsByID[key]
+		if !ok {
+			a.logFailure(ctx, "Sender reported an ID outside the selected batch, ignoring it",
+				fmt.Sprintf("sender-outside-selection|%s", key),
+				"event_id", id,
+			)
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		done = append(done, evt)
+	}
+
+	err := send(addDoneID)
+	doneMu.Lock()
+	copiedDone := append([]event(nil), done...)
+	doneMu.Unlock()
+	return copiedDone, err
 }
 
 func fmtDBError(err error) error {
