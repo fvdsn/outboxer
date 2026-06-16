@@ -9,21 +9,22 @@ ghcr.io/fvdsn/outboxer:v0.1.0
 The image is built for `linux/amd64` and `linux/arm64`. Pin an explicit version
 in production instead of `latest`.
 
-This repository includes sample Terraform examples for four common deployment
-targets:
+This repository includes sample deployment examples for four common targets:
 
 | Target | Example |
 | --- | --- |
 | GCP Cloud Run | [`examples/terraform/gcp-cloud-run`](../examples/terraform/gcp-cloud-run) |
-| GCP GKE | [`examples/terraform/gcp-gke`](../examples/terraform/gcp-gke) |
+| GCP GKE | [`examples/kubernetes/gke`](../examples/kubernetes/gke) |
 | AWS ECS Fargate | [`examples/terraform/aws-ecs-fargate`](../examples/terraform/aws-ecs-fargate) |
-| AWS EKS | [`examples/terraform/aws-eks`](../examples/terraform/aws-eks) |
+| AWS EKS | [`examples/kubernetes/eks`](../examples/kubernetes/eks) |
 
-The examples are intentionally small copy-and-edit stacks, not
-registry-published Terraform modules. They focus on the Outboxer runtime:
-service identity, secrets, publish permissions, health checks, and restart
-supervision. They assume that PostgreSQL, Pub/Sub topics, SQS queues, VPC
-networking, and Kubernetes clusters already exist.
+The examples are intentionally small copy-and-edit references, not
+registry-published modules. The Cloud Run and ECS examples use Terraform because
+those targets are cloud resources. The GKE and EKS examples use Kubernetes YAML
+and leave the cloud-side IAM setup to the reader.
+
+All examples assume that PostgreSQL, Pub/Sub topics, SQS queues, VPC networking,
+and Kubernetes clusters already exist.
 
 ## Common Checklist
 
@@ -61,19 +62,20 @@ See [`examples/terraform/gcp-cloud-run`](../examples/terraform/gcp-cloud-run).
 
 ## GCP GKE
 
-Use GKE when Outboxer should run next to other Kubernetes workloads. The example
-creates:
+Use GKE when Outboxer should run next to other Kubernetes workloads. The
+Kubernetes YAML creates:
 
-- a Google service account
-- a Pub/Sub publisher IAM binding
 - a Kubernetes service account annotated for Workload Identity
 - a Deployment with resource requests, limits, and a liveness probe
+
+Create the Google service account, Pub/Sub publisher IAM binding, and Workload
+Identity binding separately.
 
 The Kubernetes Secret containing `PG_PASSWORD` is intentionally left to the
 calling stack. That lets each installation choose External Secrets, Secret
 Manager sync, sealed secrets, or plain Kubernetes Secrets.
 
-See [`examples/terraform/gcp-gke`](../examples/terraform/gcp-gke).
+See [`examples/kubernetes/gke`](../examples/kubernetes/gke).
 
 ## AWS ECS Fargate
 
@@ -94,16 +96,17 @@ See [`examples/terraform/aws-ecs-fargate`](../examples/terraform/aws-ecs-fargate
 
 ## AWS EKS
 
-Use EKS when Outboxer should run in AWS-managed Kubernetes. The example creates:
+Use EKS when Outboxer should run in AWS-managed Kubernetes. The Kubernetes YAML
+creates:
 
-- an IAM role trusted by the Kubernetes service account through IRSA
-- SQS publish permissions
 - a Kubernetes service account annotated with that IAM role
 - a Deployment with resource requests, limits, and a liveness probe
 
+Create the IAM role, IRSA trust policy, and SQS permissions separately.
+
 As with GKE, Kubernetes Secrets are left to the calling stack.
 
-See [`examples/terraform/aws-eks`](../examples/terraform/aws-eks).
+See [`examples/kubernetes/eks`](../examples/kubernetes/eks).
 
 ## Cross-Cloud Publishing
 

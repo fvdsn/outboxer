@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: outboxer
+  labels:
+    app: outboxer
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: outboxer
+  namespace: outboxer
+  labels:
+    app: outboxer
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/outboxer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outboxer
+  namespace: outboxer
+  labels:
+    app: outboxer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: outboxer
+  template:
+    metadata:
+      labels:
+        app: outboxer
+    spec:
+      serviceAccountName: outboxer
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: outboxer
+          image: ghcr.io/fvdsn/outboxer:v0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: HEALTH_PORT
+              value: "8080"
+            - name: LOG_FORMAT
+              value: "json"
+            - name: SQS_ENABLED
+              value: "true"
+            - name: AWS_REGION
+              value: "eu-west-1"
+            - name: DEFAULT_SQS_QUEUE_URL
+              value: "https://sqs.eu-west-1.amazonaws.com/123456789012/events"
+            - name: PG_HOST
+              value: "app.cluster-abcdefghijkl.eu-west-1.rds.amazonaws.com"
+            - name: PG_USER
+              value: "outboxer"
+            - name: PG_DATABASE
+              value: "app"
+            - name: PG_SSL
+              value: "true"
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: outboxer-db
+                  key: password
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10

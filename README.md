@@ -256,10 +256,11 @@ path; without a supervisor the process would simply stay down.
 ## Layout
 
 ```text
-cmd/outboxer/        executable entrypoint
-docs/                design notes and deployment guides
-examples/terraform/  sample deployment examples
-internal/outboxer/   service implementation
+cmd/outboxer/         executable entrypoint
+docs/                 design notes and deployment guides
+examples/kubernetes/  sample Kubernetes manifests
+examples/terraform/   sample cloud deployment examples
+internal/outboxer/    service implementation
 ```
 
 ## Run
@@ -302,7 +303,7 @@ docker build -t outboxer:local .
 
 ## Deployment
 
-Deployment guidance and sample Terraform examples are available in
+Deployment guidance and sample deployment examples are available in
 [`docs/deployment.md`](docs/deployment.md). The examples cover GCP Cloud Run,
 GKE, AWS ECS Fargate, and EKS.
 
