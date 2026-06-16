@@ -1380,6 +1380,7 @@ func TestSQSLocalPrevalidationBoundaries(t *testing.T) {
 		{"AWS.trace": "value"},
 		{"Amazon.trace": "value"},
 		{"bad name": "value"},
+		{strings.Repeat("k", 257): "value"},
 		{"empty": ""},
 	}
 	for _, attr := range invalidAttrs {
@@ -1396,6 +1397,9 @@ func TestSQSLocalPrevalidationBoundaries(t *testing.T) {
 	}
 	if !isSQSPoison([]byte{0xff}, nil, false, "") {
 		t.Fatal("expected invalid UTF-8 SQS body to be poison")
+	}
+	if !isSQSPoison([]byte("body"), map[string]string{"attr": string([]byte{0xff})}, false, "") {
+		t.Fatal("expected invalid UTF-8 SQS attribute value to be poison")
 	}
 	if isSQSPoison([]byte("body\t\n\r"), nil, false, "") {
 		t.Fatal("expected allowed SQS boundary characters to be valid")
@@ -1633,6 +1637,38 @@ func TestSendPubsubEventsOrderedKeySuccessIsSequentialAndCapped(t *testing.T) {
 	}
 }
 
+func TestSendPubsubEventsOrderedKeyPreservesOrderAcrossBatches(t *testing.T) {
+	cfg := testConfig()
+	cfg.OrderedGroupBatchCap = 2
+	pubsub := &fakePubSubPublisher{}
+	a := &app{cfg: cfg, pubsub: pubsub}
+
+	firstBatch := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "ordering_key": "key-a"}},
+	}
+	if err := a.sendPubsubEvents(context.Background(), nil, firstBatch, func(any) {}); err != nil {
+		t.Fatalf("first sendPubsubEvents returned error: %v", err)
+	}
+
+	secondBatch := []event{
+		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-4", "destination": "topic-1", "payload": "four", "ordering_key": "key-a"}},
+	}
+	if err := a.sendPubsubEvents(context.Background(), nil, secondBatch, func(any) {}); err != nil {
+		t.Fatalf("second sendPubsubEvents returned error: %v", err)
+	}
+
+	got := []string{}
+	for _, message := range pubsub.messages {
+		got = append(got, string(message.Data))
+	}
+	if !reflect.DeepEqual(got, []string{"one", "two", "three", "four"}) {
+		t.Fatalf("unexpected ordered publish sequence: %#v", got)
+	}
+}
+
 func TestSendPubsubEventsOrderedKeysProgressConcurrently(t *testing.T) {
 	cfg := testConfig()
 	pubsub := &concurrentPubSubPublisher{
@@ -1801,6 +1837,37 @@ func TestSendPubsubEventsIsolatesPermanentUnorderedFailure(t *testing.T) {
 	}
 	if !reflect.DeepEqual(pubsub.flushes, []string{"topic-1", "topic-1"}) {
 		t.Fatalf("expected flush for initial publish and isolation, got %#v", pubsub.flushes)
+	}
+}
+
+func TestSendPubsubEventsIsolatesPermanentBadEventAndValidEvent(t *testing.T) {
+	cfg := testConfig()
+	pubsub := &fakePubSubPublisher{errs: []error{
+		pubsubPermanentError("bundle"),
+		pubsubPermanentError("bundle"),
+		pubsubPermanentError("bad event"),
+		nil,
+	}}
+	a := &app{cfg: cfg, pubsub: pubsub}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "bad", "destination": "topic-1", "payload": "bad"}},
+		{columns: map[string]any{"id": "valid", "destination": "topic-1", "payload": "valid"}},
+	}
+
+	err := a.sendPubsubEvents(context.Background(), nil, events, func(id any) {
+		deleted = append(deleted, id)
+	})
+	if err != nil {
+		t.Fatalf("sendPubsubEvents returned error: %v", err)
+	}
+
+	if !reflect.DeepEqual(deleted, []any{"bad", "valid"}) {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+	if len(pubsub.messages) != 4 {
+		t.Fatalf("expected two bundled publishes plus two isolated publishes, got %#v", pubsub.messages)
 	}
 }
 
@@ -2482,6 +2549,32 @@ func TestSendSQS10EventsKeepsSyntacticallyValidMissingQueue(t *testing.T) {
 	}
 }
 
+func TestSendSQS10EventsKeepsRetryableProviderErrors(t *testing.T) {
+	for _, code := range []string{"QueueDoesNotExist", "AccessDenied", "ExpiredToken", "ThrottlingException"} {
+		t.Run(code, func(t *testing.T) {
+			cfg := testConfig()
+			expectedErr := fakeSQSAPIError{code: code}
+			sqs := &fakeSQSPublisher{err: expectedErr}
+			a := &app{cfg: cfg, sqs: sqs}
+			var deleted []any
+
+			events := []event{
+				{columns: map[string]any{"id": "event-1", "destination": "https://sqs.us-east-1.amazonaws.com/123456789012/queue", "payload": "payload"}},
+			}
+
+			err := a.sendSQS10Events(context.Background(), nil, "https://sqs.us-east-1.amazonaws.com/123456789012/queue", events, func(id any) {
+				deleted = append(deleted, id)
+			})
+			if !errors.Is(err, expectedErr) {
+				t.Fatalf("expected provider error, got %v", err)
+			}
+			if len(deleted) != 0 {
+				t.Fatalf("expected event to be kept for %s, got deleted ids %#v", code, deleted)
+			}
+		})
+	}
+}
+
 func TestProcessOneBatchCommitsDoneBeforeNonFatalSenderError(t *testing.T) {
 	cfg := testConfig()
 	cfg.SQSEnabled = false
@@ -2507,6 +2600,75 @@ func TestProcessOneBatchCommitsDoneBeforeNonFatalSenderError(t *testing.T) {
 	}
 	if result.selected != 2 {
 		t.Fatalf("expected two selected events, got %d", result.selected)
+	}
+}
+
+func TestProcessOneBatchBeginFailureIsDatabaseError(t *testing.T) {
+	cfg := testConfig()
+	expectedErr := errors.New("begin failed")
+	pubsub := &fakePubSubPublisher{}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = pubsub
+	mock.ExpectBegin().WillReturnError(expectedErr)
+
+	result, err := a.processOneBatch(context.Background())
+	if !errors.Is(err, expectedErr) || !errors.Is(err, errDatabaseBatch) {
+		t.Fatalf("expected database begin error, got %v", err)
+	}
+	if result.selected != 0 {
+		t.Fatalf("expected no selected events, got %d", result.selected)
+	}
+	if len(pubsub.messages) != 0 {
+		t.Fatalf("expected no sender calls after begin failure, got %#v", pubsub.messages)
+	}
+}
+
+func TestProcessOneBatchEmptyBatchCommitsWithoutDelete(t *testing.T) {
+	cfg := testConfig()
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = &fakePubSubPublisher{}
+	a.sqs = &fakeSQSPublisher{autoReply: true}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockEventRows())
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 0 {
+		t.Fatalf("expected empty batch, got %d selected events", result.selected)
+	}
+}
+
+func TestProcessOneBatchDeletesContentPoisonAndConfirmedSendTogether(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubEnabled = false
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.sqs = sqs
+
+	rows := mockEventRows().
+		AddRow("poison", "sqs", "queue-a", "", nil, nil).
+		AddRow("confirmed", "sqs", "queue-a", "payload", nil, nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectExec(deleteTwoSQL).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 2 {
+		t.Fatalf("expected two selected events, got %d", result.selected)
+	}
+	if len(sqs.requests) != 1 || len(sqs.requests[0].entries) != 1 || sqs.requests[0].entries[0].ID != "confirmed" {
+		t.Fatalf("expected only confirmed event to be sent, got %#v", sqs.requests)
 	}
 }
 
