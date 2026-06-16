@@ -62,16 +62,23 @@ completely stop unrelated destinations.
 Requirements:
 
 - This is the default mode.
-- Select up to `COLLECT_PER_ROUTE_LIMIT` events per resolved `(target,
-  destination)` route, ordered by event id within each route.
-- Consider **all** resolved `(target, destination)` routes in the table in the
-  same collection query, not only a subset of routes chosen by a prior query.
+- Select up to `COLLECT_PER_ROUTE_LIMIT` events per eligible resolved
+  `(target, destination)` route, ordered by event id within each route.
+- Consider **all** eligible resolved `(target, destination)` routes in the table
+  in the same collection query, not only a subset of routes chosen by a prior
+  query.
 - Do **not** apply `COLLECT_GLOBAL_LIMIT` in this mode. A global cap is
   fundamentally incompatible with the requirement to select across all routes:
   it would reintroduce a subset of routes chosen by global age.
-- A broken, retrying, or unsupported `(target, destination)` route can consume at
-  most `COLLECT_PER_ROUTE_LIMIT` slots in one selected batch and therefore
-  cannot occupy the entire batch while other routes have eligible events.
+- Only events that resolve to an enabled backend and a concrete destination are
+  eligible for collection in this mode. Routing failures (R7, R10-R12) are not
+  selected, logged, or sent by `per_route_ordered`; they remain in the table
+  until configuration or code changes make them routable, or until an operator
+  intentionally uses `global_ordered`.
+- A valid route whose provider sends are broken or retrying can consume at most
+  `COLLECT_PER_ROUTE_LIMIT` slots in one selected batch and therefore cannot
+  occupy the entire selected batch while other valid routes have eligible
+  events.
 - This mode does not make healthy routes independent of broken routes within the
   same Stage 1 transaction. A broken route can still slow the batch until its
   bounded sender operations return, because all `done` events commit together at
@@ -85,25 +92,24 @@ Requirements:
   broken, the processor may still make no deletion progress; sender failures
   still follow S12.
 
-The grouping key is the **resolved route**:
+The grouping key is the **eligible resolved route**:
 
 - `resolved_target` is the event target when the target column exists and is
   non-empty; when the target column is absent or empty and exactly one backend is
-  enabled, it is that enabled backend; otherwise it is a sentinel representing
-  the retryable routing failure.
+  enabled, it is that enabled backend. Any other target state is a retryable
+  routing failure and is not eligible in this mode.
 - `resolved_destination` is the event destination when the destination column
   exists and is non-empty; otherwise it is the routed backend's configured
-  default destination when one exists; otherwise it is a sentinel representing
-  the retryable missing-destination failure.
+  default destination when one exists. An empty resolved destination is a
+  retryable routing failure and is not eligible in this mode.
 - Known-but-disabled targets, unknown targets, ambiguous empty targets, and
-  missing destinations still remain retryable routing failures. They are grouped
-  by stable sentinel values so they are bounded like any other route, but they
-  are not deleted.
+  missing destinations still remain retryable routing failures. This mode simply
+  does not select them.
 
 Shape:
 
 ```sql
-WITH routed AS (
+WITH routable AS (
   SELECT
     id,
     resolved_target,
@@ -113,10 +119,11 @@ WITH routed AS (
       ORDER BY id
     ) AS route_rank
   FROM events
+  WHERE is_routable
 ),
 ranked AS (
   SELECT id
-  FROM routed
+  FROM routable
   WHERE route_rank <= COLLECT_PER_ROUTE_LIMIT
 )
 SELECT events.*
@@ -126,15 +133,16 @@ ORDER BY events.id
 FOR UPDATE;
 ```
 
-The real implementation must generate `resolved_target` and
-`resolved_destination` from the configured columns and backend defaults. If a
-column is not configured or not present because it is optional, the generated SQL
-must use the corresponding default/sentinel expression instead of referencing
-the missing column. The sketch uses `id` for readability; the real query uses the
-configured event id column for ranking and joining. The ranking query may compute
-synthetic columns, but the final projection must return only base event-table
-columns so synthetic values do not leak into `event.columns` or collide with
-user columns.
+The real implementation must generate `resolved_target`, `resolved_destination`,
+and `is_routable` from the configured columns, enabled backends, and backend
+defaults. `is_routable` is true only when the event resolves to an enabled
+backend and a non-empty destination. If a column is not configured or not present
+because it is optional, the generated SQL must use the corresponding default or
+routing expression instead of referencing the missing column. The sketch uses
+`id` for readability; the real query uses the configured event id column for
+ranking and joining. The ranking query may compute synthetic columns, but the
+final projection must return only base event-table columns so synthetic values do
+not leak into `event.columns` or collide with user columns.
 
 ## Step 2 — Sending events (to be redesigned)
 
@@ -225,8 +233,11 @@ user columns.
   exists. Routing failures are not poison: an unknown target might become
   supported after an Outboxer upgrade, an ambiguous target might become routable
   after configuration changes, and a missing destination can be fixed by adding a
-  default. Routing failures are kept + logged (bounded), even though they can clog
-  collection until fixed. All other failures are retried (cadence per S12).
+  default. Routing failures are kept. In `global_ordered` mode, selected routing
+  failures are logged through the bounded failure logger and can clog collection
+  until fixed. In `per_route_ordered` mode, routing failures are not eligible for
+  selection, so they are neither sent nor logged by the processor. All other
+  failures are retried (cadence per S12).
 - **S12 — Back off on database errors only.** Busy-looping the DB is desired (it
   keeps latency low and is not harmful), so it is the default. Only a
   *database/transaction* error (BeginTx/SELECT/DELETE/COMMIT failing — connection
@@ -452,8 +463,8 @@ the DLQ.
 
 ### Routing failures (keep)
 
-Routing failures never reach a backend. They are kept + logged (bounded), because
-they may become sendable without editing the event itself:
+Routing failures never reach a backend. They are kept, because they may become
+sendable without editing the event itself:
 
 - **R10 — target unsupported by the current build**: an unknown target value
   (e.g. `kafka`) might become routable after an Outboxer upgrade.
@@ -533,32 +544,35 @@ Poison removal fixes the *never-drainable content* clog. Operator/code-action
 failures (R4–R7, R10–R12) are **not** poison (they could succeed later), so we
 cannot drop them without risking loss. In `global_ordered` mode, a
 badly-misconfigured destination or unsupported target can accumulate at the
-front and crowd the window until the operator fixes it or Outboxer is upgraded.
-In `per_route_ordered` mode, that route is bounded to
-`COLLECT_PER_ROUTE_LIMIT` events per batch, so unrelated routes can still be
-selected. The broken route may still slow the batch until its bounded sender
-operations return; Stage 1 commits all `done` events together. The remaining
-risks are fast retry of the broken route and large batches when many routes have
+front and crowd the window until the operator fixes it or Outboxer is upgraded,
+and selected routing failures are logged through the bounded failure logger. In
+`per_route_ordered` mode, routing failures are ignored by collection and remain
+pending until they become routable; they cannot crowd selection, but they also
+are not logged by the processor while unroutable. A valid route whose provider
+sends are broken can still slow a batch until its bounded sender operations
+return; Stage 1 commits all `done` events together. The remaining risks are fast
+retry of broken valid routes and large batches when many valid routes have
 pending events. Surface these via metrics/alerting ("events failing for
 destination X for N minutes", "oldest event age by destination", "selected
 routes per batch") rather than by dropping retryable events.
 
 The SDK clients pace *throttling/transient* sender errors with their own
-backoff, but a *persistent fast-fail* (auth denied, queue not found — R4/R5/R7)
+backoff, but a *persistent fast-fail* (auth denied, queue not found — R4/R5)
 returns immediately, so the busy loop re-hits that sender's API rapidly. Routing
-failures (R10–R12) do not hit a provider API, but can still fast-loop through
-collection and bounded logging. The log flood from this is bounded by S13; API
-re-hits are left to the managed service's own throttling. If this proves harmful
-in practice, add a small no-progress pace specifically for fast-failing sends or
-routing failures — not done now, since it trades away the low-latency busy loop
-we want.
+failures (R7, R10–R12) do not hit a provider API. In `global_ordered`, they can
+still fast-loop through collection and bounded logging. In `per_route_ordered`,
+they are not selected. Log flood is bounded by S13; API re-hits are left to the
+managed service's own throttling. If this proves harmful in practice, add a
+small no-progress pace specifically for fast-failing sends or routing failures
+— not done now, since it trades away the low-latency busy loop we want.
 
 ### Changes vs. current behavior
 
 - SQS oversized + sender-fault → already dropped. ✓
 - Routing failures (R10–R12) are currently *left* and accumulate → stay kept in
   Stage 1 (unchanged), because dropping them would lose events recoverable by
-  config or a future Outboxer build.
+  config or a future Outboxer build. In `per_route_ordered`, they are not
+  selected until they become routable.
 - Pub/Sub oversized/known-invalid (content-poison) is currently retried forever →
   becomes dropped poison; ambiguous backend rejects are isolated before any event
   is removed.
@@ -619,8 +633,10 @@ Sender errors are classified outside the `done` set:
    `SKIP LOCKED`. This serializes Outboxer processors on the oldest selected
    rows while allowing producers to keep inserting new events. — [collection]
 3. Route to `pubsub` / `sqs` / retryable routing failure using the routing
-   classification table. Routing failures (R7, R10–R12) are **kept** and logged
-   through the bounded failure logger — [S11, S0, S13]
+   classification table. In `global_ordered`, selected routing failures (R7,
+   R10–R12) are **kept** and logged through the bounded failure logger. In
+   `per_route_ordered`, routing failures are not selected by the collector. —
+   [S11, S0, S13]
 4. `pubsubSender.Send` and `sqsSender.Send` **concurrently** under the shutdown
    context. Senders apply `PUBLISH_TIMEOUT` per provider publish operation and
    configure any internal provider timeout needed to make that bound real. — [S3,
