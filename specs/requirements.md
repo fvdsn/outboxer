@@ -1,6 +1,6 @@
 # Event processing requirements & Stage 1 design
 
-Status: **requirements agreed; Stage 1 design proposed.** Not implemented yet.
+Status: **requirements agreed; Stage 1 implementation in progress.**
 
 Processing has two steps: **collecting** the events to send, and **sending**
 them. Collection supports two modes; sending is redesigned and delivered in

@@ -30,7 +30,7 @@ var (
 )
 
 func init() {
-	deadlockDetector.Store(randomInt63())
+	markProcessorProgress()
 }
 
 type batchResult struct {
@@ -137,6 +137,9 @@ func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 
 	if err := tx.Commit(); err != nil {
 		logBatchError(ctx, "Failed to commit batch transaction", err)
+		if errors.Is(batchErr, errFatalAfterCommit) {
+			return result, errors.Join(batchErr, fmtDBError(err))
+		}
 		return result, fmtDBError(err)
 	}
 
@@ -153,7 +156,7 @@ func logBatchError(ctx context.Context, message string, err error) {
 }
 
 func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, error) {
-	deadlockDetector.Store(randomInt63())
+	markProcessorProgress()
 
 	events, err := a.selectEvents(ctx, tx)
 	if err != nil {
@@ -168,6 +171,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	sqsEvents := []event{}
 	for _, evt := range events {
 		route := a.classifyRoute(evt)
+		markProcessorProgress()
 		switch route.backend {
 		case backendPubSub:
 			pubsubEvents = append(pubsubEvents, evt)
@@ -221,6 +225,9 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	}
 
 	if err := a.deleteEvents(ctx, tx, deleteIDs); err != nil {
+		if senderErr != nil {
+			return result, errors.Join(senderErr, fmtDBError(err))
+		}
 		return result, fmtDBError(err)
 	}
 
@@ -267,6 +274,7 @@ func (a *app) collectSenderDoneEvents(ctx context.Context, events []event, send 
 	done := []event{}
 	var doneMu sync.Mutex
 	addDoneID := func(id any) {
+		markProcessorProgress()
 		key := eventIDKey(id)
 
 		doneMu.Lock()
@@ -381,4 +389,8 @@ func randomInt63() int64 {
 	randomMu.Lock()
 	defer randomMu.Unlock()
 	return randomSource.Int63()
+}
+
+func markProcessorProgress() {
+	deadlockDetector.Store(randomInt63())
 }

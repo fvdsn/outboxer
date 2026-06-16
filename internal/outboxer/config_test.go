@@ -45,6 +45,15 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	if cfg.WatchdogInterval != 10*time.Minute {
 		t.Fatalf("expected default watchdog interval 10m, got %s", cfg.WatchdogInterval)
 	}
+	if cfg.CollectionMode != collectionModePerRouteOrdered {
+		t.Fatalf("expected default collection mode %q, got %q", collectionModePerRouteOrdered, cfg.CollectionMode)
+	}
+	if cfg.CollectGlobalLimit != 100 {
+		t.Fatalf("expected default global collection limit 100, got %d", cfg.CollectGlobalLimit)
+	}
+	if cfg.CollectPerRouteLimit != 40 {
+		t.Fatalf("expected default per-route collection limit 40, got %d", cfg.CollectPerRouteLimit)
+	}
 }
 
 func TestLoadConfigVerifiesTLSByDefault(t *testing.T) {
@@ -257,6 +266,12 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"Env: POLL_INTERVAL_MS",
 		"--watchdog-interval-ms",
 		"Env: WATCHDOG_INTERVAL_MS",
+		"--collection-mode",
+		"Env: COLLECTION_MODE",
+		"--collect-global-limit",
+		"Env: COLLECT_GLOBAL_LIMIT",
+		"--collect-per-route-limit",
+		"Env: COLLECT_PER_ROUTE_LIMIT",
 		"--sqs-send-concurrency",
 		"Env: SQS_SEND_CONCURRENCY",
 		"--sqs-api-endpoint",
@@ -277,6 +292,24 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 	}
 	if !strings.Contains(help, "Env: PG_PASSWORD") || !strings.Contains(help, "Default: <set>") {
 		t.Fatalf("expected help to mention redacted pg password default, got:\n%s", help)
+	}
+}
+
+func TestValidateCollectionMode(t *testing.T) {
+	cfg := testConfig()
+	cfg.CollectionMode = collectionModePerRouteOrdered
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected per-route mode to be valid, got %v", err)
+	}
+
+	cfg.CollectionMode = collectionModeGlobalOrdered
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected global mode to be valid, got %v", err)
+	}
+
+	cfg.CollectionMode = "oldest_first"
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected invalid collection mode to fail validation")
 	}
 }
 
@@ -524,9 +557,25 @@ func TestValidateRequiresPositiveSQSConcurrencyWhenSQSEnabled(t *testing.T) {
 	}
 }
 
+func TestValidateRequiresPositiveCollectionLimits(t *testing.T) {
+	cfg := testConfig()
+	cfg.CollectionMode = collectionModePerRouteOrdered
+	cfg.CollectGlobalLimit = 0
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected zero global collection limit to fail even in per-route mode")
+	}
+
+	cfg = testConfig()
+	cfg.CollectionMode = collectionModeGlobalOrdered
+	cfg.CollectPerRouteLimit = 0
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected zero per-route collection limit to fail even in global mode")
+	}
+}
+
 func TestBatchSendBound(t *testing.T) {
 	cfg := testConfig()
-	cfg.BatchSize = 32
+	cfg.CollectGlobalLimit = 32
 	cfg.SQSSendConcurrency = 8
 	cfg.OrderedGroupBatchCap = 8
 	cfg.PublishTimeout = 30 * time.Second
@@ -551,6 +600,11 @@ func TestBatchSendBound(t *testing.T) {
 	cfg.SQSEnabled = false
 	if got, want := cfg.batchSendBound(), 8*35*time.Second; got != want {
 		t.Fatalf("Pub/Sub-only bound = %s, want %s", got, want)
+	}
+
+	cfg.CollectionMode = collectionModePerRouteOrdered
+	if got := cfg.batchSendBound(); got != 0 {
+		t.Fatalf("per-route mode startup bound = %s, want 0", got)
 	}
 }
 

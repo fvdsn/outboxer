@@ -117,17 +117,116 @@ func (a *app) selectEvents(ctx context.Context, tx *sql.Tx) ([]event, error) {
 	ctx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
 	defer cancel()
 
+	query, args := a.selectEventsQuery()
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanEvents(rows)
+}
+
+func (a *app) selectEventsQuery() (string, []any) {
+	if a.cfg.CollectionMode == collectionModePerRouteOrdered {
+		return a.selectPerRouteOrderedEventsQuery(), []any{a.cfg.CollectPerRouteLimit}
+	}
+
 	query := fmt.Sprintf(
 		"SELECT * FROM %s ORDER BY %s LIMIT $1 FOR UPDATE",
 		ident(a.cfg.EventTable),
 		ident(a.cfg.EventID),
 	)
+	return query, []any{a.cfg.CollectGlobalLimit}
+}
 
-	rows, err := tx.QueryContext(ctx, query, a.cfg.BatchSize)
-	if err != nil {
-		return nil, err
+func (a *app) selectPerRouteOrderedEventsQuery() string {
+	table := ident(a.cfg.EventTable)
+	id := ident(a.cfg.EventID)
+	targetExpr, targetPredicate := a.resolvedTargetSQL()
+	destinationExpr := a.resolvedDestinationSQL(targetExpr)
+	routablePredicate := a.routableSQL(targetExpr, destinationExpr, targetPredicate)
+
+	return fmt.Sprintf(
+		`WITH routable AS (`+
+			`SELECT %s AS id, %s AS resolved_target, %s AS resolved_destination, `+
+			`row_number() OVER (PARTITION BY %s, %s ORDER BY %s) AS route_rank `+
+			`FROM %s WHERE %s`+
+			`), ranked AS (`+
+			`SELECT id FROM routable WHERE route_rank <= $1`+
+			`) SELECT events.* FROM %s AS events JOIN ranked ON events.%s = ranked.id ORDER BY events.%s FOR UPDATE`,
+		id,
+		targetExpr,
+		destinationExpr,
+		targetExpr,
+		destinationExpr,
+		id,
+		table,
+		routablePredicate,
+		table,
+		id,
+		id,
+	)
+}
+
+func (a *app) resolvedTargetSQL() (expr string, predicate string) {
+	targetCol := ident(a.cfg.EventTarget)
+	switch {
+	case a.cfg.EventTarget == "" && a.cfg.PubSubEnabled && !a.cfg.SQSEnabled:
+		return sqlStringLiteral(eventTargetPubSub), "TRUE"
+	case a.cfg.EventTarget == "" && a.cfg.SQSEnabled && !a.cfg.PubSubEnabled:
+		return sqlStringLiteral(eventTargetSQS), "TRUE"
+	case a.cfg.PubSubEnabled && !a.cfg.SQSEnabled:
+		return fmt.Sprintf("COALESCE(NULLIF(%s, ''), %s)", targetCol, sqlStringLiteral(eventTargetPubSub)),
+			fmt.Sprintf("COALESCE(NULLIF(%s, ''), %s) = %s", targetCol, sqlStringLiteral(eventTargetPubSub), sqlStringLiteral(eventTargetPubSub))
+	case a.cfg.SQSEnabled && !a.cfg.PubSubEnabled:
+		return fmt.Sprintf("COALESCE(NULLIF(%s, ''), %s)", targetCol, sqlStringLiteral(eventTargetSQS)),
+			fmt.Sprintf("COALESCE(NULLIF(%s, ''), %s) = %s", targetCol, sqlStringLiteral(eventTargetSQS), sqlStringLiteral(eventTargetSQS))
+	default:
+		return fmt.Sprintf("NULLIF(%s, '')", targetCol),
+			fmt.Sprintf("NULLIF(%s, '') IN (%s, %s)", targetCol, sqlStringLiteral(eventTargetPubSub), sqlStringLiteral(eventTargetSQS))
 	}
-	defer rows.Close()
+}
+
+func (a *app) resolvedDestinationSQL(targetExpr string) string {
+	destinationCol := ident(a.cfg.EventDestination)
+	switch {
+	case a.cfg.EventDestination == "" && a.cfg.PubSubEnabled && !a.cfg.SQSEnabled:
+		return sqlStringLiteral(a.cfg.DefaultPubSubTopic)
+	case a.cfg.EventDestination == "" && a.cfg.SQSEnabled && !a.cfg.PubSubEnabled:
+		return sqlStringLiteral(a.cfg.DefaultSQSQueueURL)
+	case a.cfg.EventDestination == "":
+		return fmt.Sprintf(
+			"CASE WHEN %s = %s THEN %s WHEN %s = %s THEN %s ELSE '' END",
+			targetExpr,
+			sqlStringLiteral(eventTargetPubSub),
+			sqlStringLiteral(a.cfg.DefaultPubSubTopic),
+			targetExpr,
+			sqlStringLiteral(eventTargetSQS),
+			sqlStringLiteral(a.cfg.DefaultSQSQueueURL),
+		)
+	default:
+		return fmt.Sprintf(
+			"COALESCE(NULLIF(%s, ''), CASE WHEN %s = %s THEN %s WHEN %s = %s THEN %s ELSE '' END)",
+			destinationCol,
+			targetExpr,
+			sqlStringLiteral(eventTargetPubSub),
+			sqlStringLiteral(a.cfg.DefaultPubSubTopic),
+			targetExpr,
+			sqlStringLiteral(eventTargetSQS),
+			sqlStringLiteral(a.cfg.DefaultSQSQueueURL),
+		)
+	}
+}
+
+func (a *app) routableSQL(targetExpr string, destinationExpr string, targetPredicate string) string {
+	if targetPredicate == "" {
+		targetPredicate = fmt.Sprintf("%s IN (%s, %s)", targetExpr, sqlStringLiteral(eventTargetPubSub), sqlStringLiteral(eventTargetSQS))
+	}
+	return fmt.Sprintf("(%s) AND COALESCE(%s, '') <> ''", targetPredicate, destinationExpr)
+}
+
+func scanEvents(rows *sql.Rows) ([]event, error) {
 
 	columns, err := rows.Columns()
 	if err != nil {
@@ -158,6 +257,10 @@ func (a *app) selectEvents(ctx context.Context, tx *sql.Tx) ([]event, error) {
 	}
 
 	return events, nil
+}
+
+func sqlStringLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
 func normalizeDBValue(value any) any {

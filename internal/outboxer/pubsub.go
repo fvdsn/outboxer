@@ -402,6 +402,8 @@ func (a *app) logPubsubFailure(ctx context.Context, prepared pubsubPreparedEvent
 }
 
 func (a *app) awaitPubsubResult(ctx context.Context, result pubsubPublishResult) (string, error) {
+	defer markProcessorProgress()
+
 	waitCtx, cancel := withTimeout(ctx, a.cfg.PublishTimeout+a.cfg.PublishResultGrace)
 	defer cancel()
 	return result.Get(waitCtx)

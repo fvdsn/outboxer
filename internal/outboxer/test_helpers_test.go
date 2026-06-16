@@ -326,7 +326,9 @@ func testConfig() appConfig {
 		EventOrderingKey: "ordering_key",
 		EventAttributes:  "attributes",
 
-		BatchSize:            32,
+		CollectionMode:       collectionModeGlobalOrdered,
+		CollectGlobalLimit:   32,
+		CollectPerRouteLimit: 40,
 		SQSSendConcurrency:   8,
 		OrderedGroupBatchCap: 8,
 

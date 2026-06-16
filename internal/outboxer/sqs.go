@@ -321,6 +321,8 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 	if len(events) == 0 {
 		return false, nil
 	}
+	defer markProcessorProgress()
+
 	if !validSQSQueueURL(queueURL) {
 		for _, evt := range events {
 			addIDToDelete(eventValue(evt, a.cfg.EventID))

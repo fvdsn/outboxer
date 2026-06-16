@@ -136,7 +136,7 @@ func TestProcessEventsStopsAfterFatalAfterCommit(t *testing.T) {
 		AddRow("event-1", "pubsub", "topic-1", "one", "key-a", nil).
 		AddRow("event-2", "pubsub", "topic-1", "two", "key-a", nil)
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -166,13 +166,13 @@ func TestProcessEventsDoesNotCooldownAfterNonFatalSenderError(t *testing.T) {
 		AddRow("event-1", "pubsub", "topic-1", "one", nil, nil).
 		AddRow("event-2", "pubsub", "topic-1", "two", nil, nil)
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(firstRows)
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(firstRows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	secondErr := errors.New("second select failed")
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnError(secondErr)
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnError(secondErr)
 	mock.ExpectRollback()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -203,7 +203,7 @@ func TestProcessOneBatchCommitsDoneBeforeNonFatalSenderError(t *testing.T) {
 		AddRow("event-1", "pubsub", "topic-1", "one", nil, nil).
 		AddRow("event-2", "pubsub", "topic-1", "two", nil, nil)
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -248,7 +248,7 @@ func TestProcessOneBatchEmptyBatchCommitsWithoutDelete(t *testing.T) {
 	a.sqs = &fakeSQSPublisher{autoReply: true}
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockEventRows())
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(mockEventRows())
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -257,6 +257,170 @@ func TestProcessOneBatchEmptyBatchCommitsWithoutDelete(t *testing.T) {
 	}
 	if result.selected != 0 {
 		t.Fatalf("expected empty batch, got %d selected events", result.selected)
+	}
+}
+
+func TestSelectEventsQueryUsesGlobalOrderedLimit(t *testing.T) {
+	cfg := testConfig()
+	cfg.CollectionMode = collectionModeGlobalOrdered
+	cfg.CollectGlobalLimit = 123
+	a := &app{cfg: cfg}
+
+	query, args := a.selectEventsQuery()
+	if query != selectEventsSQL {
+		t.Fatalf("global query = %q, want %q", query, selectEventsSQL)
+	}
+	if !reflect.DeepEqual(args, []any{123}) {
+		t.Fatalf("global query args = %#v, want %#v", args, []any{123})
+	}
+}
+
+func TestSelectEventsQueryUsesPerRouteOrderedLimitAndBaseProjection(t *testing.T) {
+	cfg := testConfig()
+	cfg.CollectionMode = collectionModePerRouteOrdered
+	cfg.CollectGlobalLimit = 999
+	cfg.CollectPerRouteLimit = 40
+	a := &app{cfg: cfg}
+
+	query, args := a.selectEventsQuery()
+	if !reflect.DeepEqual(args, []any{40}) {
+		t.Fatalf("per-route query args = %#v, want %#v", args, []any{40})
+	}
+	for _, expected := range []string{
+		"WITH routable AS (",
+		"row_number() OVER (PARTITION BY",
+		"WHERE (NULLIF(\"target\", '') IN ('pubsub', 'sqs'))",
+		"route_rank <= $1",
+		"SELECT events.* FROM \"events\" AS events JOIN ranked",
+		"ORDER BY events.\"id\" FOR UPDATE",
+	} {
+		if !strings.Contains(query, expected) {
+			t.Fatalf("expected per-route query to contain %q, got:\n%s", expected, query)
+		}
+	}
+	if strings.Contains(query, "LIMIT") {
+		t.Fatalf("per-route query must not apply global LIMIT, got:\n%s", query)
+	}
+}
+
+func TestSelectEventsQueryPerRouteSupportsMissingSingleBackendColumns(t *testing.T) {
+	cfg := testConfig()
+	cfg.CollectionMode = collectionModePerRouteOrdered
+	cfg.SQSEnabled = false
+	cfg.EventTarget = ""
+	cfg.EventDestination = ""
+	cfg.DefaultPubSubTopic = "topic-default"
+	a := &app{cfg: cfg}
+
+	query, args := a.selectEventsQuery()
+	if !reflect.DeepEqual(args, []any{cfg.CollectPerRouteLimit}) {
+		t.Fatalf("per-route query args = %#v, want %#v", args, []any{cfg.CollectPerRouteLimit})
+	}
+	for _, expected := range []string{
+		"'pubsub' AS resolved_target",
+		"'topic-default' AS resolved_destination",
+		"FROM \"events\" WHERE (TRUE) AND COALESCE('topic-default', '') <> ''",
+	} {
+		if !strings.Contains(query, expected) {
+			t.Fatalf("expected per-route query to contain %q, got:\n%s", expected, query)
+		}
+	}
+	if strings.Contains(query, "\"\"") {
+		t.Fatalf("per-route query must not reference empty optional column names, got:\n%s", query)
+	}
+}
+
+func TestSelectEventsQueryPerRouteSupportsMissingDestinationWithBackendDefaults(t *testing.T) {
+	cfg := testConfig()
+	cfg.CollectionMode = collectionModePerRouteOrdered
+	cfg.EventDestination = ""
+	cfg.DefaultPubSubTopic = "topic-default"
+	cfg.DefaultSQSQueueURL = "queue-default"
+	a := &app{cfg: cfg}
+
+	query, args := a.selectEventsQuery()
+	if !reflect.DeepEqual(args, []any{cfg.CollectPerRouteLimit}) {
+		t.Fatalf("per-route query args = %#v, want %#v", args, []any{cfg.CollectPerRouteLimit})
+	}
+	for _, expected := range []string{
+		"NULLIF(\"target\", '') AS resolved_target",
+		"CASE WHEN NULLIF(\"target\", '') = 'pubsub' THEN 'topic-default' WHEN NULLIF(\"target\", '') = 'sqs' THEN 'queue-default' ELSE '' END AS resolved_destination",
+		"NULLIF(\"target\", '') IN ('pubsub', 'sqs')",
+	} {
+		if !strings.Contains(query, expected) {
+			t.Fatalf("expected per-route query to contain %q, got:\n%s", expected, query)
+		}
+	}
+	if strings.Contains(query, "\"\"") {
+		t.Fatalf("per-route query must not reference empty optional column names, got:\n%s", query)
+	}
+}
+
+func TestProcessOneBatchPerRouteEmptySelectionCommitsWithoutRoutingLog(t *testing.T) {
+	cfg := testConfig()
+	cfg.CollectionMode = collectionModePerRouteOrdered
+	pubsub := &fakePubSubPublisher{}
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = pubsub
+	a.sqs = sqs
+
+	query, _ := a.selectEventsQuery()
+	mock.ExpectBegin()
+	mock.ExpectQuery(query).WithArgs(cfg.CollectPerRouteLimit).WillReturnRows(mockEventRows())
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 0 {
+		t.Fatalf("expected no selected events, got %d", result.selected)
+	}
+	if len(pubsub.messages) != 0 {
+		t.Fatalf("expected no Pub/Sub sends, got %#v", pubsub.messages)
+	}
+	if len(sqs.requests) != 0 {
+		t.Fatalf("expected no SQS sends, got %#v", sqs.requests)
+	}
+}
+
+func TestProcessOneBatchPerRouteCommitsHealthyRouteWhenAnotherRouteFails(t *testing.T) {
+	cfg := testConfig()
+	cfg.CollectionMode = collectionModePerRouteOrdered
+	expectedErr := errors.New("sqs unavailable")
+	pubsub := &fakePubSubPublisher{}
+	sqs := &fakeSQSPublisher{err: expectedErr}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = pubsub
+	a.sqs = sqs
+
+	query, _ := a.selectEventsQuery()
+	rows := mockEventRows().
+		AddRow("pubsub-ok", "pubsub", "topic-a", "ok", nil, nil).
+		AddRow("sqs-fail", "sqs", "queue-broken", "retry", nil, nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(query).WithArgs(cfg.CollectPerRouteLimit).WillReturnRows(rows)
+	mock.ExpectExec(deleteOneSQL).WithArgs("pubsub-ok").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected SQS sender error, got %v", err)
+	}
+	if errors.Is(err, errDatabaseBatch) {
+		t.Fatalf("sender error should not be classified as database error: %v", err)
+	}
+	if result.selected != 2 {
+		t.Fatalf("expected two selected events, got %d", result.selected)
+	}
+	if len(pubsub.messages) != 1 || string(pubsub.messages[0].Data) != "ok" {
+		t.Fatalf("expected healthy Pub/Sub route to publish once, got %#v", pubsub.messages)
+	}
+	if len(sqs.requests) != 1 {
+		t.Fatalf("expected failing SQS route to be attempted once, got %#v", sqs.requests)
 	}
 }
 
@@ -272,7 +436,7 @@ func TestProcessOneBatchDeletesContentPoisonAndConfirmedSendTogether(t *testing.
 		AddRow("poison", "sqs", "queue-a", "", nil, nil).
 		AddRow("confirmed", "sqs", "queue-a", "payload", nil, nil)
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(rows)
 	mock.ExpectExec(deleteTwoSQL).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectCommit()
 
@@ -299,13 +463,63 @@ func TestProcessOneBatchCommitsDoneBeforeFatalAfterCommit(t *testing.T) {
 		AddRow("event-1", "pubsub", "topic-1", "one", "key-a", nil).
 		AddRow("event-2", "pubsub", "topic-1", "two", "key-a", nil)
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
 	if !errors.Is(err, errFatalAfterCommit) {
 		t.Fatalf("expected fatal-after-commit error, got %v", err)
+	}
+	if result.selected != 2 {
+		t.Fatalf("expected two selected events, got %d", result.selected)
+	}
+}
+
+func TestProcessOneBatchPreservesFatalAfterCommitOnCommitFailure(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	expectedErr := errors.New("commit failed")
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}}
+
+	rows := mockEventRows().
+		AddRow("event-1", "pubsub", "topic-1", "one", "key-a", nil).
+		AddRow("event-2", "pubsub", "topic-1", "two", "key-a", nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(rows)
+	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit().WillReturnError(expectedErr)
+
+	result, err := a.processOneBatch(context.Background())
+	if !errors.Is(err, errFatalAfterCommit) || !errors.Is(err, errDatabaseBatch) || !errors.Is(err, expectedErr) {
+		t.Fatalf("expected fatal-after-commit and database commit error, got %v", err)
+	}
+	if result.selected != 2 {
+		t.Fatalf("expected two selected events, got %d", result.selected)
+	}
+}
+
+func TestProcessOneBatchPreservesFatalAfterCommitOnDeleteFailure(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	expectedErr := errors.New("delete failed")
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}}
+
+	rows := mockEventRows().
+		AddRow("event-1", "pubsub", "topic-1", "one", "key-a", nil).
+		AddRow("event-2", "pubsub", "topic-1", "two", "key-a", nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(rows)
+	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnError(expectedErr)
+	mock.ExpectRollback()
+
+	result, err := a.processOneBatch(context.Background())
+	if !errors.Is(err, errFatalAfterCommit) || !errors.Is(err, errDatabaseBatch) || !errors.Is(err, expectedErr) {
+		t.Fatalf("expected fatal-after-commit and database delete error, got %v", err)
 	}
 	if result.selected != 2 {
 		t.Fatalf("expected two selected events, got %d", result.selected)
@@ -322,7 +536,7 @@ func TestProcessOneBatchRollsBackOnDeleteFailure(t *testing.T) {
 
 	rows := mockEventRows().AddRow("event-1", "pubsub", "topic-1", "one", nil, nil)
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnError(expectedErr)
 	mock.ExpectRollback()
 
@@ -345,7 +559,7 @@ func TestProcessOneBatchRollsBackOnSelectFailure(t *testing.T) {
 	a.pubsub = pubsub
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnError(expectedErr)
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnError(expectedErr)
 	mock.ExpectRollback()
 
 	result, err := a.processOneBatch(context.Background())
@@ -370,7 +584,7 @@ func TestProcessOneBatchCommitFailureIsDatabaseError(t *testing.T) {
 
 	rows := mockEventRows().AddRow("event-1", "pubsub", "topic-1", "one", nil, nil)
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit().WillReturnError(expectedErr)
 
@@ -396,7 +610,7 @@ func TestProcessOneBatchRoutingFailuresOnlyCommitWithoutSendOrDelete(t *testing.
 		AddRow("event-1", "kafka", "topic-1", "one", nil, nil).
 		AddRow("event-2", "", "topic-2", "two", nil, nil)
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(rows)
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -429,7 +643,7 @@ func TestProcessOneBatchDeduplicatesDoneIDs(t *testing.T) {
 
 	rows := mockEventRows().AddRow("event-1", "sqs", "queue-a", "one", nil, nil)
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -454,7 +668,7 @@ func TestProcessOneBatchIgnoresDoneIDOutsideSelectedBatch(t *testing.T) {
 
 	rows := mockEventRows().AddRow("event-1", "sqs", "queue-a", "one", nil, nil)
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(rows)
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -485,7 +699,7 @@ func TestProcessOneBatchRunsEnabledBackendsConcurrently(t *testing.T) {
 		AddRow("event-1", "pubsub", "topic-1", "one", nil, nil).
 		AddRow("event-2", "sqs", "queue-a", "two", nil, nil)
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(rows)
 	mock.ExpectExec(deleteTwoSQL).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectCommit()
 
@@ -521,7 +735,7 @@ func TestProcessOneBatchRunsEnabledBackendsConcurrently(t *testing.T) {
 
 func TestProcessOneBatchRoutesAndDeletesHundredMixedBackendEvents(t *testing.T) {
 	cfg := testConfig()
-	cfg.BatchSize = 100
+	cfg.CollectGlobalLimit = 100
 	cfg.SQSSendConcurrency = 16
 	pubsub := &fakePubSubPublisher{}
 	sqs := &fakeSQSPublisher{autoReply: true}
@@ -537,7 +751,7 @@ func TestProcessOneBatchRoutesAndDeletesHundredMixedBackendEvents(t *testing.T) 
 	}
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockRowsForEvents(events))
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(mockRowsForEvents(events))
 	mock.ExpectExec(deleteEventsSQL(100)).WithArgs(anySQLArgs(100)...).WillReturnResult(sqlmock.NewResult(0, 100))
 	mock.ExpectCommit()
 
@@ -564,7 +778,7 @@ func TestProcessOneBatchRoutesAndDeletesHundredMixedBackendEvents(t *testing.T) 
 
 func TestProcessOneBatchRoutesHundredMixedDestinations(t *testing.T) {
 	cfg := testConfig()
-	cfg.BatchSize = 100
+	cfg.CollectGlobalLimit = 100
 	cfg.SQSSendConcurrency = 16
 	pubsub := &fakePubSubPublisher{}
 	sqs := &fakeSQSPublisher{autoReply: true}
@@ -580,7 +794,7 @@ func TestProcessOneBatchRoutesHundredMixedDestinations(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockRowsForEvents(events))
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(mockRowsForEvents(events))
 	mock.ExpectExec(deleteEventsSQL(100)).WithArgs(anySQLArgs(100)...).WillReturnResult(sqlmock.NewResult(0, 100))
 	mock.ExpectCommit()
 
@@ -605,7 +819,7 @@ func TestProcessOneBatchRoutesHundredMixedDestinations(t *testing.T) {
 
 func TestProcessOneBatchUsesSingleBackendDefaultTopicForHundredEvents(t *testing.T) {
 	cfg := testConfig()
-	cfg.BatchSize = 100
+	cfg.CollectGlobalLimit = 100
 	cfg.SQSEnabled = false
 	cfg.EventTarget = ""
 	cfg.EventDestination = ""
@@ -621,7 +835,7 @@ func TestProcessOneBatchUsesSingleBackendDefaultTopicForHundredEvents(t *testing
 	}
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockRowsForEvents(events))
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(mockRowsForEvents(events))
 	mock.ExpectExec(deleteEventsSQL(100)).WithArgs(anySQLArgs(100)...).WillReturnResult(sqlmock.NewResult(0, 100))
 	mock.ExpectCommit()
 
@@ -639,7 +853,7 @@ func TestProcessOneBatchUsesSingleBackendDefaultTopicForHundredEvents(t *testing
 
 func TestProcessOneBatchUsesBackendDefaultsWithExplicitTargets(t *testing.T) {
 	cfg := testConfig()
-	cfg.BatchSize = 40
+	cfg.CollectGlobalLimit = 40
 	cfg.DefaultPubSubTopic = "topic-default"
 	cfg.DefaultSQSQueueURL = "queue-default"
 	pubsub := &fakePubSubPublisher{}
@@ -658,7 +872,7 @@ func TestProcessOneBatchUsesBackendDefaultsWithExplicitTargets(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockRowsForEvents(events))
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(mockRowsForEvents(events))
 	mock.ExpectExec(deleteEventsSQL(40)).WithArgs(anySQLArgs(40)...).WillReturnResult(sqlmock.NewResult(0, 40))
 	mock.ExpectCommit()
 
@@ -679,7 +893,7 @@ func TestProcessOneBatchUsesBackendDefaultsWithExplicitTargets(t *testing.T) {
 
 func TestProcessOneBatchProcessesBacklogAcrossMultipleSelectedBatches(t *testing.T) {
 	cfg := testConfig()
-	cfg.BatchSize = 100
+	cfg.CollectGlobalLimit = 100
 	cfg.PubSubEnabled = false
 	cfg.SQSSendConcurrency = 16
 	sqs := &fakeSQSPublisher{autoReply: true}
@@ -693,7 +907,7 @@ func TestProcessOneBatchProcessesBacklogAcrossMultipleSelectedBatches(t *testing
 			events[i] = testEvent(fmt.Sprintf("event-%d-%03d", batchIndex, i), "sqs", "queue-a", "payload", "")
 		}
 		mock.ExpectBegin()
-		mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockRowsForEvents(events))
+		mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(mockRowsForEvents(events))
 		mock.ExpectExec(deleteEventsSQL(selected)).WithArgs(anySQLArgs(selected)...).WillReturnResult(sqlmock.NewResult(0, int64(selected)))
 		mock.ExpectCommit()
 
@@ -707,7 +921,7 @@ func TestProcessOneBatchProcessesBacklogAcrossMultipleSelectedBatches(t *testing
 	}
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockEventRows())
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.CollectGlobalLimit).WillReturnRows(mockEventRows())
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())

@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+type collectionMode string
+
+const (
+	collectionModeGlobalOrdered   collectionMode = "global_ordered"
+	collectionModePerRouteOrdered collectionMode = "per_route_ordered"
+)
+
 type appConfig struct {
 	EventTable       string
 	EventID          string
@@ -20,7 +27,9 @@ type appConfig struct {
 	EventOrderingKey string
 	EventAttributes  string
 
-	BatchSize            int
+	CollectionMode       collectionMode
+	CollectGlobalLimit   int
+	CollectPerRouteLimit int
 	SQSSendConcurrency   int
 	OrderedGroupBatchCap int
 
@@ -82,12 +91,15 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addStringFlag(flags, &options, "Event table", &cfg.EventID, "event-id", cfg.EventID, "Event id column.", "EVENT_ID")
 	addStringFlag(flags, &options, "Event table", &cfg.EventTimestamp, "event-timestamp", cfg.EventTimestamp, "Event timestamp column.", "EVENT_TIMESTAMP")
 	addStringFlag(flags, &options, "Event table", &cfg.EventPayload, "event-payload", cfg.EventPayload, "Event payload column.", "EVENT_PAYLOAD")
-	addStringFlag(flags, &options, "Event table", &cfg.EventTarget, "event-target", cfg.EventTarget, "Target column. Use sqs for SQS, anything else for Pub/Sub.", "EVENT_TARGET")
+	addStringFlag(flags, &options, "Event table", &cfg.EventTarget, "event-target", cfg.EventTarget, "Backend selector column. Values pubsub or sqs.", "EVENT_TARGET")
 	addStringFlag(flags, &options, "Event table", &cfg.EventDestination, "event-destination", cfg.EventDestination, "Pub/Sub topic name or SQS queue URL column.", "EVENT_DESTINATION")
 	addStringFlag(flags, &options, "Event table", &cfg.EventOrderingKey, "event-ordering-key", cfg.EventOrderingKey, "Ordering key / FIFO message group column.", "EVENT_ORDERING_KEY")
 	addStringFlag(flags, &options, "Event table", &cfg.EventAttributes, "event-attributes", cfg.EventAttributes, "JSON attributes column.", "EVENT_ATTRIBUTES")
 
-	addIntFlag(flags, &options, "Batch processing", &cfg.BatchSize, "batch-size", cfg.BatchSize, "Maximum rows selected per batch.", "BATCH_SIZE")
+	collectionModeValue := string(cfg.CollectionMode)
+	addStringFlag(flags, &options, "Batch processing", &collectionModeValue, "collection-mode", collectionModeValue, "Collection mode: global_ordered or per_route_ordered.", "COLLECTION_MODE")
+	addIntFlag(flags, &options, "Batch processing", &cfg.CollectGlobalLimit, "collect-global-limit", cfg.CollectGlobalLimit, "Maximum rows selected per batch in global_ordered mode.", "COLLECT_GLOBAL_LIMIT")
+	addIntFlag(flags, &options, "Batch processing", &cfg.CollectPerRouteLimit, "collect-per-route-limit", cfg.CollectPerRouteLimit, "Maximum rows selected per resolved route in per_route_ordered mode.", "COLLECT_PER_ROUTE_LIMIT")
 	addIntFlag(flags, &options, "Batch processing", &cfg.SQSSendConcurrency, "sqs-send-concurrency", cfg.SQSSendConcurrency, "Maximum concurrent SQS send requests.", "SQS_SEND_CONCURRENCY")
 	addIntFlag(flags, &options, "Batch processing", &cfg.OrderedGroupBatchCap, "ordered-group-batch-cap", cfg.OrderedGroupBatchCap, "Maximum events sent for one ordered key/group in one batch.", "ORDERED_GROUP_BATCH_CAP")
 
@@ -143,6 +155,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 		return appConfig{}, err
 	}
 
+	cfg.CollectionMode = collectionMode(collectionModeValue)
 	cfg.WatchdogInterval = time.Duration(watchdogIntervalMS) * time.Millisecond
 	cfg.ErrorCooldown = time.Duration(errorCooldownMS) * time.Millisecond
 	cfg.PollInterval = time.Duration(pollIntervalMS) * time.Millisecond
@@ -178,8 +191,14 @@ func (cfg appConfig) validate() error {
 	if cfg.SQSEnabled && cfg.DefaultSQSQueueURL == "" && cfg.EventDestination == "" {
 		return fmt.Errorf("SQS needs a destination: set EVENT_DESTINATION or DEFAULT_SQS_QUEUE_URL")
 	}
-	if cfg.BatchSize <= 0 {
-		return fmt.Errorf("batch size (%d) must be positive: set BATCH_SIZE", cfg.BatchSize)
+	if cfg.CollectionMode != collectionModeGlobalOrdered && cfg.CollectionMode != collectionModePerRouteOrdered {
+		return fmt.Errorf("unsupported collection mode %q: set COLLECTION_MODE to %q or %q", cfg.CollectionMode, collectionModeGlobalOrdered, collectionModePerRouteOrdered)
+	}
+	if cfg.CollectGlobalLimit <= 0 {
+		return fmt.Errorf("global collection limit (%d) must be positive: set COLLECT_GLOBAL_LIMIT", cfg.CollectGlobalLimit)
+	}
+	if cfg.CollectPerRouteLimit <= 0 {
+		return fmt.Errorf("per-route collection limit (%d) must be positive: set COLLECT_PER_ROUTE_LIMIT", cfg.CollectPerRouteLimit)
 	}
 	if cfg.PublishTimeout <= 0 {
 		return fmt.Errorf("publish timeout (%s) must be positive: set PUBLISH_TIMEOUT_MS", cfg.PublishTimeout)
@@ -198,7 +217,7 @@ func (cfg appConfig) validate() error {
 	}
 	bound := cfg.batchSendBound()
 	if bound > 0 && cfg.WatchdogInterval <= bound {
-		return fmt.Errorf("watchdog interval (%s) must exceed worst-case batch send bound (%s): increase WATCHDOG_INTERVAL_MS or reduce BATCH_SIZE/PUBLISH_TIMEOUT_MS", cfg.WatchdogInterval, bound)
+		return fmt.Errorf("watchdog interval (%s) must exceed worst-case batch send bound (%s): increase WATCHDOG_INTERVAL_MS or reduce COLLECT_GLOBAL_LIMIT/PUBLISH_TIMEOUT_MS", cfg.WatchdogInterval, bound)
 	}
 	if cfg.AWSWebIdentityProvider != "" {
 		if cfg.AWSWebIdentityProvider != awsWebIdentityProviderGoogle {
@@ -225,7 +244,9 @@ func loadConfigFromEnv() appConfig {
 		EventOrderingKey: getenv("EVENT_ORDERING_KEY", "ordering_key"),
 		EventAttributes:  getenv("EVENT_ATTRIBUTES", "attributes"),
 
-		BatchSize:            getenvInt("BATCH_SIZE", 32),
+		CollectionMode:       collectionMode(getenv("COLLECTION_MODE", string(collectionModePerRouteOrdered))),
+		CollectGlobalLimit:   getenvInt("COLLECT_GLOBAL_LIMIT", 100),
+		CollectPerRouteLimit: getenvInt("COLLECT_PER_ROUTE_LIMIT", 40),
 		SQSSendConcurrency:   getenvInt("SQS_SEND_CONCURRENCY", 8),
 		OrderedGroupBatchCap: getenvInt("ORDERED_GROUP_BATCH_CAP", 8),
 
@@ -268,15 +289,19 @@ func loadConfigFromEnv() appConfig {
 }
 
 func (cfg appConfig) batchSendBound() time.Duration {
+	if cfg.CollectionMode != collectionModeGlobalOrdered {
+		return 0
+	}
+
 	var bounds []time.Duration
 	if cfg.PubSubEnabled {
 		bounds = append(bounds, time.Duration(cfg.OrderedGroupBatchCap)*(cfg.PublishTimeout+cfg.PublishResultGrace))
 	}
 	if cfg.SQSEnabled {
-		standardWaves := ceilDiv(cfg.BatchSize, cfg.SQSSendConcurrency)
+		standardWaves := ceilDiv(cfg.CollectGlobalLimit, cfg.SQSSendConcurrency)
 		bounds = append(bounds, time.Duration(standardWaves)*cfg.PublishTimeout)
 
-		fifoWaves := ceilDiv(cfg.BatchSize, cfg.SQSSendConcurrency)
+		fifoWaves := ceilDiv(cfg.CollectGlobalLimit, cfg.SQSSendConcurrency)
 		if cfg.OrderedGroupBatchCap > fifoWaves {
 			fifoWaves = cfg.OrderedGroupBatchCap
 		}
