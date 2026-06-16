@@ -56,8 +56,8 @@ transaction.
 
 ### Collection mode B — `per_route_ordered`
 
-This mode is intended for deployments where one broken destination must not hang
-unrelated destinations.
+This mode is intended for deployments where one broken destination must not
+completely stop unrelated destinations.
 
 Requirements:
 
@@ -72,6 +72,11 @@ Requirements:
 - A broken, retrying, or unsupported `(target, destination)` route can consume at
   most `COLLECT_PER_ROUTE_LIMIT` slots in one selected batch and therefore
   cannot occupy the entire batch while other routes have eligible events.
+- This mode does not make healthy routes independent of broken routes within the
+  same Stage 1 transaction. A broken route can still slow the batch until its
+  bounded sender operations return, because all `done` events commit together at
+  the end. Early break / circuit behavior for broken routes is a later
+  improvement.
 - The selected batch size is data-dependent:
   `selected <= distinct_resolved_routes × COLLECT_PER_ROUTE_LIMIT`. This is an
   intentional tradeoff. It preserves route isolation, but transaction time and
@@ -203,13 +208,15 @@ user columns.
     group sending its capped run sequentially).
   - `batchSendBound = max(enabled(pubsubBound), enabled(sqsStandardBound),
     enabled(sqsFifoBound))`.
-  Because the watchdog counter only advances once per batch today, watchdog
-  validation must account for the selected collection mode. Static startup
-  validation is sufficient for `global_ordered`, where the selected-event bound
-  is configured. It is not sufficient by itself for `per_route_ordered`, where
-  the selected route count is data-dependent. A legitimately large per-route
-  batch must not trip a false deadlock mid-batch — the same class of rule as
-  `WATCHDOG_INTERVAL_MS` vs `POLL_INTERVAL_MS`.
+  The watchdog heartbeat must advance during long-running batches, not only once
+  per batch. The processor/senders must advance it after meaningful progress:
+  selection completed, each bounded provider operation/result completed,
+  database delete completed, and commit completed. Static startup validation of a
+  full batch bound is sufficient only for `global_ordered`, where the
+  selected-event bound is configured. In `per_route_ordered`, the selected route
+  count is data-dependent, so a legitimately large per-route batch must not trip
+  a false deadlock as long as its individual bounded operations keep making
+  progress.
 - **S10 — Interruptible** — sending respects context cancellation; S0 covers
   interrupted in-flight events.
 - **S11 — Poison events are removed.** Poison means the selected backend can
@@ -529,11 +536,12 @@ badly-misconfigured destination or unsupported target can accumulate at the
 front and crowd the window until the operator fixes it or Outboxer is upgraded.
 In `per_route_ordered` mode, that route is bounded to
 `COLLECT_PER_ROUTE_LIMIT` events per batch, so unrelated routes can still be
-selected. The remaining risks are fast retry of the broken route and large
-batches when many routes have pending events. Surface these via
-metrics/alerting ("events failing for destination X for N minutes", "oldest
-event age by destination", "selected routes per batch") rather than by dropping
-retryable events.
+selected. The broken route may still slow the batch until its bounded sender
+operations return; Stage 1 commits all `done` events together. The remaining
+risks are fast retry of the broken route and large batches when many routes have
+pending events. Surface these via metrics/alerting ("events failing for
+destination X for N minutes", "oldest event age by destination", "selected
+routes per batch") rather than by dropping retryable events.
 
 The SDK clients pace *throttling/transient* sender errors with their own
 backoff, but a *persistent fast-fail* (auth denied, queue not found — R4/R5/R7)
