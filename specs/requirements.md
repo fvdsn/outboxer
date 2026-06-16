@@ -733,8 +733,13 @@ Sender errors are classified outside the `done` set:
 
 ### Config implied
 
+No backward-compatibility guarantee or migration effort is required before
+`1.0`. Renamed or removed config keys are not kept as deprecated aliases unless
+this spec says so explicitly.
+
 - Remove: `BATCH_WORKERS`, `BATCH_MAX_SEQUENTIAL`.
-- Rename: `BATCH_SIZE` → `COLLECT_GLOBAL_LIMIT`.
+- Rename: `BATCH_SIZE` → `COLLECT_GLOBAL_LIMIT`; `BATCH_SIZE` is removed, not
+  supported as an alias.
 - Keep: `ERROR_COOLDOWN_MS`, `POLL_INTERVAL_MS`, `PUBLISH_TIMEOUT_MS`.
 - Add:
   - `COLLECTION_MODE` (default: `per_route_ordered`; valid values:
