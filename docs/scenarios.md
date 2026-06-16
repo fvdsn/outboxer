@@ -91,6 +91,29 @@ Watchdog bound cases:
 | BATCH-09 | Routing failures only. | No sender is called; nothing is deleted; bounded failure log records the failures. |
 | BATCH-10 | Pub/Sub sender and SQS sender both enabled. | They run concurrently; batch time is bounded by the slower backend, not the sum. |
 
+## Realistic happy-path batches
+
+These scenarios are intentionally larger than the focused unit cases. They should
+catch mistakes in routing, grouping, chunking, delete accounting, defaults, and
+provider-call shape before live integration tests exist.
+
+| ID | Scenario | Expected |
+| --- | --- | --- |
+| REAL-OK-01 | SQS-only standard queue, 100 events, one queue, `SQS_SEND_CONCURRENCY` high enough not to serialize everything. | Exactly 10 `SendMessageBatch` calls of 10 entries each; all 100 IDs are returned in `done`; no FIFO fields are set. |
+| REAL-OK-02 | SQS-only standard queue, 100 events split across 2 queue URLs, 50 per queue. | Requests are grouped by queue; each queue receives 5 batches of 10; all 100 IDs are `done`. |
+| REAL-OK-03 | SQS-only standard queue, 100 events split across 10 queue URLs, 10 per queue. | Each queue receives one batch of 10; the global SQS semaphore is respected across queues; all IDs are `done`. |
+| REAL-OK-04 | Pub/Sub-only unordered, 100 events, one topic. | One cached publisher is used; 100 publishes are enqueued; `Flush()` is called for the topic before result waits; all IDs are `done`. |
+| REAL-OK-05 | Pub/Sub-only unordered, 100 events split across 10 topics, 10 per topic. | One cached publisher per topic; each topic is flushed; all IDs are `done`; no topic receives another topic's messages. |
+| REAL-OK-06 | Both backends enabled, 100 events mixed 50 Pub/Sub and 50 SQS standard, one topic and one queue. | Processor routes each event to the correct backend, both senders run in the same selected batch, Pub/Sub publishes 50 messages, SQS sends 5 batches, and one database delete covers all 100 IDs. |
+| REAL-OK-07 | Both backends enabled, 100 events mixed across 5 Pub/Sub topics and 5 SQS standard queues. | Messages are grouped by backend and destination; every destination receives exactly its intended 10 events; all selected IDs are deleted. |
+| REAL-OK-08 | Pub/Sub-only with no target column and a default topic, 100 events with empty destination. | All events route to Pub/Sub default topic, publish successfully, and are deleted. |
+| REAL-OK-09 | SQS-only with no target column and a default standard queue URL, 100 events with empty destination. | All events route to the default queue, send as 10 standard batches, and are deleted. |
+| REAL-OK-10 | Both backends enabled with explicit targets and a mix of explicit destinations plus backend defaults. | Empty Pub/Sub destinations use the Pub/Sub default, empty SQS destinations use the SQS default, explicit destinations are preserved, and all valid events are deleted. |
+| REAL-OK-11 | Mixed Pub/Sub unordered and Pub/Sub ordered events for multiple topics and keys, all successful. | Unordered events batch/flush by topic; ordered events remain sequential per `(topic, ordering_key)`; all IDs are `done`. |
+| REAL-OK-12 | Mixed SQS standard and FIFO destinations, all successful. | Standard queues batch by 10; FIFO queues send one message at a time per group; each FIFO group preserves order; independent standard/FIFO destinations may progress concurrently. |
+| REAL-OK-13 | Batch size is smaller than backlog: process 250 valid standard SQS events with `BATCH_SIZE=100` over repeated `processOneBatch` calls. | Each loop selects at most 100 events, deletes exactly the selected successes, and the fourth loop selects 0 after all events are gone. |
+| REAL-OK-14 | Large successful selected batch includes duplicate-looking values across non-ID columns. | Delete accounting uses only selected event IDs, not payload/topic/queue/body values; every selected ID is deleted exactly once. |
+
 ## Failure logging
 
 | ID | Scenario | Expected |
