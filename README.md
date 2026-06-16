@@ -153,16 +153,16 @@ outboxer --help
 
 ### Event table
 
-| CLI flag | Env var | Default | Description |
-| --- | --- | --- | --- |
-| `--event-table` | `EVENT_TABLE` | `events` | Outbox table name. |
-| `--event-id` | `EVENT_ID` | `id` | Event id column. |
-| `--event-timestamp` | `EVENT_TIMESTAMP` | `timestamp` | Event timestamp column, used for latency logs. |
-| `--event-payload` | `EVENT_PAYLOAD` | `payload` | Event payload column. |
-| `--event-target` | `EVENT_TARGET` | `target` | Backend selector column. Values `pubsub` or `sqs`. Required only when both backends are enabled. |
-| `--event-destination` | `EVENT_DESTINATION` | `destination` | Pub/Sub topic name or SQS queue URL column. |
-| `--event-ordering-key` | `EVENT_ORDERING_KEY` | `ordering_key` | Ordering key / FIFO message group column. |
-| `--event-attributes` | `EVENT_ATTRIBUTES` | `attributes` | JSON attributes column. |
+| CLI flag | Env var | Default | Database requirement | Description |
+| --- | --- | --- | --- | --- |
+| `--event-table` | `EVENT_TABLE` | `events` | Table must exist. | Outbox table name. |
+| `--event-id` | `EVENT_ID` | `id` | Required. | Event id column. |
+| `--event-timestamp` | `EVENT_TIMESTAMP` | `timestamp` | Optional. | Event timestamp column, used for latency logs. |
+| `--event-payload` | `EVENT_PAYLOAD` | `payload` | Required. | Event payload column. |
+| `--event-target` | `EVENT_TARGET` | `target` | Required when both backends are enabled. | Backend selector column. Values `pubsub` or `sqs`. |
+| `--event-destination` | `EVENT_DESTINATION` | `destination` | Required when an enabled backend has no default destination. | Pub/Sub topic name or SQS queue URL column. |
+| `--event-ordering-key` | `EVENT_ORDERING_KEY` | `ordering_key` | Optional. | Ordering key / FIFO message group column. |
+| `--event-attributes` | `EVENT_ATTRIBUTES` | `attributes` | Optional. | JSON attributes column. |
 
 ### Batch processing
 
