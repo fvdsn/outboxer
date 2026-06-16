@@ -50,12 +50,20 @@ type cloudPubSubPublisher struct {
 	client *pubsub.Client
 	cfg    appConfig
 
-	mu         sync.Mutex
-	publishers map[string]*pubsub.Publisher
+	mu           sync.Mutex
+	publishers   map[string]pubsubTopicPublisher
+	newPublisher func(topic string) pubsubTopicPublisher
 }
 
 type cloudPubSubPublishResult struct {
 	result *pubsub.PublishResult
+}
+
+type pubsubTopicPublisher interface {
+	Publish(ctx context.Context, msg *pubsub.Message) *pubsub.PublishResult
+	Flush()
+	ResumePublish(orderingKey string)
+	Stop()
 }
 
 func newPubSubClient(ctx context.Context, cfg appConfig) (*pubsub.Client, error) {
@@ -67,11 +75,18 @@ func newPubSubClient(ctx context.Context, cfg appConfig) (*pubsub.Client, error)
 }
 
 func newCloudPubSubPublisher(client *pubsub.Client, cfg appConfig) *cloudPubSubPublisher {
-	return &cloudPubSubPublisher{
+	p := &cloudPubSubPublisher{
 		client:     client,
 		cfg:        cfg,
-		publishers: map[string]*pubsub.Publisher{},
+		publishers: map[string]pubsubTopicPublisher{},
 	}
+	p.newPublisher = func(topic string) pubsubTopicPublisher {
+		publisher := client.Publisher(topic)
+		publisher.EnableMessageOrdering = true
+		publisher.PublishSettings.Timeout = cfg.PublishTimeout
+		return publisher
+	}
+	return p
 }
 
 func (p *cloudPubSubPublisher) Publish(ctx context.Context, message pubsubMessage) pubsubPublishResult {
@@ -98,7 +113,7 @@ func (p *cloudPubSubPublisher) ResumePublish(topic string, orderingKey string) {
 
 func (p *cloudPubSubPublisher) Close() error {
 	p.mu.Lock()
-	publishers := make([]*pubsub.Publisher, 0, len(p.publishers))
+	publishers := make([]pubsubTopicPublisher, 0, len(p.publishers))
 	for _, publisher := range p.publishers {
 		publishers = append(publishers, publisher)
 	}
@@ -110,7 +125,7 @@ func (p *cloudPubSubPublisher) Close() error {
 	return nil
 }
 
-func (p *cloudPubSubPublisher) publisher(topic string) *pubsub.Publisher {
+func (p *cloudPubSubPublisher) publisher(topic string) pubsubTopicPublisher {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -119,9 +134,7 @@ func (p *cloudPubSubPublisher) publisher(topic string) *pubsub.Publisher {
 		return publisher
 	}
 
-	publisher = p.client.Publisher(topic)
-	publisher.EnableMessageOrdering = true
-	publisher.PublishSettings.Timeout = p.cfg.PublishTimeout
+	publisher = p.newPublisher(topic)
 	p.publishers[topic] = publisher
 	return publisher
 }

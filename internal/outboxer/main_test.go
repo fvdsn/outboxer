@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"cloud.google.com/go/pubsub/v2"
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
@@ -216,6 +217,39 @@ func (r trackingPubSubResult) Get(context.Context) (string, error) {
 	r.started <- struct{}{}
 	<-r.release
 	return "message-1", nil
+}
+
+type fakeTopicPublisher struct {
+	mu        sync.Mutex
+	publishes int
+	flushes   int
+	resumes   []string
+	stopCount int
+}
+
+func (p *fakeTopicPublisher) Publish(context.Context, *pubsub.Message) *pubsub.PublishResult {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.publishes++
+	return nil
+}
+
+func (p *fakeTopicPublisher) Flush() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.flushes++
+}
+
+func (p *fakeTopicPublisher) ResumePublish(orderingKey string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.resumes = append(p.resumes, orderingKey)
+}
+
+func (p *fakeTopicPublisher) Stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stopCount++
 }
 
 func testConfig() appConfig {
@@ -1262,6 +1296,61 @@ func TestSendPubsubEventUsesDefaultTopicAndSanitizesAttributes(t *testing.T) {
 	}
 	if !reflect.DeepEqual(message.Attributes, map[string]string{"keep": "yes"}) {
 		t.Fatalf("unexpected attributes: %#v", message.Attributes)
+	}
+}
+
+func TestCloudPubSubPublisherReusesCachedPublisherPerTopic(t *testing.T) {
+	created := map[string]int{}
+	publishers := map[string]*fakeTopicPublisher{}
+	publisher := &cloudPubSubPublisher{
+		cfg:        testConfig(),
+		publishers: map[string]pubsubTopicPublisher{},
+	}
+	publisher.newPublisher = func(topic string) pubsubTopicPublisher {
+		created[topic]++
+		topicPublisher := &fakeTopicPublisher{}
+		publishers[topic] = topicPublisher
+		return topicPublisher
+	}
+
+	publisher.Flush("topic-1")
+	publisher.ResumePublish("topic-1", "key-a")
+	publisher.Flush("topic-1")
+	publisher.Flush("topic-2")
+
+	if !reflect.DeepEqual(created, map[string]int{"topic-1": 1, "topic-2": 1}) {
+		t.Fatalf("unexpected publisher creation counts: %#v", created)
+	}
+	if publishers["topic-1"].flushes != 2 {
+		t.Fatalf("expected cached topic-1 publisher to be flushed twice, got %d", publishers["topic-1"].flushes)
+	}
+	if !reflect.DeepEqual(publishers["topic-1"].resumes, []string{"key-a"}) {
+		t.Fatalf("unexpected topic-1 resumes: %#v", publishers["topic-1"].resumes)
+	}
+}
+
+func TestCloudPubSubPublisherCloseStopsCachedPublishers(t *testing.T) {
+	publishers := map[string]*fakeTopicPublisher{}
+	publisher := &cloudPubSubPublisher{
+		cfg:        testConfig(),
+		publishers: map[string]pubsubTopicPublisher{},
+	}
+	publisher.newPublisher = func(topic string) pubsubTopicPublisher {
+		topicPublisher := &fakeTopicPublisher{}
+		publishers[topic] = topicPublisher
+		return topicPublisher
+	}
+
+	publisher.Flush("topic-1")
+	publisher.Flush("topic-2")
+	if err := publisher.Close(); err != nil {
+		t.Fatalf("close publisher: %v", err)
+	}
+
+	for topic, topicPublisher := range publishers {
+		if topicPublisher.stopCount != 1 {
+			t.Fatalf("expected topic %s to be stopped once, got %d", topic, topicPublisher.stopCount)
+		}
 	}
 }
 
