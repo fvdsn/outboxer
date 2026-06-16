@@ -1,4 +1,4 @@
-# Event processing — requirements & Stage 1 design
+# Event processing requirements & Stage 1 design
 
 Status: **requirements agreed; Stage 1 design proposed.** Not implemented yet.
 

@@ -257,10 +257,11 @@ path; without a supervisor the process would simply stay down.
 
 ```text
 cmd/outboxer/         executable entrypoint
-docs/                 design notes and deployment guides
+docs/                 user-facing guides
 examples/kubernetes/  sample Kubernetes manifests
 examples/terraform/   sample cloud deployment examples
 internal/outboxer/    service implementation
+specs/                implementation requirements and use cases
 ```
 
 ## Run

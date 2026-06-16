@@ -1,4 +1,4 @@
-# Processing test scenarios
+# Processing use cases and test scenarios
 
 Status: draft test plan for the Stage 1 processing redesign.
 
