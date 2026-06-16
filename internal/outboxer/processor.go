@@ -235,7 +235,7 @@ func (a *app) pubsubSender() sender {
 	return appSender{
 		send: func(ctx context.Context, events []event) ([]event, error) {
 			return a.collectSenderDoneEvents(ctx, events, func(addDoneID func(any)) error {
-				return a.sendPubsubEvents(ctx, nil, events, addDoneID)
+				return a.sendPubsubEvents(ctx, events, addDoneID)
 			})
 		},
 		close: func() error {
@@ -251,7 +251,7 @@ func (a *app) sqsSender() sender {
 	return appSender{
 		send: func(ctx context.Context, events []event) ([]event, error) {
 			return a.collectSenderDoneEvents(ctx, events, func(addDoneID func(any)) error {
-				return a.sendSQSEvents(ctx, nil, events, addDoneID)
+				return a.sendSQSEvents(ctx, events, addDoneID)
 			})
 		},
 	}

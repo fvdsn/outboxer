@@ -283,13 +283,13 @@ func (cfg appConfig) batchSendBound() time.Duration {
 		bounds = append(bounds, time.Duration(fifoWaves)*cfg.PublishTimeout)
 	}
 
-	var max time.Duration
+	var maxBound time.Duration
 	for _, bound := range bounds {
-		if bound > max {
-			max = bound
+		if bound > maxBound {
+			maxBound = bound
 		}
 	}
-	return max
+	return maxBound
 }
 
 func ceilDiv(n int, d int) int {

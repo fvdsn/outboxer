@@ -54,7 +54,11 @@ func Run(ctx context.Context, args []string) error {
 		}
 		defer pubsubClient.Close()
 		a.pubsub = newCloudPubSubPublisher(pubsubClient, cfg)
-		defer a.pubsub.Close()
+		defer func() {
+			if err := a.pubsub.Close(); err != nil {
+				slog.Error("Failed to close Pub/Sub publisher", "error", err.Error())
+			}
+		}()
 	}
 
 	if cfg.SQSEnabled {

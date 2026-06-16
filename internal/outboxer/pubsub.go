@@ -2,7 +2,6 @@ package outboxer
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -144,7 +143,7 @@ func (r cloudPubSubPublishResult) Get(ctx context.Context) (string, error) {
 	return r.result.Get(ctx)
 }
 
-func (a *app) sendPubsubEvents(ctx context.Context, tx *sql.Tx, events []event, addIDToDelete func(any)) error {
+func (a *app) sendPubsubEvents(ctx context.Context, events []event, addIDToDelete func(any)) error {
 	unordered := []event{}
 	orderedByGroup := map[string][]event{}
 	groupOrder := []string{}
@@ -472,8 +471,8 @@ func isPubSubPermanentBackendError(err error) bool {
 }
 
 // sendPubsubEvent is kept as a compatibility wrapper for narrow unit tests.
-func (a *app) sendPubsubEvent(ctx context.Context, tx *sql.Tx, evt event, addIDToDelete func(any)) error {
-	return a.sendPubsubEvents(ctx, tx, []event{evt}, addIDToDelete)
+func (a *app) sendPubsubEvent(ctx context.Context, evt event, addIDToDelete func(any)) error {
+	return a.sendPubsubEvents(ctx, []event{evt}, addIDToDelete)
 }
 
 func pubsubPermanentError(reason string) error {
