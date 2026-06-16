@@ -164,10 +164,11 @@ not leak into `event.columns` or collide with user columns.
 - **S2 — Ordered queues keep their order**, within a batch and across consecutive
   batches. For ordered Pub/Sub keys and SQS FIFO message groups, never have a
   later event in flight before the earlier event's outcome is known.
-- **S3 — Parallelized as much as possible, with deterministic, stable bounds** —
-  total send concurrency is a configured number, not something that multiplies
-  with batch composition or queue count. (Strict for SQS via a global semaphore;
-  for Pub/Sub the bound is the client's own flow control.)
+- **S3 — Parallelized as much as possible, with deterministic, stable bounds.**
+  SQS send concurrency is a configured global semaphore, not something that
+  multiplies with batch composition or queue count. Pub/Sub concurrency is
+  bounded by the publisher client's flow control and by per-ordering-key
+  sequencing; it is not controlled by `SQS_SEND_CONCURRENCY`.
 - **S4 — Bound ordered-group work per batch.** An ordered group can't be
   parallelized, so a long run of events for one Pub/Sub ordering key or SQS FIFO
   message group must not extend a batch's send time unboundedly. This is a
@@ -619,11 +620,13 @@ Sender errors are classified outside the `done` set:
 
 - **Non-fatal sender error**: log/rate-limit it, keep non-`done` events, and
   continue immediately (no `ERROR_COOLDOWN`).
-- **Fatal-after-commit sender error**: delete/commit `done`, then stop
-  processing. Use this for unknown ordered Pub/Sub publish outcomes and
-  unrecoverable client state. In Go, model this as an inspectable sentinel or
-  wrapper (for example `errors.Is(err, errFatalAfterCommit)`), not as a string
-  comparison.
+- **Fatal-after-commit sender error**: attempt to delete/commit `done`, then
+  stop processing regardless of whether that preservation attempt succeeds. Use
+  this for unknown ordered Pub/Sub publish outcomes and unrecoverable client
+  state. Continuing in the same process after this error is unsafe, because it
+  may publish later ordered events behind an unknown in-flight send. In Go,
+  model this as an inspectable sentinel or wrapper (for example
+  `errors.Is(err, errFatalAfterCommit)`), not as a string comparison.
 
 ### Batch orchestration — single commit
 
@@ -645,12 +648,14 @@ Sender errors are classified outside the `done` set:
    content-poison P3–P7; routing failures are not in `done`)
 6. `DELETE … WHERE id IN (done)` — [S0]
 7. `COMMIT` — [Stage 1 single commit; coarse half of S6]
-8. On a database/transaction error, back off (`ERROR_COOLDOWN`). Sender failures
-   and empty batches do not back off (the busy loop is desired; senders are paced
-   by their clients). If a sender reports a fatal-after-commit condition, commit
-   `done` first and then stop processing so the process can restart without
-   publishing behind an unknown in-flight ordered send. Otherwise loop
-   immediately. — [S2, S10, S12]
+8. On a database/transaction error without a fatal-after-commit sender error,
+   back off (`ERROR_COOLDOWN`). Sender failures and empty batches do not back off
+   (the busy loop is desired; senders are paced by their clients). If a sender
+   reports a fatal-after-commit condition, attempt to delete/commit `done`, then
+   stop processing regardless of delete/commit success so the process cannot
+   publish behind an unknown in-flight ordered send. A failed preservation
+   attempt may cause duplicates on restart, but continuing would risk reordering.
+   — [S2, S10, S12]
 9. Failure logging goes through a per-signature rate limiter — [S13]
 
 ### Pub/Sub sender

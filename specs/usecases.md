@@ -67,6 +67,8 @@ Watchdog bound cases:
 - In `per_route_ordered`, the selected count is data-dependent; watchdog tests
   should compute the bound from the actual selected batch composition, not from
   `COLLECT_GLOBAL_LIMIT`.
+- Pub/Sub concurrency is bounded by publisher flow control and ordered-key
+  sequencing; `SQS_SEND_CONCURRENCY` affects SQS only.
 - Both backends: `batchSendBound` is the max of the enabled backend bounds, not
   their sum.
 
@@ -125,6 +127,8 @@ matter.
 | BATCH-10 | Pub/Sub sender and SQS sender both enabled. | They run concurrently; batch time is bounded by the slower backend, not the sum. |
 | BATCH-11 | `per_route_ordered` table contains only routing failures. | No rows are selected; no sender is called; nothing is deleted; no routing-failure log is emitted by the processor. |
 | BATCH-12 | `per_route_ordered` selects a valid route whose provider fast-fails and another valid route that succeeds. | Successful route events are deleted at commit; failed route events remain. The failed route may slow the batch until bounded sender operations return, but it does not prevent selection of the other route. |
+| BATCH-13 | Sender returns `done` and fatal-after-commit error, then delete fails. | Delete/transaction error is logged, but processing still stops; it must not loop in the same process after an unknown ordered outcome. |
+| BATCH-14 | Sender returns `done` and fatal-after-commit error, delete succeeds, then commit fails. | Commit error is logged, restart may duplicate provider-accepted events, and processing still stops; it must not continue behind the unknown ordered outcome. |
 
 ## Realistic happy-path batches
 
@@ -220,6 +224,7 @@ Boundary values should be table-driven with "just below", "exactly at", and
 | PS-FAIL-10 | `Get` context timeout occurs before provider timeout plus grace due to wrong wait bound. | Test should fail; implementation must not use too-short caller wait. |
 | PS-FAIL-11 | Publisher enters unrecoverable internal state. | Sender returns fatal-after-commit error; no in-process publisher recreation. |
 | PS-FAIL-12 | Context is canceled during publish wait. | In-flight unconfirmed event is omitted from `done`; shutdown proceeds. |
+| PS-FAIL-13 | Many topics are active while `SQS_SEND_CONCURRENCY=1`. | Pub/Sub still uses publisher flow control and per-key sequencing; `SQS_SEND_CONCURRENCY` does not serialize Pub/Sub publishes. |
 
 ## Pub/Sub batching and flushing
 
