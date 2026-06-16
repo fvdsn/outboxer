@@ -2141,6 +2141,29 @@ func TestSendSQS10EventsRetryableRequestErrorKeepsEvents(t *testing.T) {
 	}
 }
 
+func TestSendSQS10EventsCanceledContextKeepsEvents(t *testing.T) {
+	cfg := testConfig()
+	sqs := &recordingBlockingSQSPublisher{}
+	a := &app{cfg: cfg, sqs: sqs}
+	var deleted []any
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "payload"}},
+	}
+
+	err := a.sendSQS10Events(ctx, nil, "queue-a", events, func(id any) {
+		deleted = append(deleted, id)
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+}
+
 func TestSendSQSEventsStandardUsesConcurrencyLimit(t *testing.T) {
 	cfg := testConfig()
 	cfg.SQSSendConcurrency = 2
@@ -2338,6 +2361,40 @@ func TestSendSQSEventsFIFOStopsGroupAfterRetryableFailure(t *testing.T) {
 		}
 		if entry.DeduplicationID != entry.ID {
 			t.Fatalf("expected raw valid event id as dedup id, got %q for %q", entry.DeduplicationID, entry.ID)
+		}
+	}
+}
+
+func TestSendSQSEventsFIFOOneGroupAllSuccessUsesSingleMessageRequests(t *testing.T) {
+	cfg := testConfig()
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "ordering_key": "group-a"}},
+	}
+
+	if err := a.sendSQSEvents(context.Background(), nil, events, func(id any) {
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendSQSEvents returned error: %v", err)
+	}
+
+	if !reflect.DeepEqual(deleted, []any{"event-1", "event-2", "event-3"}) {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+	if len(sqs.requests) != 3 {
+		t.Fatalf("expected three single-message FIFO requests, got %#v", sqs.requests)
+	}
+	for _, request := range sqs.requests {
+		if len(request.entries) != 1 {
+			t.Fatalf("expected one entry per FIFO request, got %#v", request.entries)
+		}
+		if request.entries[0].MessageGroupID != "group-a" {
+			t.Fatalf("unexpected message group ID: %q", request.entries[0].MessageGroupID)
 		}
 	}
 }
@@ -2567,6 +2624,29 @@ func TestSendSQS10EventsFIFODerivesSafeDedupID(t *testing.T) {
 	}
 	if len(entry.DeduplicationID) != 64 {
 		t.Fatalf("expected SHA-256 hex dedup id, got %q", entry.DeduplicationID)
+	}
+}
+
+func TestSendSQS10EventsStandardDerivesSafeBatchEntryID(t *testing.T) {
+	cfg := testConfig()
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+	rawID := strings.Repeat("x", 81)
+
+	events := []event{
+		{columns: map[string]any{"id": rawID, "destination": "queue-a", "payload": "one"}},
+	}
+
+	if err := a.sendSQS10Events(context.Background(), nil, "queue-a", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQS10Events returned error: %v", err)
+	}
+
+	entry := sqs.requests[0].entries[0]
+	if entry.ID == rawID {
+		t.Fatal("expected oversized raw event id to be replaced for standard batch entry id")
+	}
+	if len(entry.ID) != 64 {
+		t.Fatalf("expected SHA-256 hex entry id, got %q", entry.ID)
 	}
 }
 
