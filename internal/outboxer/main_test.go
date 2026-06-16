@@ -26,6 +26,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 type fakePubSubPublisher struct {
@@ -183,6 +185,39 @@ func (p *trackingSQSPublisher) SendBatch(_ context.Context, queueURL string, ent
 	return response, nil
 }
 
+type trackingPubSubPublisher struct {
+	mu       sync.Mutex
+	started  chan struct{}
+	release  chan struct{}
+	messages []pubsubMessage
+}
+
+type trackingPubSubResult struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *trackingPubSubPublisher) Publish(_ context.Context, message pubsubMessage) pubsubPublishResult {
+	p.mu.Lock()
+	p.messages = append(p.messages, message)
+	p.mu.Unlock()
+	return trackingPubSubResult{started: p.started, release: p.release}
+}
+
+func (p *trackingPubSubPublisher) Flush(string) {}
+
+func (p *trackingPubSubPublisher) ResumePublish(string, string) {}
+
+func (p *trackingPubSubPublisher) Close() error {
+	return nil
+}
+
+func (r trackingPubSubResult) Get(context.Context) (string, error) {
+	r.started <- struct{}{}
+	<-r.release
+	return "message-1", nil
+}
+
 func testConfig() appConfig {
 	return appConfig{
 		EventTable:       "events",
@@ -207,6 +242,31 @@ func testConfig() appConfig {
 		PublishTimeout:     30 * time.Second,
 		PublishResultGrace: 5 * time.Second,
 	}
+}
+
+const (
+	selectEventsSQL = `SELECT * FROM "events" ORDER BY "id" LIMIT $1 FOR UPDATE`
+	deleteOneSQL    = `DELETE FROM "events" WHERE "id" IN ($1)`
+	deleteTwoSQL    = `DELETE FROM "events" WHERE "id" IN ($1, $2)`
+)
+
+func newMockProcessorApp(t *testing.T, cfg appConfig) (*app, sqlmock.Sqlmock, func()) {
+	t.Helper()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("open sql mock: %v", err)
+	}
+	cleanup := func() {
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatalf("sql expectations: %v", err)
+		}
+		_ = db.Close()
+	}
+	return &app{cfg: cfg, db: db, failureLogger: newFailureLogger(time.Minute)}, mock, cleanup
+}
+
+func mockEventRows() *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"id", "target", "destination", "payload", "ordering_key", "attributes"})
 }
 
 func unsetEnv(t *testing.T, keys ...string) {
@@ -1863,6 +1923,213 @@ func TestSendSQS10EventsKeepsSyntacticallyValidMissingQueue(t *testing.T) {
 	}
 	if len(sqs.requests) != 1 {
 		t.Fatalf("expected provider call for syntactically valid queue URL, got %#v", sqs.requests)
+	}
+}
+
+func TestProcessOneBatchCommitsDoneBeforeNonFatalSenderError(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	expectedErr := errors.New("retryable pubsub")
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = &fakePubSubPublisher{errs: []error{nil, expectedErr}}
+
+	rows := mockEventRows().
+		AddRow("event-1", "pubsub", "topic-1", "one", nil, nil).
+		AddRow("event-2", "pubsub", "topic-1", "two", nil, nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected non-fatal sender error, got %v", err)
+	}
+	if errors.Is(err, errDatabaseBatch) {
+		t.Fatalf("sender error should not be classified as database error: %v", err)
+	}
+	if result.selected != 2 {
+		t.Fatalf("expected two selected events, got %d", result.selected)
+	}
+}
+
+func TestProcessOneBatchCommitsDoneBeforeFatalAfterCommit(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}}
+
+	rows := mockEventRows().
+		AddRow("event-1", "pubsub", "topic-1", "one", "key-a", nil).
+		AddRow("event-2", "pubsub", "topic-1", "two", "key-a", nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if !errors.Is(err, errFatalAfterCommit) {
+		t.Fatalf("expected fatal-after-commit error, got %v", err)
+	}
+	if result.selected != 2 {
+		t.Fatalf("expected two selected events, got %d", result.selected)
+	}
+}
+
+func TestProcessOneBatchRollsBackOnDeleteFailure(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	expectedErr := errors.New("delete failed")
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = &fakePubSubPublisher{}
+
+	rows := mockEventRows().AddRow("event-1", "pubsub", "topic-1", "one", nil, nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnError(expectedErr)
+	mock.ExpectRollback()
+
+	result, err := a.processOneBatch(context.Background())
+	if !errors.Is(err, expectedErr) || !errors.Is(err, errDatabaseBatch) {
+		t.Fatalf("expected database delete error, got %v", err)
+	}
+	if result.selected != 1 {
+		t.Fatalf("expected one selected event, got %d", result.selected)
+	}
+}
+
+func TestProcessOneBatchRollsBackOnSelectFailure(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	expectedErr := errors.New("select failed")
+	pubsub := &fakePubSubPublisher{}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = pubsub
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnError(expectedErr)
+	mock.ExpectRollback()
+
+	result, err := a.processOneBatch(context.Background())
+	if !errors.Is(err, expectedErr) || !errors.Is(err, errDatabaseBatch) {
+		t.Fatalf("expected database select error, got %v", err)
+	}
+	if result.selected != 0 {
+		t.Fatalf("expected no selected events, got %d", result.selected)
+	}
+	if len(pubsub.messages) != 0 {
+		t.Fatalf("expected no sender calls after select failure, got %#v", pubsub.messages)
+	}
+}
+
+func TestProcessOneBatchCommitFailureIsDatabaseError(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	expectedErr := errors.New("commit failed")
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = &fakePubSubPublisher{}
+
+	rows := mockEventRows().AddRow("event-1", "pubsub", "topic-1", "one", nil, nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit().WillReturnError(expectedErr)
+
+	result, err := a.processOneBatch(context.Background())
+	if !errors.Is(err, expectedErr) || !errors.Is(err, errDatabaseBatch) {
+		t.Fatalf("expected database commit error, got %v", err)
+	}
+	if result.selected != 1 {
+		t.Fatalf("expected one selected event, got %d", result.selected)
+	}
+}
+
+func TestProcessOneBatchRoutingFailuresOnlyCommitWithoutSendOrDelete(t *testing.T) {
+	cfg := testConfig()
+	pubsub := &fakePubSubPublisher{}
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = pubsub
+	a.sqs = sqs
+
+	rows := mockEventRows().
+		AddRow("event-1", "kafka", "topic-1", "one", nil, nil).
+		AddRow("event-2", "", "topic-2", "two", nil, nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 2 {
+		t.Fatalf("expected two selected events, got %d", result.selected)
+	}
+	if len(pubsub.messages) != 0 {
+		t.Fatalf("expected no Pub/Sub sends for routing failures, got %#v", pubsub.messages)
+	}
+	if len(sqs.requests) != 0 {
+		t.Fatalf("expected no SQS sends for routing failures, got %#v", sqs.requests)
+	}
+}
+
+func TestProcessOneBatchRunsEnabledBackendsConcurrently(t *testing.T) {
+	cfg := testConfig()
+	pubsub := &trackingPubSubPublisher{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}, 1),
+	}
+	sqs := &trackingSQSPublisher{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}, 1),
+	}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = pubsub
+	a.sqs = sqs
+
+	rows := mockEventRows().
+		AddRow("event-1", "pubsub", "topic-1", "one", nil, nil).
+		AddRow("event-2", "sqs", "queue-a", "two", nil, nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(rows)
+	mock.ExpectExec(deleteTwoSQL).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.processOneBatch(context.Background())
+		done <- err
+	}()
+
+	for name, started := range map[string]chan struct{}{
+		"pubsub": pubsub.started,
+		"sqs":    sqs.started,
+	} {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatalf("%s backend did not start before release", name)
+		}
+	}
+
+	pubsub.release <- struct{}{}
+	sqs.release <- struct{}{}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("processOneBatch returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("processOneBatch did not finish after releasing backends")
 	}
 }
 
