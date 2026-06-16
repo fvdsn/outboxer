@@ -15,10 +15,11 @@ stages.
   ordering.
 - **Stable, deterministic Postgres connection count.** Collection and deletion
   happen on a single connection in one database transaction.
-- **One active collector.** The processor takes a whole-table lock for the batch,
-  so a second Outboxer instance blocks rather than processing in parallel. The
-  selection query does not need `FOR UPDATE`; concurrency safety comes from the
-  table lock.
+- **One active collector without blocking producers.** The processor locks the
+  selected rows with `FOR UPDATE` inside the batch transaction, matching the JS
+  implementation. Do not use `SKIP LOCKED`. A second Outboxer instance blocks on
+  the same oldest selected rows rather than processing in parallel, while normal
+  producers can still insert new rows into the table.
 - **One commit point.** In Stage 1, selected events are sent, `done` events are
   deleted, and the transaction commits once at the end of the batch.
 - **Optional columns and default destinations still work.** Any collector mode
@@ -46,11 +47,12 @@ Shape:
 SELECT *
 FROM events
 ORDER BY id
-LIMIT COLLECT_GLOBAL_LIMIT;
+LIMIT COLLECT_GLOBAL_LIMIT
+FOR UPDATE;
 ```
 
-The real query uses configured table/column names and runs after the batch
-transaction has acquired the table lock.
+The real query uses configured table/column names and runs inside the batch
+transaction.
 
 ### Collection mode B — `per_route_ordered`
 
@@ -98,7 +100,7 @@ Shape:
 ```sql
 WITH routed AS (
   SELECT
-    events.*,
+    id,
     resolved_target,
     resolved_destination,
     row_number() OVER (
@@ -108,20 +110,26 @@ WITH routed AS (
   FROM events
 ),
 ranked AS (
-  SELECT *
+  SELECT id
   FROM routed
   WHERE route_rank <= COLLECT_PER_ROUTE_LIMIT
 )
-SELECT *
-FROM ranked
-ORDER BY id;
+SELECT events.*
+FROM events
+JOIN ranked USING (id)
+ORDER BY events.id
+FOR UPDATE;
 ```
 
 The real implementation must generate `resolved_target` and
 `resolved_destination` from the configured columns and backend defaults. If a
 column is not configured or not present because it is optional, the generated SQL
 must use the corresponding default/sentinel expression instead of referencing
-the missing column.
+the missing column. The sketch uses `id` for readability; the real query uses the
+configured event id column for ranking and joining. The ranking query may compute
+synthetic columns, but the final projection must return only base event-table
+columns so synthetic values do not leak into `event.columns` or collide with
+user columns.
 
 ## Step 2 — Sending events (to be redesigned)
 
@@ -597,11 +605,11 @@ Sender errors are classified outside the `done` set:
 
 ### Batch orchestration — single commit
 
-1. `BEGIN` on the one connection and acquire the whole-table batch lock —
-   [collection: stable connections, one active collector]
+1. `BEGIN` on the one connection — [collection: stable connections]
 2. Select events using the configured collection mode (`global_ordered` or
-   `per_route_ordered`). The selection query does not need `FOR UPDATE` because
-   the table lock already serializes processors. — [collection]
+   `per_route_ordered`) and lock the selected rows with `FOR UPDATE`, without
+   `SKIP LOCKED`. This serializes Outboxer processors on the oldest selected
+   rows while allowing producers to keep inserting new events. — [collection]
 3. Route to `pubsub` / `sqs` / retryable routing failure using the routing
    classification table. Routing failures (R7, R10–R12) are **kept** and logged
    through the bounded failure logger — [S11, S0, S13]
