@@ -36,7 +36,7 @@ func openDB(cfg appConfig) (*sql.DB, error) {
 	}
 
 	db := stdlib.OpenDB(*pgConfig)
-	db.SetMaxOpenConns(cfg.PGMaxConnections)
+	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(0)
 	return db, nil
 }

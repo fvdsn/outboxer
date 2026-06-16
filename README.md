@@ -204,7 +204,6 @@ outboxer --help
 | `--pg-ssl-root-cert` | `PG_SSL_ROOT_CERT` | empty | Path to a CA certificate (PEM) used to verify the server. |
 | `--pg-connect-timeout-ms` | `PG_CONNECT_TIMEOUT_MS` | `10000` | PostgreSQL connect timeout in milliseconds. |
 | `--pg-query-timeout-ms` | `PG_QUERY_TIMEOUT_MS` | `30000` | Timeout for a single database query in milliseconds. `0` disables it. |
-| `--pg-max-connections` | `PG_MAX_CONNECTIONS` | `10` | PostgreSQL max open connections. |
 
 ### Google Pub/Sub
 

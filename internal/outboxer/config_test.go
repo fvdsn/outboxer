@@ -120,6 +120,18 @@ func TestBuildTLSConfigRootCert(t *testing.T) {
 	}
 }
 
+func TestOpenDBUsesSingleConnection(t *testing.T) {
+	db, err := openDB(testConfig())
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	defer db.Close()
+
+	if got := db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("expected one max open connection, got %d", got)
+	}
+}
+
 func TestLoadConfigUsesEnv(t *testing.T) {
 	t.Setenv("PG_HOST", "db")
 	t.Setenv("POLL_INTERVAL_MS", "250")

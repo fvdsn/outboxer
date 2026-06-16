@@ -51,7 +51,6 @@ type appConfig struct {
 	PGSSLRootCert           string
 	PGConnectTimeout        time.Duration
 	PGQueryTimeout          time.Duration
-	PGMaxConnections        int
 
 	AWSRegion                  string
 	AWSRoleARN                 string
@@ -123,7 +122,6 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGSSLRootCert, "pg-ssl-root-cert", cfg.PGSSLRootCert, "Path to a CA certificate (PEM) used to verify the PostgreSQL server.", "PG_SSL_ROOT_CERT")
 	addIntFlag(flags, &options, "PostgreSQL", &pgTimeoutMS, "pg-connect-timeout-ms", pgTimeoutMS, "PostgreSQL connect timeout in milliseconds.", "PG_CONNECT_TIMEOUT_MS")
 	addIntFlag(flags, &options, "PostgreSQL", &pgQueryTimeoutMS, "pg-query-timeout-ms", pgQueryTimeoutMS, "Timeout for a single database query in milliseconds. 0 disables the timeout.", "PG_QUERY_TIMEOUT_MS")
-	addIntFlag(flags, &options, "PostgreSQL", &cfg.PGMaxConnections, "pg-max-connections", cfg.PGMaxConnections, "PostgreSQL max open connections.", "PG_MAX_CONNECTIONS")
 
 	addBoolFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubEnabled, "pubsub-enabled", cfg.PubSubEnabled, "Enable publishing to Google Pub/Sub.", "PUBSUB_ENABLED")
 	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.DefaultPubSubTopic, "default-pubsub-topic", cfg.DefaultPubSubTopic, "Pub/Sub topic used when an event has no destination.", "DEFAULT_PUBSUB_TOPIC")
@@ -258,7 +256,6 @@ func loadConfigFromEnv() appConfig {
 		PGSSLRootCert:           getenv("PG_SSL_ROOT_CERT", ""),
 		PGConnectTimeout:        time.Duration(getenvInt("PG_CONNECT_TIMEOUT_MS", 10000)) * time.Millisecond,
 		PGQueryTimeout:          time.Duration(getenvInt("PG_QUERY_TIMEOUT_MS", 30000)) * time.Millisecond,
-		PGMaxConnections:        getenvInt("PG_MAX_CONNECTIONS", 10),
 
 		AWSRegion:                  getenv("AWS_REGION", ""),
 		AWSRoleARN:                 getenv("AWS_ROLE_ARN", ""),
