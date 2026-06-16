@@ -151,52 +151,84 @@ environment variable and default value:
 outboxer --help
 ```
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `EVENT_TABLE` | `events` | Outbox table name. |
-| `EVENT_ID` | `id` | Event id column. |
-| `EVENT_TIMESTAMP` | `timestamp` | Event timestamp column, used for latency logs. |
-| `EVENT_PAYLOAD` | `payload` | Event payload column. |
-| `EVENT_TARGET` | `target` | Backend selector column. Values `pubsub` or `sqs`. Required only when both backends are enabled. |
-| `EVENT_DESTINATION` | `destination` | Pub/Sub topic name or SQS queue URL column. |
-| `EVENT_ORDERING_KEY` | `ordering_key` | Ordering key / FIFO message group column. |
-| `EVENT_ATTRIBUTES` | `attributes` | JSON attributes column. |
-| `PUBSUB_ENABLED` | `false` | Enable publishing to Google Pub/Sub. |
-| `SQS_ENABLED` | `false` | Enable publishing to AWS SQS. |
-| `DEFAULT_PUBSUB_TOPIC` | `default` | Pub/Sub topic used when an event has no destination. |
-| `DEFAULT_SQS_QUEUE_URL` | empty | SQS queue URL used when an event has no destination. |
-| `PUBSUB_PROJECT_ID` | empty | Google Cloud project for Pub/Sub. Detected from ADC when empty. |
-| `BATCH_SIZE` | `32` | Maximum rows selected per batch. |
-| `SQS_SEND_CONCURRENCY` | `8` | Maximum concurrent SQS send requests. |
-| `ORDERED_GROUP_BATCH_CAP` | `8` | Maximum events sent for one ordered key/group in one batch. |
-| `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors. |
-| `POLL_INTERVAL_MS` | `0` | Sleep after an empty batch. The default keeps polling immediately. |
-| `WATCHDOG_INTERVAL_MS` | `600000` | Watchdog interval. Must be at least 10x `POLL_INTERVAL_MS` when polling is enabled. |
-| `PUBLISH_TIMEOUT_MS` | `30000` | Timeout for a single publish call. Must be positive. |
-| `PUBLISH_RESULT_GRACE_MS` | `5000` | Extra wait after the provider timeout for async Pub/Sub publish results. |
-| `HEALTH_PORT` | `PORT` or `0` | HTTP health server port. `0` disables the server. |
-| `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, or `error`. |
-| `LOG_FORMAT` | `text` | Log format: `text` or `json`. |
-| `PG_HOST` | `localhost` | PostgreSQL host. |
-| `PG_PORT` | `5432` | PostgreSQL port. |
-| `PG_USER` | `postgres` | PostgreSQL user. |
-| `PG_PASSWORD` | empty | PostgreSQL password. |
-| `PG_DATABASE` | `postgres` | PostgreSQL database. |
-| `PG_SSL` | `false` | Enable PostgreSQL TLS. |
-| `PG_SSL_REJECT_UNAUTHORIZED` | `true` | Verify the PostgreSQL TLS certificate and hostname. |
-| `PG_SSL_ROOT_CERT` | empty | Path to a CA certificate (PEM) used to verify the server. |
-| `PG_CONNECT_TIMEOUT_MS` | `10000` | PostgreSQL connect timeout in milliseconds. |
-| `PG_QUERY_TIMEOUT_MS` | `30000` | Timeout for a single database query. `0` disables it. |
-| `PG_MAX_CONNECTIONS` | `10` | PostgreSQL max open connections. |
-| `PUBSUB_API_ENDPOINT` | empty | Optional Pub/Sub API endpoint override. |
-| `SQS_API_ENDPOINT` | empty | Optional SQS API endpoint override, useful for local emulators such as ElasticMQ. |
-| `AWS_REGION` | empty | AWS region for SQS and STS. |
-| `AWS_ROLE_ARN` | empty | Optional AWS role to assume before publishing to SQS. |
-| `AWS_ROLE_SESSION_NAME` | `outboxer` | AWS assume-role session name. |
-| `AWS_ROLE_DURATION_SECONDS` | `3600` | AWS assumed-role duration. |
-| `AWS_CREDENTIAL_REFRESH_WINDOW_MS` | `300000` | Refresh assumed credentials before expiry. |
-| `AWS_WEB_IDENTITY_PROVIDER` | empty | Set to `google` to assume the AWS role with a Google OIDC token (GCP to AWS). |
-| `AWS_WEB_IDENTITY_AUDIENCE` | empty | Audience for the web identity token, matching the AWS IAM OIDC provider. |
+### Event table
+
+| CLI flag | Env var | Default | Description |
+| --- | --- | --- | --- |
+| `--event-table` | `EVENT_TABLE` | `events` | Outbox table name. |
+| `--event-id` | `EVENT_ID` | `id` | Event id column. |
+| `--event-timestamp` | `EVENT_TIMESTAMP` | `timestamp` | Event timestamp column, used for latency logs. |
+| `--event-payload` | `EVENT_PAYLOAD` | `payload` | Event payload column. |
+| `--event-target` | `EVENT_TARGET` | `target` | Backend selector column. Values `pubsub` or `sqs`. Required only when both backends are enabled. |
+| `--event-destination` | `EVENT_DESTINATION` | `destination` | Pub/Sub topic name or SQS queue URL column. |
+| `--event-ordering-key` | `EVENT_ORDERING_KEY` | `ordering_key` | Ordering key / FIFO message group column. |
+| `--event-attributes` | `EVENT_ATTRIBUTES` | `attributes` | JSON attributes column. |
+
+### Batch processing
+
+| CLI flag | Env var | Default | Description |
+| --- | --- | --- | --- |
+| `--batch-size` | `BATCH_SIZE` | `32` | Maximum rows selected per batch. |
+| `--sqs-send-concurrency` | `SQS_SEND_CONCURRENCY` | `8` | Maximum concurrent SQS send requests. |
+| `--ordered-group-batch-cap` | `ORDERED_GROUP_BATCH_CAP` | `8` | Maximum events sent for one ordered key/group in one batch. |
+| `--error-cooldown-ms` | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors in milliseconds. |
+| `--poll-interval-ms` | `POLL_INTERVAL_MS` | `0` | Sleep after an empty batch in milliseconds. The default keeps polling immediately. |
+| `--watchdog-interval-ms` | `WATCHDOG_INTERVAL_MS` | `600000` | Watchdog interval in milliseconds. Must be at least 10x `POLL_INTERVAL_MS` when polling is enabled. |
+| `--publish-timeout-ms` | `PUBLISH_TIMEOUT_MS` | `30000` | Timeout for a single publish call in milliseconds. Must be positive. |
+| `--publish-result-grace-ms` | `PUBLISH_RESULT_GRACE_MS` | `5000` | Extra wait after provider publish timeout for async Pub/Sub publish results. |
+
+### HTTP / health
+
+| CLI flag | Env var | Default | Description |
+| --- | --- | --- | --- |
+| `--health-port` | `HEALTH_PORT`, `PORT` | `PORT` or `0` | HTTP health server port. `0` disables the server. |
+
+### Logging
+
+| CLI flag | Env var | Default | Description |
+| --- | --- | --- | --- |
+| `--log-level` | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, or `error`. |
+| `--log-format` | `LOG_FORMAT` | `text` | Log format: `text` or `json`. |
+
+### PostgreSQL
+
+| CLI flag | Env var | Default | Description |
+| --- | --- | --- | --- |
+| `--pg-host` | `PG_HOST` | `localhost` | PostgreSQL host. |
+| `--pg-port` | `PG_PORT` | `5432` | PostgreSQL port. |
+| `--pg-user` | `PG_USER` | `postgres` | PostgreSQL user. |
+| `--pg-password` | `PG_PASSWORD` | empty | PostgreSQL password. |
+| `--pg-database` | `PG_DATABASE` | `postgres` | PostgreSQL database. |
+| `--pg-ssl` | `PG_SSL` | `false` | Enable PostgreSQL TLS. |
+| `--pg-ssl-reject-unauthorized` | `PG_SSL_REJECT_UNAUTHORIZED` | `true` | Verify PostgreSQL TLS certificate and hostname. |
+| `--pg-ssl-root-cert` | `PG_SSL_ROOT_CERT` | empty | Path to a CA certificate (PEM) used to verify the server. |
+| `--pg-connect-timeout-ms` | `PG_CONNECT_TIMEOUT_MS` | `10000` | PostgreSQL connect timeout in milliseconds. |
+| `--pg-query-timeout-ms` | `PG_QUERY_TIMEOUT_MS` | `30000` | Timeout for a single database query in milliseconds. `0` disables it. |
+| `--pg-max-connections` | `PG_MAX_CONNECTIONS` | `10` | PostgreSQL max open connections. |
+
+### Google Pub/Sub
+
+| CLI flag | Env var | Default | Description |
+| --- | --- | --- | --- |
+| `--pubsub-enabled` | `PUBSUB_ENABLED` | `false` | Enable publishing to Google Pub/Sub. |
+| `--default-pubsub-topic` | `DEFAULT_PUBSUB_TOPIC` | `default` | Pub/Sub topic used when an event has no destination. |
+| `--pubsub-project-id` | `PUBSUB_PROJECT_ID` | empty | Google Cloud project for Pub/Sub. Detected from ADC when empty. |
+| `--pubsub-api-endpoint` | `PUBSUB_API_ENDPOINT` | empty | Optional Pub/Sub API endpoint override. |
+
+### AWS SQS
+
+| CLI flag | Env var | Default | Description |
+| --- | --- | --- | --- |
+| `--sqs-enabled` | `SQS_ENABLED` | `false` | Enable publishing to AWS SQS. |
+| `--default-sqs-queue-url` | `DEFAULT_SQS_QUEUE_URL` | empty | SQS queue URL used when an event has no destination. |
+| `--sqs-api-endpoint` | `SQS_API_ENDPOINT` | empty | Optional SQS API endpoint override, useful for local emulators such as ElasticMQ. |
+| `--aws-region` | `AWS_REGION` | empty | AWS region for SQS and STS. |
+| `--aws-role-arn` | `AWS_ROLE_ARN` | empty | Optional AWS role to assume before publishing to SQS. |
+| `--aws-role-session-name` | `AWS_ROLE_SESSION_NAME` | `outboxer` | AWS assume-role session name. |
+| `--aws-role-duration-seconds` | `AWS_ROLE_DURATION_SECONDS` | `3600` | AWS assumed-role duration in seconds. |
+| `--aws-credential-refresh-window-ms` | `AWS_CREDENTIAL_REFRESH_WINDOW_MS` | `300000` | Refresh assumed credentials before expiry in milliseconds. |
+| `--aws-web-identity-provider` | `AWS_WEB_IDENTITY_PROVIDER` | empty | Set to `google` to assume the AWS role with a Google OIDC token (GCP to AWS). |
+| `--aws-web-identity-audience` | `AWS_WEB_IDENTITY_AUDIENCE` | empty | Audience for the web identity token, matching the AWS IAM OIDC provider. |
 
 ## Authentication
 
