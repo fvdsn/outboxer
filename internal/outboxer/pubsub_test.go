@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -26,6 +27,151 @@ func TestSendPubsubEventRespectsPublishTimeout(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("publish blocked for %s instead of timing out", elapsed)
+	}
+}
+
+func TestSendPubsubEventsUnorderedHundredOneTopic(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	pubsub := &fakePubSubPublisher{}
+	a := &app{cfg: cfg, pubsub: pubsub}
+
+	events := make([]event, 100)
+	for i := range events {
+		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "pubsub", "topic-1", "payload", "")
+	}
+
+	deleted := []any{}
+	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendPubsubEvents returned error: %v", err)
+	}
+
+	if len(pubsub.messages) != 100 {
+		t.Fatalf("expected 100 Pub/Sub messages, got %d", len(pubsub.messages))
+	}
+	if !reflect.DeepEqual(pubsub.flushes, []string{"topic-1"}) {
+		t.Fatalf("expected one flush for topic-1, got %#v", pubsub.flushes)
+	}
+	if got, want := sortedDeletedIDs(deleted), expectedHundredEventIDs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected deleted IDs:\ngot  %#v\nwant %#v", got, want)
+	}
+}
+
+func TestSendPubsubEventsUnorderedHundredAcrossTenTopics(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	pubsub := &fakePubSubPublisher{}
+	a := &app{cfg: cfg, pubsub: pubsub}
+
+	events := make([]event, 100)
+	for i := range events {
+		topic := fmt.Sprintf("topic-%02d", i/10)
+		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "pubsub", topic, "payload", "")
+	}
+
+	deleted := []any{}
+	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendPubsubEvents returned error: %v", err)
+	}
+
+	if len(pubsub.messages) != 100 {
+		t.Fatalf("expected 100 Pub/Sub messages, got %d", len(pubsub.messages))
+	}
+	sort.Strings(pubsub.flushes)
+	expectedFlushes := []string{}
+	for i := 0; i < 10; i++ {
+		topic := fmt.Sprintf("topic-%02d", i)
+		expectedFlushes = append(expectedFlushes, topic)
+		if got := pubsubMessageCountByTopic(pubsub.messages)[topic]; got != 10 {
+			t.Fatalf("expected 10 messages for %s, got %d in %#v", topic, got, pubsub.messages)
+		}
+	}
+	if !reflect.DeepEqual(pubsub.flushes, expectedFlushes) {
+		t.Fatalf("unexpected topic flushes:\ngot  %#v\nwant %#v", pubsub.flushes, expectedFlushes)
+	}
+	if got, want := sortedDeletedIDs(deleted), expectedHundredEventIDs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected deleted IDs:\ngot  %#v\nwant %#v", got, want)
+	}
+}
+
+func TestSendPubsubEventsUsesDefaultTopicForHundredEvents(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	cfg.EventTarget = ""
+	cfg.EventDestination = ""
+	cfg.DefaultPubSubTopic = "topic-default"
+	pubsub := &fakePubSubPublisher{}
+	a := &app{cfg: cfg, pubsub: pubsub}
+
+	events := make([]event, 100)
+	for i := range events {
+		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "", "", "payload", "")
+	}
+
+	deleted := []any{}
+	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendPubsubEvents returned error: %v", err)
+	}
+
+	if got := pubsubMessageCountByTopic(pubsub.messages)["topic-default"]; got != 100 {
+		t.Fatalf("expected all messages to use default topic, got %d in %#v", got, pubsub.messages)
+	}
+	if !reflect.DeepEqual(pubsub.flushes, []string{"topic-default"}) {
+		t.Fatalf("expected one flush for default topic, got %#v", pubsub.flushes)
+	}
+	if got, want := sortedDeletedIDs(deleted), expectedHundredEventIDs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected deleted IDs:\ngot  %#v\nwant %#v", got, want)
+	}
+}
+
+func TestSendPubsubEventsMixedOrderedAndUnorderedAcrossTopics(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	pubsub := &fakePubSubPublisher{}
+	a := &app{cfg: cfg, pubsub: pubsub}
+
+	events := []event{}
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("unordered-%03d", i)
+		events = append(events, testEvent(id, "pubsub", fmt.Sprintf("topic-%d", i%2), id, ""))
+	}
+	for i := 0; i < 12; i++ {
+		id := fmt.Sprintf("ordered-%03d", i)
+		events = append(events, testEvent(id, "pubsub", fmt.Sprintf("topic-%d", i%2), id, fmt.Sprintf("key-%d", i%3)))
+	}
+
+	var deletedMu sync.Mutex
+	deleted := []any{}
+	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+		deletedMu.Lock()
+		defer deletedMu.Unlock()
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendPubsubEvents returned error: %v", err)
+	}
+
+	if len(pubsub.messages) != len(events) {
+		t.Fatalf("expected %d Pub/Sub messages, got %d", len(events), len(pubsub.messages))
+	}
+	if got := pubsubMessageCountByTopic(pubsub.messages); !reflect.DeepEqual(got, map[string]int{"topic-0": 16, "topic-1": 16}) {
+		t.Fatalf("unexpected message counts by topic: %#v", got)
+	}
+	for _, message := range pubsub.messages {
+		if strings.HasPrefix(string(message.Data), "ordered") && message.OrderingKey == "" {
+			t.Fatalf("expected ordered message to keep ordering key: %#v", message)
+		}
+	}
+	deletedMu.Lock()
+	deletedCount := len(deleted)
+	deletedMu.Unlock()
+	if deletedCount != len(events) {
+		t.Fatalf("expected all events deleted, got %d of %d: %#v", deletedCount, len(events), deleted)
 	}
 }
 

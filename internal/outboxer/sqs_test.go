@@ -36,6 +36,185 @@ func TestSendSQSEventsUsesDefaultQueueURL(t *testing.T) {
 	}
 }
 
+func TestSendSQSEventsStandardSendsHundredAsTenBatches(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSSendConcurrency = 16
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+
+	events := make([]event, 100)
+	for i := range events {
+		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "sqs", "queue-a", "payload", "")
+	}
+
+	var deletedMu sync.Mutex
+	deleted := []any{}
+	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+		deletedMu.Lock()
+		defer deletedMu.Unlock()
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendSQSEvents returned error: %v", err)
+	}
+
+	if len(sqs.requests) != 10 {
+		t.Fatalf("expected 10 SQS requests, got %d: %#v", len(sqs.requests), sqs.requests)
+	}
+	for _, request := range sqs.requests {
+		if request.queueURL != "queue-a" {
+			t.Fatalf("expected queue-a request, got %q", request.queueURL)
+		}
+		if len(request.entries) != 10 {
+			t.Fatalf("expected 10 entries per request, got %d in %#v", len(request.entries), request)
+		}
+		for _, entry := range request.entries {
+			if entry.MessageGroupID != "" || entry.DeduplicationID != "" {
+				t.Fatalf("standard queue entry should not include FIFO fields: %#v", entry)
+			}
+		}
+	}
+	deletedMu.Lock()
+	gotDeleted := sortedDeletedIDs(deleted)
+	deletedMu.Unlock()
+	if got, want := gotDeleted, expectedHundredEventIDs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected deleted IDs:\ngot  %#v\nwant %#v", got, want)
+	}
+}
+
+func TestSendSQSEventsStandardGroupsHundredAcrossTenQueues(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSSendConcurrency = 16
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+
+	events := make([]event, 100)
+	for i := range events {
+		queue := fmt.Sprintf("queue-%02d", i/10)
+		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "sqs", queue, "payload", "")
+	}
+
+	var deletedMu sync.Mutex
+	deleted := []any{}
+	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+		deletedMu.Lock()
+		defer deletedMu.Unlock()
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendSQSEvents returned error: %v", err)
+	}
+
+	if len(sqs.requests) != 10 {
+		t.Fatalf("expected one request per queue, got %d: %#v", len(sqs.requests), sqs.requests)
+	}
+	for i := 0; i < 10; i++ {
+		queue := fmt.Sprintf("queue-%02d", i)
+		if got := sqsRequestCountByQueue(sqs.requests)[queue]; got != 1 {
+			t.Fatalf("expected one request for %s, got %d in %#v", queue, got, sqs.requests)
+		}
+		if got := sqsEntryCountByQueue(sqs.requests)[queue]; got != 10 {
+			t.Fatalf("expected 10 entries for %s, got %d in %#v", queue, got, sqs.requests)
+		}
+	}
+	deletedMu.Lock()
+	gotDeleted := sortedDeletedIDs(deleted)
+	deletedMu.Unlock()
+	if got, want := gotDeleted, expectedHundredEventIDs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected deleted IDs:\ngot  %#v\nwant %#v", got, want)
+	}
+}
+
+func TestSendSQSEventsUsesDefaultQueueForHundredEvents(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubEnabled = false
+	cfg.EventTarget = ""
+	cfg.EventDestination = ""
+	cfg.DefaultSQSQueueURL = "https://sqs.example/default"
+	cfg.SQSSendConcurrency = 16
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+
+	events := make([]event, 100)
+	for i := range events {
+		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "", "", "payload", "")
+	}
+
+	var deletedMu sync.Mutex
+	deleted := []any{}
+	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+		deletedMu.Lock()
+		defer deletedMu.Unlock()
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendSQSEvents returned error: %v", err)
+	}
+
+	if len(sqs.requests) != 10 {
+		t.Fatalf("expected 10 requests to default queue, got %d: %#v", len(sqs.requests), sqs.requests)
+	}
+	if got := sqsEntryCountByQueue(sqs.requests)["https://sqs.example/default"]; got != 100 {
+		t.Fatalf("expected all events to use default queue, got %d in %#v", got, sqs.requests)
+	}
+	deletedMu.Lock()
+	gotDeleted := sortedDeletedIDs(deleted)
+	deletedMu.Unlock()
+	if got, want := gotDeleted, expectedHundredEventIDs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected deleted IDs:\ngot  %#v\nwant %#v", got, want)
+	}
+}
+
+func TestSendSQSEventsMixedStandardAndFIFOHappyPath(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSSendConcurrency = 16
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+
+	events := []event{}
+	for i := 0; i < 20; i++ {
+		events = append(events, testEvent(fmt.Sprintf("standard-%03d", i), "sqs", "standard-queue", "payload", ""))
+	}
+	for i := 0; i < 6; i++ {
+		group := fmt.Sprintf("group-%d", i%2)
+		events = append(events, testEvent(fmt.Sprintf("fifo-%03d", i), "sqs", "orders.fifo", "payload", group))
+	}
+
+	var deletedMu sync.Mutex
+	deleted := []any{}
+	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+		deletedMu.Lock()
+		defer deletedMu.Unlock()
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendSQSEvents returned error: %v", err)
+	}
+
+	if got := sqsRequestCountByQueue(sqs.requests)["standard-queue"]; got != 2 {
+		t.Fatalf("expected 2 standard requests, got %d in %#v", got, sqs.requests)
+	}
+	if got := sqsEntryCountByQueue(sqs.requests)["standard-queue"]; got != 20 {
+		t.Fatalf("expected 20 standard entries, got %d in %#v", got, sqs.requests)
+	}
+	if got := sqsRequestCountByQueue(sqs.requests)["orders.fifo"]; got != 6 {
+		t.Fatalf("expected one FIFO request per event, got %d in %#v", got, sqs.requests)
+	}
+	for _, request := range sqs.requests {
+		if request.queueURL != "orders.fifo" {
+			continue
+		}
+		if len(request.entries) != 1 {
+			t.Fatalf("expected single-entry FIFO request, got %#v", request)
+		}
+		if request.entries[0].MessageGroupID == "" || request.entries[0].DeduplicationID == "" {
+			t.Fatalf("expected FIFO fields on entry: %#v", request.entries[0])
+		}
+	}
+	deletedMu.Lock()
+	deletedCount := len(deleted)
+	deletedMu.Unlock()
+	if deletedCount != len(events) {
+		t.Fatalf("expected all events deleted, got %d of %d: %#v", deletedCount, len(events), deleted)
+	}
+}
+
 func TestSendSQS10EventsRespectsPublishTimeout(t *testing.T) {
 	cfg := testConfig()
 	cfg.PublishTimeout = 50 * time.Millisecond

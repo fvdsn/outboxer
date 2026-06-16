@@ -519,6 +519,212 @@ func TestProcessOneBatchRunsEnabledBackendsConcurrently(t *testing.T) {
 	}
 }
 
+func TestProcessOneBatchRoutesAndDeletesHundredMixedBackendEvents(t *testing.T) {
+	cfg := testConfig()
+	cfg.BatchSize = 100
+	cfg.SQSSendConcurrency = 16
+	pubsub := &fakePubSubPublisher{}
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = pubsub
+	a.sqs = sqs
+
+	events := []event{}
+	for i := 0; i < 50; i++ {
+		events = append(events, testEvent(fmt.Sprintf("pubsub-%03d", i), "pubsub", "topic-a", "pubsub-payload", ""))
+		events = append(events, testEvent(fmt.Sprintf("sqs-%03d", i), "sqs", "queue-a", "sqs-payload", ""))
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockRowsForEvents(events))
+	mock.ExpectExec(deleteEventsSQL(100)).WithArgs(anySQLArgs(100)...).WillReturnResult(sqlmock.NewResult(0, 100))
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 100 {
+		t.Fatalf("expected 100 selected events, got %d", result.selected)
+	}
+	if len(pubsub.messages) != 50 {
+		t.Fatalf("expected 50 Pub/Sub messages, got %d", len(pubsub.messages))
+	}
+	if got := pubsubMessageCountByTopic(pubsub.messages)["topic-a"]; got != 50 {
+		t.Fatalf("expected 50 Pub/Sub messages for topic-a, got %d", got)
+	}
+	if len(sqs.requests) != 5 {
+		t.Fatalf("expected 5 SQS requests, got %d: %#v", len(sqs.requests), sqs.requests)
+	}
+	if got := sqsEntryCountByQueue(sqs.requests)["queue-a"]; got != 50 {
+		t.Fatalf("expected 50 SQS entries for queue-a, got %d", got)
+	}
+}
+
+func TestProcessOneBatchRoutesHundredMixedDestinations(t *testing.T) {
+	cfg := testConfig()
+	cfg.BatchSize = 100
+	cfg.SQSSendConcurrency = 16
+	pubsub := &fakePubSubPublisher{}
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = pubsub
+	a.sqs = sqs
+
+	events := []event{}
+	for i := 0; i < 50; i++ {
+		events = append(events, testEvent(fmt.Sprintf("pubsub-%03d", i), "pubsub", fmt.Sprintf("topic-%d", i/10), "pubsub-payload", ""))
+		events = append(events, testEvent(fmt.Sprintf("sqs-%03d", i), "sqs", fmt.Sprintf("queue-%d", i/10), "sqs-payload", ""))
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockRowsForEvents(events))
+	mock.ExpectExec(deleteEventsSQL(100)).WithArgs(anySQLArgs(100)...).WillReturnResult(sqlmock.NewResult(0, 100))
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 100 {
+		t.Fatalf("expected 100 selected events, got %d", result.selected)
+	}
+	for i := 0; i < 5; i++ {
+		topic := fmt.Sprintf("topic-%d", i)
+		if got := pubsubMessageCountByTopic(pubsub.messages)[topic]; got != 10 {
+			t.Fatalf("expected 10 messages for %s, got %d", topic, got)
+		}
+		queue := fmt.Sprintf("queue-%d", i)
+		if got := sqsEntryCountByQueue(sqs.requests)[queue]; got != 10 {
+			t.Fatalf("expected 10 entries for %s, got %d", queue, got)
+		}
+	}
+}
+
+func TestProcessOneBatchUsesSingleBackendDefaultTopicForHundredEvents(t *testing.T) {
+	cfg := testConfig()
+	cfg.BatchSize = 100
+	cfg.SQSEnabled = false
+	cfg.EventTarget = ""
+	cfg.EventDestination = ""
+	cfg.DefaultPubSubTopic = "topic-default"
+	pubsub := &fakePubSubPublisher{}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = pubsub
+
+	events := make([]event, 100)
+	for i := range events {
+		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "", "", "payload", "")
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockRowsForEvents(events))
+	mock.ExpectExec(deleteEventsSQL(100)).WithArgs(anySQLArgs(100)...).WillReturnResult(sqlmock.NewResult(0, 100))
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 100 {
+		t.Fatalf("expected 100 selected events, got %d", result.selected)
+	}
+	if got := pubsubMessageCountByTopic(pubsub.messages)["topic-default"]; got != 100 {
+		t.Fatalf("expected 100 messages for default topic, got %d", got)
+	}
+}
+
+func TestProcessOneBatchUsesBackendDefaultsWithExplicitTargets(t *testing.T) {
+	cfg := testConfig()
+	cfg.BatchSize = 40
+	cfg.DefaultPubSubTopic = "topic-default"
+	cfg.DefaultSQSQueueURL = "queue-default"
+	pubsub := &fakePubSubPublisher{}
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.pubsub = pubsub
+	a.sqs = sqs
+
+	events := []event{}
+	for i := 0; i < 10; i++ {
+		events = append(events, testEvent(fmt.Sprintf("pubsub-explicit-%03d", i), "pubsub", "topic-explicit", "payload", ""))
+		events = append(events, testEvent(fmt.Sprintf("pubsub-default-%03d", i), "pubsub", "", "payload", ""))
+		events = append(events, testEvent(fmt.Sprintf("sqs-explicit-%03d", i), "sqs", "queue-explicit", "payload", ""))
+		events = append(events, testEvent(fmt.Sprintf("sqs-default-%03d", i), "sqs", "", "payload", ""))
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockRowsForEvents(events))
+	mock.ExpectExec(deleteEventsSQL(40)).WithArgs(anySQLArgs(40)...).WillReturnResult(sqlmock.NewResult(0, 40))
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 40 {
+		t.Fatalf("expected 40 selected events, got %d", result.selected)
+	}
+	if got := pubsubMessageCountByTopic(pubsub.messages); !reflect.DeepEqual(got, map[string]int{"topic-default": 10, "topic-explicit": 10}) {
+		t.Fatalf("unexpected Pub/Sub topic counts: %#v", got)
+	}
+	if got := sqsEntryCountByQueue(sqs.requests); !reflect.DeepEqual(got, map[string]int{"queue-default": 10, "queue-explicit": 10}) {
+		t.Fatalf("unexpected SQS queue counts: %#v", got)
+	}
+}
+
+func TestProcessOneBatchProcessesBacklogAcrossMultipleSelectedBatches(t *testing.T) {
+	cfg := testConfig()
+	cfg.BatchSize = 100
+	cfg.PubSubEnabled = false
+	cfg.SQSSendConcurrency = 16
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.sqs = sqs
+
+	for batchIndex, selected := range []int{100, 100, 50} {
+		events := make([]event, selected)
+		for i := range events {
+			events[i] = testEvent(fmt.Sprintf("event-%d-%03d", batchIndex, i), "sqs", "queue-a", "payload", "")
+		}
+		mock.ExpectBegin()
+		mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockRowsForEvents(events))
+		mock.ExpectExec(deleteEventsSQL(selected)).WithArgs(anySQLArgs(selected)...).WillReturnResult(sqlmock.NewResult(0, int64(selected)))
+		mock.ExpectCommit()
+
+		result, err := a.processOneBatch(context.Background())
+		if err != nil {
+			t.Fatalf("batch %d returned error: %v", batchIndex, err)
+		}
+		if result.selected != selected {
+			t.Fatalf("batch %d selected %d events, want %d", batchIndex, result.selected, selected)
+		}
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEventsSQL).WithArgs(cfg.BatchSize).WillReturnRows(mockEventRows())
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("empty batch returned error: %v", err)
+	}
+	if result.selected != 0 {
+		t.Fatalf("expected final empty batch, got %d selected events", result.selected)
+	}
+	if len(sqs.requests) != 25 {
+		t.Fatalf("expected 25 SQS requests for 250 events, got %d: %#v", len(sqs.requests), sqs.requests)
+	}
+	if got := sqsEntryCountByQueue(sqs.requests)["queue-a"]; got != 250 {
+		t.Fatalf("expected 250 SQS entries for queue-a, got %d", got)
+	}
+}
+
 func TestPostgresIntegrationProcessesAndDeletesEvents(t *testing.T) {
 	dsn := os.Getenv("OUTBOXER_INTEGRATION_PG_DSN")
 	if dsn == "" {

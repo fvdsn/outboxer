@@ -7,12 +7,15 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql/driver"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -361,6 +364,95 @@ func newMockProcessorApp(t *testing.T, cfg appConfig) (*app, sqlmock.Sqlmock, fu
 
 func mockEventRows() *sqlmock.Rows {
 	return sqlmock.NewRows([]string{"id", "target", "destination", "payload", "ordering_key", "attributes"})
+}
+
+func testEvent(id, target, destination, payload, orderingKey string) event {
+	columns := map[string]any{
+		"id":      id,
+		"payload": payload,
+	}
+	if target != "" {
+		columns["target"] = target
+	}
+	if destination != "" {
+		columns["destination"] = destination
+	}
+	if orderingKey != "" {
+		columns["ordering_key"] = orderingKey
+	}
+	return event{columns: columns}
+}
+
+func mockRowsForEvents(events []event) *sqlmock.Rows {
+	rows := mockEventRows()
+	for _, evt := range events {
+		rows.AddRow(
+			eventValue(evt, "id"),
+			eventValue(evt, "target"),
+			eventValue(evt, "destination"),
+			eventValue(evt, "payload"),
+			eventValue(evt, "ordering_key"),
+			eventValue(evt, "attributes"),
+		)
+	}
+	return rows
+}
+
+func deleteEventsSQL(count int) string {
+	placeholders := make([]string, count)
+	for i := range placeholders {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+	}
+	return fmt.Sprintf(`DELETE FROM "events" WHERE "id" IN (%s)`, strings.Join(placeholders, ", "))
+}
+
+func anySQLArgs(count int) []driver.Value {
+	args := make([]driver.Value, count)
+	for i := range args {
+		args[i] = sqlmock.AnyArg()
+	}
+	return args
+}
+
+func sortedDeletedIDs(deleted []any) []string {
+	ids := make([]string, 0, len(deleted))
+	for _, id := range deleted {
+		ids = append(ids, fmt.Sprint(id))
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func expectedHundredEventIDs() []string {
+	ids := make([]string, 100)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("event-%03d", i)
+	}
+	return ids
+}
+
+func sqsEntryCountByQueue(requests []fakeSQSRequest) map[string]int {
+	counts := map[string]int{}
+	for _, request := range requests {
+		counts[request.queueURL] += len(request.entries)
+	}
+	return counts
+}
+
+func sqsRequestCountByQueue(requests []fakeSQSRequest) map[string]int {
+	counts := map[string]int{}
+	for _, request := range requests {
+		counts[request.queueURL]++
+	}
+	return counts
+}
+
+func pubsubMessageCountByTopic(messages []pubsubMessage) map[string]int {
+	counts := map[string]int{}
+	for _, message := range messages {
+		counts[message.Topic]++
+	}
+	return counts
 }
 
 func unsetEnv(t *testing.T, keys ...string) {
