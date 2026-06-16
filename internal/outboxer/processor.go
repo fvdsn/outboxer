@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand"
 	"os"
@@ -100,6 +101,12 @@ func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 	result, batchErr := a.processEventBatch(ctx, tx)
 	if batchErr != nil {
 		logBatchError(ctx, "Failed during batch transaction", batchErr)
+		if errors.Is(batchErr, errDatabaseBatch) {
+			if rollbackErr := tx.Rollback(); rollbackErr != nil {
+				logBatchError(ctx, "Failed to rollback batch transaction", rollbackErr)
+			}
+			return result, batchErr
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -149,7 +156,8 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		case backendSQS:
 			sqsEvents = append(sqsEvents, evt)
 		default:
-			slog.Error("Event cannot be routed, leaving it in the table",
+			a.logFailure(ctx, "Event cannot be routed, leaving it in the table",
+				fmt.Sprintf("route|%s|%s|pubsub=%t|sqs=%t", route.failure, eventOptionalString(evt, a.cfg.EventTarget), a.cfg.PubSubEnabled, a.cfg.SQSEnabled),
 				"event_id", eventValue(evt, a.cfg.EventID),
 				"event_target", eventOptionalString(evt, a.cfg.EventTarget),
 				"routing_failure", route.failure,

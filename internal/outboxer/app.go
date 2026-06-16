@@ -16,6 +16,8 @@ type app struct {
 	pubsub pubsubPublisher
 	sqs    sqsPublisher
 
+	failureLogger *failureLogger
+
 	// shutdown cancels the root context, triggering a graceful shutdown of the
 	// processing loop. It is called from the HTTP handler and on HTTP server
 	// failure.

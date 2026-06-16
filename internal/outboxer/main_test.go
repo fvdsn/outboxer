@@ -769,6 +769,20 @@ func (blockingSQSPublisher) SendBatch(ctx context.Context, _ string, _ []sqsBatc
 	return sqsBatchResponse{}, ctx.Err()
 }
 
+type recordingBlockingSQSPublisher struct {
+	mu       sync.Mutex
+	requests []fakeSQSRequest
+}
+
+func (p *recordingBlockingSQSPublisher) SendBatch(ctx context.Context, queueURL string, entries []sqsBatchEntry) (sqsBatchResponse, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, fakeSQSRequest{queueURL: queueURL, entries: append([]sqsBatchEntry(nil), entries...)})
+	p.mu.Unlock()
+
+	<-ctx.Done()
+	return sqsBatchResponse{}, ctx.Err()
+}
+
 func TestSendPubsubEventRespectsPublishTimeout(t *testing.T) {
 	cfg := testConfig()
 	cfg.PublishTimeout = 50 * time.Millisecond
@@ -1004,6 +1018,30 @@ func TestDeadlockDetectorConcurrentAccess(_ *testing.T) {
 	wg.Wait()
 }
 
+func TestFailureLoggerRateLimitsBySignature(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	logger := newFailureLogger(time.Minute)
+	logger.now = func() time.Time { return now }
+
+	if ok, suppressed := logger.shouldLog("destination-a|retryable"); !ok || suppressed != 0 {
+		t.Fatalf("first occurrence = (%t, %d), want (true, 0)", ok, suppressed)
+	}
+	if ok, suppressed := logger.shouldLog("destination-a|retryable"); ok || suppressed != 0 {
+		t.Fatalf("second occurrence = (%t, %d), want (false, 0)", ok, suppressed)
+	}
+	if ok, suppressed := logger.shouldLog("destination-a|permission"); !ok || suppressed != 0 {
+		t.Fatalf("different signature = (%t, %d), want (true, 0)", ok, suppressed)
+	}
+
+	now = now.Add(time.Minute + time.Nanosecond)
+	if ok, suppressed := logger.shouldLog("destination-a|retryable"); !ok || suppressed != 1 {
+		t.Fatalf("post-window occurrence = (%t, %d), want (true, 1)", ok, suppressed)
+	}
+	if ok, suppressed := logger.shouldLog("destination-a|retryable"); ok || suppressed != 0 {
+		t.Fatalf("post-summary repeat = (%t, %d), want (false, 0)", ok, suppressed)
+	}
+}
+
 func TestSendPubsubEventUsesDefaultTopicAndSanitizesAttributes(t *testing.T) {
 	cfg := testConfig()
 	pubsub := &fakePubSubPublisher{}
@@ -1171,6 +1209,68 @@ func TestSendPubsubEventsOrderedRetryableFailureResumesAndStopsKey(t *testing.T)
 		t.Fatalf("expected only first key event to be published, got %#v", pubsub.messages)
 	}
 	if !reflect.DeepEqual(pubsub.resumes, []fakePubSubResume{{topic: "topic-1", orderingKey: "key-a"}}) {
+		t.Fatalf("unexpected resumes: %#v", pubsub.resumes)
+	}
+}
+
+func TestSendPubsubEventsOrderedFailureAfterSuccessKeepsRemainder(t *testing.T) {
+	cfg := testConfig()
+	expectedErr := errors.New("retryable")
+	pubsub := &fakePubSubPublisher{errs: []error{nil, expectedErr}}
+	a := &app{cfg: cfg, pubsub: pubsub}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "ordering_key": "key-a"}},
+	}
+
+	err := a.sendPubsubEvents(context.Background(), nil, events, func(id any) {
+		deleted = append(deleted, id)
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected retryable error, got %v", err)
+	}
+	if !reflect.DeepEqual(deleted, []any{"event-1"}) {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+	if len(pubsub.messages) != 2 {
+		t.Fatalf("expected only first two key events to be published, got %#v", pubsub.messages)
+	}
+	if !reflect.DeepEqual(pubsub.resumes, []fakePubSubResume{{topic: "topic-1", orderingKey: "key-a"}}) {
+		t.Fatalf("unexpected resumes: %#v", pubsub.resumes)
+	}
+}
+
+func TestSendPubsubEventsOrderedIsolationStopsAtFirstNonDone(t *testing.T) {
+	cfg := testConfig()
+	expectedErr := errors.New("still retryable")
+	pubsub := &fakePubSubPublisher{errs: []error{pubsubPermanentError("bundle"), expectedErr}}
+	a := &app{cfg: cfg, pubsub: pubsub}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "ordering_key": "key-a"}},
+	}
+
+	err := a.sendPubsubEvents(context.Background(), nil, events, func(id any) {
+		deleted = append(deleted, id)
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected isolated retryable error, got %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+	if len(pubsub.messages) != 2 {
+		t.Fatalf("expected initial publish plus isolated retry, got %#v", pubsub.messages)
+	}
+	if !reflect.DeepEqual(pubsub.resumes, []fakePubSubResume{
+		{topic: "topic-1", orderingKey: "key-a"},
+		{topic: "topic-1", orderingKey: "key-a"},
+	}) {
 		t.Fatalf("unexpected resumes: %#v", pubsub.resumes)
 	}
 }
@@ -1407,6 +1507,66 @@ func TestSendSQSEventsFIFOStopsGroupAfterRetryableFailure(t *testing.T) {
 		if entry.DeduplicationID != entry.ID {
 			t.Fatalf("expected raw valid event id as dedup id, got %q for %q", entry.DeduplicationID, entry.ID)
 		}
+	}
+}
+
+func TestSendSQSEventsFIFOContinuesAfterContentPoison(t *testing.T) {
+	cfg := testConfig()
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-a"}},
+	}
+
+	if err := a.sendSQSEvents(context.Background(), nil, events, func(id any) {
+		deleted = append(deleted, id)
+	}); err != nil {
+		t.Fatalf("sendSQSEvents returned error: %v", err)
+	}
+
+	if !reflect.DeepEqual(deleted, []any{"event-1", "event-2"}) {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+	if len(sqs.requests) != 1 {
+		t.Fatalf("expected only the non-poison event to reach SQS, got %#v", sqs.requests)
+	}
+	if got := sqs.requests[0].entries[0].ID; got != "event-2" {
+		t.Fatalf("expected event-2 to be sent after poison event, got %q", got)
+	}
+}
+
+func TestSendSQSEventsFIFOTimeoutStopsSameGroup(t *testing.T) {
+	cfg := testConfig()
+	cfg.PublishTimeout = 20 * time.Millisecond
+	sqs := &recordingBlockingSQSPublisher{}
+	a := &app{cfg: cfg, sqs: sqs}
+	var deleted []any
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-a"}},
+	}
+
+	err := a.sendSQSEvents(context.Background(), nil, events, func(id any) {
+		deleted = append(deleted, id)
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("unexpected deleted ids: %#v", deleted)
+	}
+	sqs.mu.Lock()
+	requests := append([]fakeSQSRequest(nil), sqs.requests...)
+	sqs.mu.Unlock()
+	if len(requests) != 1 {
+		t.Fatalf("expected only first same-group event to be sent, got %#v", requests)
+	}
+	if got := requests[0].entries[0].ID; got != "event-1" {
+		t.Fatalf("expected event-1 to be the only attempted send, got %q", got)
 	}
 }
 

@@ -41,9 +41,10 @@ func Run(ctx context.Context, args []string) error {
 	defer db.Close()
 
 	a := &app{
-		cfg:      cfg,
-		db:       db,
-		shutdown: cancel,
+		cfg:           cfg,
+		db:            db,
+		shutdown:      cancel,
+		failureLogger: newFailureLogger(failureLogWindow),
 	}
 
 	if cfg.PubSubEnabled {

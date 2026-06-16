@@ -319,7 +319,8 @@ func (a *app) sendSQSBatch(ctx context.Context, tx *sql.Tx, queueURL string, eve
 		for _, evt := range events {
 			addIDToDelete(eventValue(evt, a.cfg.EventID))
 		}
-		slog.Error("Failed to send event batch",
+		a.logFailure(ctx, "Failed to send event batch",
+			fmt.Sprintf("sqs|%s|invalid-queue-url", queueURL),
 			"event_destination", queueURL,
 			"error", "SQS queue URL is syntactically invalid",
 		)
@@ -350,7 +351,8 @@ func (a *app) sendSQSBatch(ctx context.Context, tx *sql.Tx, queueURL string, eve
 		}
 		if isSQSPoison(data, stringAttributes, isFIFO, orderingKey) {
 			addIDToDelete(id)
-			slog.Error("Failed to send event",
+			a.logFailure(ctx, "Failed to send event",
+				fmt.Sprintf("sqs|%s|%s|local-poison", queueURL, orderingKey),
 				"event_id", id,
 				"event_destination", queueURL,
 				"error", "Event is invalid for SQS",
@@ -398,7 +400,8 @@ func (a *app) sendSQSBatch(ctx context.Context, tx *sql.Tx, queueURL string, eve
 		if isSQSPermanentRequestError(err) {
 			if len(events) == 1 {
 				addIDToDelete(eventValue(events[0], a.cfg.EventID))
-				slog.Error("Failed to send event",
+				a.logFailure(ctx, "Failed to send event",
+					fmt.Sprintf("sqs|%s|%s", queueURL, err.Error()),
 					"event_id", eventValue(events[0], a.cfg.EventID),
 					"event_destination", queueURL,
 					"error", err.Error(),
@@ -407,7 +410,8 @@ func (a *app) sendSQSBatch(ctx context.Context, tx *sql.Tx, queueURL string, eve
 			}
 			return a.sendSQSBatchIsolated(ctx, tx, queueURL, events, isFIFO, addIDToDelete)
 		}
-		slog.Error("Failed to send event batch",
+		a.logFailure(ctx, "Failed to send event batch",
+			fmt.Sprintf("sqs|%s|%s", queueURL, err.Error()),
 			"event_destination", queueURL,
 			"error", err.Error(),
 		)
@@ -433,7 +437,8 @@ func (a *app) sendSQSBatch(ctx context.Context, tx *sql.Tx, queueURL string, eve
 			addIDToDelete(idsByEntryID[entry.ID])
 			anyDone = true
 		}
-		slog.Error("Failed to send event",
+		a.logFailure(ctx, "Failed to send event",
+			fmt.Sprintf("sqs|%s|%s|%s", queueURL, entry.Code, entry.Message),
 			"event_id", entry.ID,
 			"event_destination", queueURL,
 			"error", fmt.Sprintf("%s: %s", entry.Code, entry.Message),

@@ -203,7 +203,7 @@ func (a *app) sendPubsubUnorderedEvents(ctx context.Context, events []event, add
 			a.markPubsubDone(pendingPublish.prepared, messageID, addIDToDelete)
 		case errors.Is(err, context.DeadlineExceeded):
 			joined = errors.Join(joined, err)
-			a.logPubsubFailure(pendingPublish.prepared, err)
+			a.logPubsubFailure(ctx, pendingPublish.prepared, err)
 		case isPubSubPermanentBackendError(err):
 			done, isolateErr := a.sendPubsubIsolated(ctx, pendingPublish.prepared.evt, false, addIDToDelete)
 			if !done {
@@ -212,7 +212,7 @@ func (a *app) sendPubsubUnorderedEvents(ctx context.Context, events []event, add
 			joined = errors.Join(joined, isolateErr)
 		default:
 			joined = errors.Join(joined, err)
-			a.logPubsubFailure(pendingPublish.prepared, err)
+			a.logPubsubFailure(ctx, pendingPublish.prepared, err)
 		}
 	}
 	return joined
@@ -233,7 +233,7 @@ func (a *app) sendPubsubOrderedGroup(ctx context.Context, events []event, addIDT
 		case err == nil:
 			a.markPubsubDone(prepared, messageID, addIDToDelete)
 		case errors.Is(err, context.DeadlineExceeded):
-			a.logPubsubFailure(prepared, err)
+			a.logPubsubFailure(ctx, prepared, err)
 			return errors.Join(errFatalAfterCommit, err)
 		case isPubSubPermanentBackendError(err):
 			a.pubsub.ResumePublish(prepared.message.Topic, prepared.message.OrderingKey)
@@ -246,7 +246,7 @@ func (a *app) sendPubsubOrderedGroup(ctx context.Context, events []event, addIDT
 			}
 		default:
 			a.pubsub.ResumePublish(prepared.message.Topic, prepared.message.OrderingKey)
-			a.logPubsubFailure(prepared, err)
+			a.logPubsubFailure(ctx, prepared, err)
 			return err
 		}
 	}
@@ -270,14 +270,14 @@ func (a *app) sendPubsubIsolated(ctx context.Context, evt event, ordered bool, a
 		a.markPubsubDone(prepared, messageID, addIDToDelete)
 		return true, nil
 	case errors.Is(err, context.DeadlineExceeded) && ordered:
-		a.logPubsubFailure(prepared, err)
+		a.logPubsubFailure(ctx, prepared, err)
 		return false, errors.Join(errFatalAfterCommit, err)
 	case isPubSubPermanentBackendError(err):
 		addIDToDelete(prepared.id)
-		a.logPubsubFailure(prepared, err)
+		a.logPubsubFailure(ctx, prepared, err)
 		return true, nil
 	default:
-		a.logPubsubFailure(prepared, err)
+		a.logPubsubFailure(ctx, prepared, err)
 		return false, err
 	}
 }
@@ -376,8 +376,9 @@ func (a *app) markPubsubDone(prepared pubsubPreparedEvent, messageID string, add
 	)
 }
 
-func (a *app) logPubsubFailure(prepared pubsubPreparedEvent, err error) {
-	slog.Error("Failed to send event",
+func (a *app) logPubsubFailure(ctx context.Context, prepared pubsubPreparedEvent, err error) {
+	a.logFailure(ctx, "Failed to send event",
+		fmt.Sprintf("pubsub|%s|%s|%s", prepared.message.Topic, prepared.message.OrderingKey, err.Error()),
 		"event_id", prepared.id,
 		"event_ordering_key", prepared.message.OrderingKey,
 		"event_attributes", prepared.message.Attributes,
