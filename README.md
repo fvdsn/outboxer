@@ -26,7 +26,7 @@ implemented in Go and published as a small Docker image.
 ghcr.io/fvdsn/outboxer:latest
 ```
 
-# Basic Configuration and Usage
+## Basic Configuration and Usage
 
 In PostgreSQL, you need to create a table with at least an `id` column and a
 `payload` column. The `id` determines event ordering and idempotency. The
