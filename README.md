@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/img/outboxer.png" alt="Outboxer" width="640">
+</p>
+
 # Outboxer
 
 [![CI](https://github.com/fvdsn/outboxer/actions/workflows/ci.yml/badge.svg)](https://github.com/fvdsn/outboxer/actions/workflows/ci.yml)
