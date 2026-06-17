@@ -287,19 +287,20 @@ func TestSelectEventsQueryUsesPerRouteOrderedLimitAndBaseProjection(t *testing.T
 		t.Fatalf("per-route query args = %#v, want %#v", args, []any{40})
 	}
 	for _, expected := range []string{
-		"WITH routable AS (",
-		"row_number() OVER (PARTITION BY",
-		"WHERE (NULLIF(\"target\", '') IN ('pubsub', 'sqs'))",
-		"route_rank <= $1",
-		"SELECT events.* FROM \"events\" AS events JOIN ranked",
-		"ORDER BY events.\"id\" FOR UPDATE",
+		"WITH routes AS (",
+		"SELECT DISTINCT NULLIF(\"route_source\".\"target\", '') AS resolved_target",
+		"CROSS JOIN LATERAL",
+		"WHERE (NULLIF(\"candidate\".\"target\", '') IN ('pubsub', 'sqs'))",
+		"LIMIT $1",
+		"SELECT \"events\".* FROM \"events\" AS \"events\" JOIN selected",
+		"ORDER BY \"events\".\"id\" FOR UPDATE",
 	} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected per-route query to contain %q, got:\n%s", expected, query)
 		}
 	}
-	if strings.Contains(query, "LIMIT") {
-		t.Fatalf("per-route query must not apply global LIMIT, got:\n%s", query)
+	if strings.Contains(query, "row_number()") {
+		t.Fatalf("per-route query should use route-local lateral scans, got:\n%s", query)
 	}
 }
 
@@ -319,7 +320,8 @@ func TestSelectEventsQueryPerRouteSupportsMissingSingleBackendColumns(t *testing
 	for _, expected := range []string{
 		"'pubsub' AS resolved_target",
 		"'topic-default' AS resolved_destination",
-		"FROM \"events\" WHERE (TRUE) AND COALESCE('topic-default', '') <> ''",
+		"FROM \"events\" AS \"route_source\" WHERE (TRUE) AND COALESCE('topic-default', '') <> ''",
+		"FROM \"events\" AS \"candidate\" WHERE (TRUE) AND COALESCE('topic-default', '') <> ''",
 	} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected per-route query to contain %q, got:\n%s", expected, query)
@@ -343,9 +345,9 @@ func TestSelectEventsQueryPerRouteSupportsMissingDestinationWithBackendDefaults(
 		t.Fatalf("per-route query args = %#v, want %#v", args, []any{cfg.CollectPerRouteLimit})
 	}
 	for _, expected := range []string{
-		"NULLIF(\"target\", '') AS resolved_target",
-		"CASE WHEN NULLIF(\"target\", '') = 'pubsub' THEN 'topic-default' WHEN NULLIF(\"target\", '') = 'sqs' THEN 'queue-default' ELSE '' END AS resolved_destination",
-		"NULLIF(\"target\", '') IN ('pubsub', 'sqs')",
+		"NULLIF(\"route_source\".\"target\", '') AS resolved_target",
+		"CASE WHEN NULLIF(\"route_source\".\"target\", '') = 'pubsub' THEN 'topic-default' WHEN NULLIF(\"route_source\".\"target\", '') = 'sqs' THEN 'queue-default' ELSE '' END AS resolved_destination",
+		"NULLIF(\"candidate\".\"target\", '') IN ('pubsub', 'sqs')",
 	} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected per-route query to contain %q, got:\n%s", expected, query)
@@ -1120,5 +1122,86 @@ func TestPostgresIntegrationPerRouteSelectionAcrossAllRoutes(t *testing.T) {
 	want := map[string]int{"queue-a": 40, "topic-b": 10}
 	if !reflect.DeepEqual(counts, want) {
 		t.Fatalf("unexpected selected route counts: got %#v want %#v", counts, want)
+	}
+}
+
+func TestPostgresIntegrationPerRouteGroupsExplicitAndDefaultDestinationTogether(t *testing.T) {
+	dsn := os.Getenv("OUTBOXER_INTEGRATION_PG_DSN")
+	if dsn == "" {
+		t.Skip("set OUTBOXER_INTEGRATION_PG_DSN to run the Postgres integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	table := "outboxer_test_" + strings.ReplaceAll(strconvNano(), "-", "_")
+	_, err = db.ExecContext(ctx, fmt.Sprintf(`
+		CREATE TABLE %s (
+			id text PRIMARY KEY,
+			timestamp timestamptz,
+			payload text NOT NULL,
+			target text,
+			destination text,
+			ordering_key text,
+			attributes jsonb
+		)
+	`, ident(table)))
+	if err != nil {
+		t.Fatalf("create test table: %v", err)
+	}
+	defer func() {
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
+	}()
+
+	for i := 0; i < 50; i++ {
+		_, err = db.ExecContext(ctx, fmt.Sprintf(`
+			INSERT INTO %s (id, timestamp, payload, target, destination)
+			VALUES ($1, now(), 'payload', 'pubsub', 'topic-default')
+		`, ident(table)), fmt.Sprintf("000-explicit-%03d", i))
+		if err != nil {
+			t.Fatalf("insert explicit-destination event %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 50; i++ {
+		_, err = db.ExecContext(ctx, fmt.Sprintf(`
+			INSERT INTO %s (id, timestamp, payload, target, destination)
+			VALUES ($1, now(), 'payload', 'pubsub', '')
+		`, ident(table)), fmt.Sprintf("100-default-%03d", i))
+		if err != nil {
+			t.Fatalf("insert default-destination event %d: %v", i, err)
+		}
+	}
+
+	cfg := testConfig()
+	cfg.EventTable = table
+	cfg.CollectionMode = collectionModePerRouteOrdered
+	cfg.SQSEnabled = false
+	cfg.DefaultPubSubTopic = "topic-default"
+	cfg.CollectPerRouteLimit = 40
+	a := &app{cfg: cfg, db: db}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	events, err := a.selectEvents(ctx, tx)
+	if err != nil {
+		t.Fatalf("select events: %v", err)
+	}
+	if len(events) != 40 {
+		t.Fatalf("expected one resolved route capped at 40 events, got %d", len(events))
+	}
+	for _, evt := range events {
+		if id := eventString(evt, cfg.EventID); !strings.HasPrefix(id, "000-explicit-") {
+			t.Fatalf("expected selected events to be the oldest explicit/default shared route rows, got id %q", id)
+		}
 	}
 }

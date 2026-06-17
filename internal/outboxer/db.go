@@ -142,35 +142,61 @@ func (a *app) selectEventsQuery() (string, []any) {
 
 func (a *app) selectPerRouteOrderedEventsQuery() string {
 	table := ident(a.cfg.EventTable)
-	id := ident(a.cfg.EventID)
-	targetExpr, targetPredicate := a.resolvedTargetSQL()
-	destinationExpr := a.resolvedDestinationSQL(targetExpr)
-	routablePredicate := a.routableSQL(targetExpr, destinationExpr, targetPredicate)
+	idCol := ident(a.cfg.EventID)
+	sourceAlias := "route_source"
+	candidateAlias := "candidate"
+	eventsAlias := "events"
+
+	sourceTargetExpr, sourceTargetPredicate := a.resolvedTargetSQL(sourceAlias)
+	sourceDestinationExpr := a.resolvedDestinationSQL(sourceAlias, sourceTargetExpr)
+	sourceRoutablePredicate := a.routableSQL(sourceTargetExpr, sourceDestinationExpr, sourceTargetPredicate)
+
+	candidateTargetExpr, candidateTargetPredicate := a.resolvedTargetSQL(candidateAlias)
+	candidateDestinationExpr := a.resolvedDestinationSQL(candidateAlias, candidateTargetExpr)
+	candidateRoutablePredicate := a.routableSQL(candidateTargetExpr, candidateDestinationExpr, candidateTargetPredicate)
+	candidateRouteMatchPredicate := a.routeMatchSQL(candidateAlias, candidateTargetExpr, candidateDestinationExpr)
 
 	return fmt.Sprintf(
-		`WITH routable AS (`+
-			`SELECT %s AS id, %s AS resolved_target, %s AS resolved_destination, `+
-			`row_number() OVER (PARTITION BY %s, %s ORDER BY %s) AS route_rank `+
-			`FROM %s WHERE %s`+
-			`), ranked AS (`+
-			`SELECT id FROM routable WHERE route_rank <= $1`+
-			`) SELECT events.* FROM %s AS events JOIN ranked ON events.%s = ranked.id ORDER BY events.%s FOR UPDATE`,
-		id,
-		targetExpr,
-		destinationExpr,
-		targetExpr,
-		destinationExpr,
-		id,
+		`WITH routes AS (`+
+			`SELECT DISTINCT %s AS resolved_target, %s AS resolved_destination `+
+			`FROM %s AS %s WHERE %s`+
+			`), selected AS (`+
+			`SELECT picked.%s AS id `+
+			`FROM routes `+
+			`CROSS JOIN LATERAL (`+
+			`SELECT %s.%s `+
+			`FROM %s AS %s `+
+			`WHERE %s AND %s `+
+			`ORDER BY %s.%s `+
+			`LIMIT $1`+
+			`) AS picked`+
+			`) SELECT %s.* FROM %s AS %s JOIN selected ON %s.%s = selected.id ORDER BY %s.%s FOR UPDATE`,
+		sourceTargetExpr,
+		sourceDestinationExpr,
 		table,
-		routablePredicate,
+		ident(sourceAlias),
+		sourceRoutablePredicate,
+		idCol,
+		ident(candidateAlias),
+		idCol,
 		table,
-		id,
-		id,
+		ident(candidateAlias),
+		candidateRoutablePredicate,
+		candidateRouteMatchPredicate,
+		ident(candidateAlias),
+		idCol,
+		ident(eventsAlias),
+		table,
+		ident(eventsAlias),
+		ident(eventsAlias),
+		idCol,
+		ident(eventsAlias),
+		idCol,
 	)
 }
 
-func (a *app) resolvedTargetSQL() (expr string, predicate string) {
-	targetCol := ident(a.cfg.EventTarget)
+func (a *app) resolvedTargetSQL(tableAlias string) (expr string, predicate string) {
+	targetCol := columnSQL(tableAlias, a.cfg.EventTarget)
 	switch {
 	case a.cfg.EventTarget == "" && a.cfg.PubSubEnabled && !a.cfg.SQSEnabled:
 		return sqlStringLiteral(eventTargetPubSub), "TRUE"
@@ -188,35 +214,82 @@ func (a *app) resolvedTargetSQL() (expr string, predicate string) {
 	}
 }
 
-func (a *app) resolvedDestinationSQL(targetExpr string) string {
-	destinationCol := ident(a.cfg.EventDestination)
+func (a *app) resolvedDestinationSQL(tableAlias string, targetExpr string) string {
+	destinationCol := columnSQL(tableAlias, a.cfg.EventDestination)
 	switch {
 	case a.cfg.EventDestination == "" && a.cfg.PubSubEnabled && !a.cfg.SQSEnabled:
 		return sqlStringLiteral(a.cfg.DefaultPubSubTopic)
 	case a.cfg.EventDestination == "" && a.cfg.SQSEnabled && !a.cfg.PubSubEnabled:
 		return sqlStringLiteral(a.cfg.DefaultSQSQueueURL)
 	case a.cfg.EventDestination == "":
-		return fmt.Sprintf(
-			"CASE WHEN %s = %s THEN %s WHEN %s = %s THEN %s ELSE '' END",
-			targetExpr,
-			sqlStringLiteral(eventTargetPubSub),
-			sqlStringLiteral(a.cfg.DefaultPubSubTopic),
-			targetExpr,
-			sqlStringLiteral(eventTargetSQS),
-			sqlStringLiteral(a.cfg.DefaultSQSQueueURL),
-		)
+		return a.defaultDestinationSQL(targetExpr)
 	default:
 		return fmt.Sprintf(
-			"COALESCE(NULLIF(%s, ''), CASE WHEN %s = %s THEN %s WHEN %s = %s THEN %s ELSE '' END)",
+			"COALESCE(NULLIF(%s, ''), %s)",
 			destinationCol,
-			targetExpr,
-			sqlStringLiteral(eventTargetPubSub),
-			sqlStringLiteral(a.cfg.DefaultPubSubTopic),
-			targetExpr,
-			sqlStringLiteral(eventTargetSQS),
-			sqlStringLiteral(a.cfg.DefaultSQSQueueURL),
+			a.defaultDestinationSQL(targetExpr),
 		)
 	}
+}
+
+func (a *app) defaultDestinationSQL(targetExpr string) string {
+	return fmt.Sprintf(
+		"CASE WHEN %s = %s THEN %s WHEN %s = %s THEN %s ELSE '' END",
+		targetExpr,
+		sqlStringLiteral(eventTargetPubSub),
+		sqlStringLiteral(a.cfg.DefaultPubSubTopic),
+		targetExpr,
+		sqlStringLiteral(eventTargetSQS),
+		sqlStringLiteral(a.cfg.DefaultSQSQueueURL),
+	)
+}
+
+func (a *app) routeMatchSQL(tableAlias string, targetExpr string, destinationExpr string) string {
+	targetMatch := fmt.Sprintf("%s = routes.resolved_target", targetExpr)
+	if a.cfg.EventTarget != "" {
+		targetCol := columnSQL(tableAlias, a.cfg.EventTarget)
+		if defaultTarget := a.defaultTargetSQL(); defaultTarget != "''" {
+			targetMatch = fmt.Sprintf(
+				"(NULLIF(%s, '') = routes.resolved_target OR (NULLIF(%s, '') IS NULL AND %s = routes.resolved_target))",
+				targetCol,
+				targetCol,
+				defaultTarget,
+			)
+		} else {
+			targetMatch = fmt.Sprintf("%s = routes.resolved_target", targetCol)
+		}
+	}
+
+	destinationMatch := fmt.Sprintf("%s = routes.resolved_destination", destinationExpr)
+	if a.cfg.EventDestination != "" {
+		destinationCol := columnSQL(tableAlias, a.cfg.EventDestination)
+		destinationMatch = fmt.Sprintf(
+			"(NULLIF(%s, '') = routes.resolved_destination OR (NULLIF(%s, '') IS NULL AND %s = routes.resolved_destination))",
+			destinationCol,
+			destinationCol,
+			a.defaultDestinationSQL(targetExpr),
+		)
+	}
+
+	return fmt.Sprintf("(%s) AND (%s)", targetMatch, destinationMatch)
+}
+
+func (a *app) defaultTargetSQL() string {
+	switch {
+	case a.cfg.PubSubEnabled && !a.cfg.SQSEnabled:
+		return sqlStringLiteral(eventTargetPubSub)
+	case a.cfg.SQSEnabled && !a.cfg.PubSubEnabled:
+		return sqlStringLiteral(eventTargetSQS)
+	default:
+		return "''"
+	}
+}
+
+func columnSQL(tableAlias string, name string) string {
+	if tableAlias == "" {
+		return ident(name)
+	}
+	return fmt.Sprintf("%s.%s", ident(tableAlias), ident(name))
 }
 
 func (a *app) routableSQL(targetExpr string, destinationExpr string, targetPredicate string) string {

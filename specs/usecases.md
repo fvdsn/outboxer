@@ -107,7 +107,7 @@ matter.
 | COLLECT-ROUTE-07 | `per_route_ordered` has empty destinations and a backend default. | Events are eligible and grouped under the resolved default destination. |
 | COLLECT-ROUTE-08 | `per_route_ordered` has empty destinations and no backend default. | Events are not eligible; they remain pending as R12. |
 | COLLECT-ROUTE-09 | `per_route_ordered` has explicit destination `D` and empty destination resolving to default `D`. | Both forms share the same resolved route and therefore the same per-route limit. |
-| COLLECT-ROUTE-10 | `per_route_ordered` ranks using synthetic `resolved_target`, `resolved_destination`, and `route_rank`. | Final selected rows contain only base event-table columns; synthetic columns do not leak into `event.columns`. |
+| COLLECT-ROUTE-10 | `per_route_ordered` discovers routes and selects per-route rows using synthetic `resolved_target` / `resolved_destination` values. | Final selected rows contain only base event-table columns; synthetic columns do not leak into `event.columns`. |
 | COLLECT-ROUTE-11 | `per_route_ordered` sees many valid routes. | No `COLLECT_GLOBAL_LIMIT` is applied; selected count is at most `distinct_valid_routes * COLLECT_PER_ROUTE_LIMIT`. |
 | COLLECT-ROUTE-12 | Two Outboxer instances select concurrently in either mode. | The first transaction locks selected rows with `FOR UPDATE`; the second blocks on those rows instead of processing the same events. |
 

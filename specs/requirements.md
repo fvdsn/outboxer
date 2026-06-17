@@ -109,26 +109,30 @@ The grouping key is the **eligible resolved route**:
 Shape:
 
 ```sql
-WITH routable AS (
+WITH routes AS (
   SELECT
-    id,
     resolved_target,
-    resolved_destination,
-    row_number() OVER (
-      PARTITION BY resolved_target, resolved_destination
-      ORDER BY id
-    ) AS route_rank
+    resolved_destination
   FROM events
   WHERE is_routable
+  GROUP BY resolved_target, resolved_destination
 ),
-ranked AS (
-  SELECT id
-  FROM routable
-  WHERE route_rank <= COLLECT_PER_ROUTE_LIMIT
+selected AS (
+  SELECT picked.id
+  FROM routes
+  CROSS JOIN LATERAL (
+    SELECT id
+    FROM events
+    WHERE is_routable
+      AND resolved_target = routes.resolved_target
+      AND resolved_destination = routes.resolved_destination
+    ORDER BY id
+    LIMIT COLLECT_PER_ROUTE_LIMIT
+  ) AS picked
 )
 SELECT events.*
 FROM events
-JOIN ranked USING (id)
+JOIN selected USING (id)
 ORDER BY events.id
 FOR UPDATE;
 ```
@@ -140,9 +144,10 @@ backend and a non-empty destination. If a column is not configured or not presen
 because it is optional, the generated SQL must use the corresponding default or
 routing expression instead of referencing the missing column. The sketch uses
 `id` for readability; the real query uses the configured event id column for
-ranking and joining. The ranking query may compute synthetic columns, but the
-final projection must return only base event-table columns so synthetic values do
-not leak into `event.columns` or collide with user columns.
+selection and joining. The route-discovery and lateral selection query may
+compute synthetic columns, but the final projection must return only base
+event-table columns so synthetic values do not leak into `event.columns` or
+collide with user columns.
 
 ## Step 2 — Sending events
 
