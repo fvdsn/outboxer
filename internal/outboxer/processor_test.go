@@ -275,23 +275,24 @@ func TestSelectEventsQueryUsesGlobalOrderedLimit(t *testing.T) {
 	}
 }
 
-func TestSelectEventsQueryUsesPerRouteOrderedLimitAndBaseProjection(t *testing.T) {
+func TestSelectEventsQueryUsesPerRouteOrderedBatchTargetAndBaseProjection(t *testing.T) {
 	cfg := testConfig()
 	cfg.CollectionMode = collectionModePerRouteOrdered
 	cfg.CollectGlobalLimit = 999
-	cfg.CollectPerRouteLimit = 40
+	cfg.CollectBatchTarget = 2500
 	a := &app{cfg: cfg}
 
 	query, args := a.selectEventsQuery()
-	if !reflect.DeepEqual(args, []any{40}) {
-		t.Fatalf("per-route query args = %#v, want %#v", args, []any{40})
+	if !reflect.DeepEqual(args, []any{2500}) {
+		t.Fatalf("per-route query args = %#v, want %#v", args, []any{2500})
 	}
 	for _, expected := range []string{
 		"WITH routes AS (",
+		"count(*) OVER () AS route_count",
 		"SELECT DISTINCT NULLIF(\"route_source\".\"target\", '') AS resolved_target",
 		"CROSS JOIN LATERAL",
 		"WHERE (NULLIF(\"candidate\".\"target\", '') IN ('pubsub', 'sqs'))",
-		"LIMIT $1",
+		"LIMIT GREATEST(1, (($1::bigint + routes.route_count - 1) / routes.route_count))",
 		"SELECT \"events\".* FROM \"events\" AS \"events\" JOIN selected",
 		"ORDER BY \"events\".\"id\" FOR UPDATE",
 	} {
@@ -314,8 +315,8 @@ func TestSelectEventsQueryPerRouteSupportsMissingSingleBackendColumns(t *testing
 	a := &app{cfg: cfg}
 
 	query, args := a.selectEventsQuery()
-	if !reflect.DeepEqual(args, []any{cfg.CollectPerRouteLimit}) {
-		t.Fatalf("per-route query args = %#v, want %#v", args, []any{cfg.CollectPerRouteLimit})
+	if !reflect.DeepEqual(args, []any{cfg.CollectBatchTarget}) {
+		t.Fatalf("per-route query args = %#v, want %#v", args, []any{cfg.CollectBatchTarget})
 	}
 	for _, expected := range []string{
 		"'pubsub' AS resolved_target",
@@ -341,8 +342,8 @@ func TestSelectEventsQueryPerRouteSupportsMissingDestinationWithBackendDefaults(
 	a := &app{cfg: cfg}
 
 	query, args := a.selectEventsQuery()
-	if !reflect.DeepEqual(args, []any{cfg.CollectPerRouteLimit}) {
-		t.Fatalf("per-route query args = %#v, want %#v", args, []any{cfg.CollectPerRouteLimit})
+	if !reflect.DeepEqual(args, []any{cfg.CollectBatchTarget}) {
+		t.Fatalf("per-route query args = %#v, want %#v", args, []any{cfg.CollectBatchTarget})
 	}
 	for _, expected := range []string{
 		"NULLIF(\"route_source\".\"target\", '') AS resolved_target",
@@ -370,7 +371,7 @@ func TestProcessOneBatchPerRouteEmptySelectionCommitsWithoutRoutingLog(t *testin
 
 	query, _ := a.selectEventsQuery()
 	mock.ExpectBegin()
-	mock.ExpectQuery(query).WithArgs(cfg.CollectPerRouteLimit).WillReturnRows(mockEventRows())
+	mock.ExpectQuery(query).WithArgs(cfg.CollectBatchTarget).WillReturnRows(mockEventRows())
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -404,7 +405,7 @@ func TestProcessOneBatchPerRouteCommitsHealthyRouteWhenAnotherRouteFails(t *test
 		AddRow("pubsub-ok", "pubsub", "topic-a", "ok", nil, nil).
 		AddRow("sqs-fail", "sqs", "queue-broken", "retry", nil, nil)
 	mock.ExpectBegin()
-	mock.ExpectQuery(query).WithArgs(cfg.CollectPerRouteLimit).WillReturnRows(rows)
+	mock.ExpectQuery(query).WithArgs(cfg.CollectBatchTarget).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("pubsub-ok").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -1095,7 +1096,7 @@ func TestPostgresIntegrationPerRouteSelectionAcrossAllRoutes(t *testing.T) {
 	cfg.EventTable = table
 	cfg.CollectionMode = collectionModePerRouteOrdered
 	cfg.CollectGlobalLimit = 5
-	cfg.CollectPerRouteLimit = 40
+	cfg.CollectBatchTarget = 40
 	a := &app{cfg: cfg, db: db}
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -1108,8 +1109,8 @@ func TestPostgresIntegrationPerRouteSelectionAcrossAllRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("select events: %v", err)
 	}
-	if len(events) != 50 {
-		t.Fatalf("expected 50 selected events, got %d", len(events))
+	if len(events) != 30 {
+		t.Fatalf("expected 30 selected events, got %d", len(events))
 	}
 
 	counts := map[string]int{}
@@ -1119,7 +1120,7 @@ func TestPostgresIntegrationPerRouteSelectionAcrossAllRoutes(t *testing.T) {
 			t.Fatalf("per-route selection included unroutable target %q in event %#v", target, evt.columns)
 		}
 	}
-	want := map[string]int{"queue-a": 40, "topic-b": 10}
+	want := map[string]int{"queue-a": 20, "topic-b": 10}
 	if !reflect.DeepEqual(counts, want) {
 		t.Fatalf("unexpected selected route counts: got %#v want %#v", counts, want)
 	}
@@ -1183,7 +1184,7 @@ func TestPostgresIntegrationPerRouteGroupsExplicitAndDefaultDestinationTogether(
 	cfg.CollectionMode = collectionModePerRouteOrdered
 	cfg.SQSEnabled = false
 	cfg.DefaultPubSubTopic = "topic-default"
-	cfg.CollectPerRouteLimit = 40
+	cfg.CollectBatchTarget = 40
 	a := &app{cfg: cfg, db: db}
 
 	tx, err := db.BeginTx(ctx, nil)

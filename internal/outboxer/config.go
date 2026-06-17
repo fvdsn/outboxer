@@ -29,7 +29,7 @@ type appConfig struct {
 
 	CollectionMode       collectionMode
 	CollectGlobalLimit   int
-	CollectPerRouteLimit int
+	CollectBatchTarget   int
 	SQSSendConcurrency   int
 	OrderedGroupBatchCap int
 
@@ -99,7 +99,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	collectionModeValue := string(cfg.CollectionMode)
 	addStringFlag(flags, &options, "Batch processing", &collectionModeValue, "collection-mode", collectionModeValue, "Collection mode: global_ordered or per_route_ordered.", "COLLECTION_MODE")
 	addIntFlag(flags, &options, "Batch processing", &cfg.CollectGlobalLimit, "collect-global-limit", cfg.CollectGlobalLimit, "Maximum rows selected per batch in global_ordered mode.", "COLLECT_GLOBAL_LIMIT")
-	addIntFlag(flags, &options, "Batch processing", &cfg.CollectPerRouteLimit, "collect-per-route-limit", cfg.CollectPerRouteLimit, "Maximum rows selected per resolved route in per_route_ordered mode.", "COLLECT_PER_ROUTE_LIMIT")
+	addIntFlag(flags, &options, "Batch processing", &cfg.CollectBatchTarget, "collect-batch-target", cfg.CollectBatchTarget, "Approximate target rows selected per batch in per_route_ordered mode, spread across eligible routes.", "COLLECT_BATCH_TARGET")
 	addIntFlag(flags, &options, "Batch processing", &cfg.SQSSendConcurrency, "sqs-send-concurrency", cfg.SQSSendConcurrency, "Maximum concurrent SQS send requests.", "SQS_SEND_CONCURRENCY")
 	addIntFlag(flags, &options, "Batch processing", &cfg.OrderedGroupBatchCap, "ordered-group-batch-cap", cfg.OrderedGroupBatchCap, "Maximum events sent for one ordered key/group in one batch.", "ORDERED_GROUP_BATCH_CAP")
 
@@ -197,8 +197,8 @@ func (cfg appConfig) validate() error {
 	if cfg.CollectGlobalLimit <= 0 {
 		return fmt.Errorf("global collection limit (%d) must be positive: set COLLECT_GLOBAL_LIMIT", cfg.CollectGlobalLimit)
 	}
-	if cfg.CollectPerRouteLimit <= 0 {
-		return fmt.Errorf("per-route collection limit (%d) must be positive: set COLLECT_PER_ROUTE_LIMIT", cfg.CollectPerRouteLimit)
+	if cfg.CollectBatchTarget <= 0 {
+		return fmt.Errorf("batch collection target (%d) must be positive: set COLLECT_BATCH_TARGET", cfg.CollectBatchTarget)
 	}
 	if cfg.PublishTimeout <= 0 {
 		return fmt.Errorf("publish timeout (%s) must be positive: set PUBLISH_TIMEOUT_MS", cfg.PublishTimeout)
@@ -246,7 +246,7 @@ func loadConfigFromEnv() appConfig {
 
 		CollectionMode:       collectionMode(getenv("COLLECTION_MODE", string(collectionModePerRouteOrdered))),
 		CollectGlobalLimit:   getenvInt("COLLECT_GLOBAL_LIMIT", 100),
-		CollectPerRouteLimit: getenvInt("COLLECT_PER_ROUTE_LIMIT", 40),
+		CollectBatchTarget:   getenvInt("COLLECT_BATCH_TARGET", 2500),
 		SQSSendConcurrency:   getenvInt("SQS_SEND_CONCURRENCY", 8),
 		OrderedGroupBatchCap: getenvInt("ORDERED_GROUP_BATCH_CAP", 8),
 

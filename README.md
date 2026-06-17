@@ -170,7 +170,7 @@ outboxer --help
 | --- | --- | --- | --- |
 | `--collection-mode` | `COLLECTION_MODE` | `per_route_ordered` | Collection mode: `global_ordered` or `per_route_ordered`. |
 | `--collect-global-limit` | `COLLECT_GLOBAL_LIMIT` | `100` | Maximum rows selected per batch in `global_ordered` mode. |
-| `--collect-per-route-limit` | `COLLECT_PER_ROUTE_LIMIT` | `40` | Maximum rows selected per resolved route in `per_route_ordered` mode. |
+| `--collect-batch-target` | `COLLECT_BATCH_TARGET` | `2500` | Approximate target rows selected per batch in `per_route_ordered` mode, spread across eligible routes. |
 | `--sqs-send-concurrency` | `SQS_SEND_CONCURRENCY` | `8` | Maximum concurrent SQS send requests. |
 | `--ordered-group-batch-cap` | `ORDERED_GROUP_BATCH_CAP` | `8` | Maximum events sent for one ordered key/group in one batch. |
 | `--error-cooldown-ms` | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors in milliseconds. |

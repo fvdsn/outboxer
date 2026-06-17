@@ -62,8 +62,11 @@ completely stop unrelated destinations.
 Requirements:
 
 - This is the default mode.
-- Select up to `COLLECT_PER_ROUTE_LIMIT` events per eligible resolved
-  `(target, destination)` route, ordered by event id within each route.
+- Select approximately `COLLECT_BATCH_TARGET` events per batch, spread across
+  every eligible resolved `(target, destination)` route.
+- The effective per-route cap is computed at collection time as
+  `ceil(COLLECT_BATCH_TARGET / eligible_route_count)`, with a minimum of one
+  event per eligible route. Events remain ordered by event id within each route.
 - Consider **all** eligible resolved `(target, destination)` routes in the table
   in the same collection query, not only a subset of routes chosen by a prior
   query.
@@ -76,18 +79,18 @@ Requirements:
   until configuration or code changes make them routable, or until an operator
   intentionally uses `global_ordered`.
 - A valid route whose provider sends are broken or retrying can consume at most
-  `COLLECT_PER_ROUTE_LIMIT` slots in one selected batch and therefore cannot
-  occupy the entire selected batch while other valid routes have eligible
-  events.
+  its computed per-route cap in one selected batch and therefore cannot occupy
+  the entire selected batch while other valid routes have eligible events.
 - This mode does not make healthy routes independent of broken routes within the
   same Stage 1 transaction. A broken route can still slow the batch until its
   bounded sender operations return, because all `done` events commit together at
   the end. Early break / circuit behavior for broken routes is a later
   improvement.
-- The selected batch size is data-dependent:
-  `selected <= distinct_resolved_routes × COLLECT_PER_ROUTE_LIMIT`. This is an
-  intentional tradeoff. It preserves route isolation, but transaction time and
-  send time scale with the number of routes that have pending events.
+- The selected batch size is data-dependent and may exceed
+  `COLLECT_BATCH_TARGET` by at most `eligible_route_count - 1`, because every
+  eligible route gets at least one slot. This is an intentional tradeoff. It
+  preserves route isolation, but transaction time and send time still scale with
+  the number of routes that have pending events.
 - This is destination fairness, not retry scheduling. If every selected route is
   broken, the processor may still make no deletion progress; sender failures
   still follow S12.
@@ -112,10 +115,15 @@ Shape:
 WITH routes AS (
   SELECT
     resolved_target,
-    resolved_destination
-  FROM events
-  WHERE is_routable
-  GROUP BY resolved_target, resolved_destination
+    resolved_destination,
+    count(*) OVER () AS route_count
+  FROM (
+    SELECT DISTINCT
+      resolved_target,
+      resolved_destination
+    FROM events
+    WHERE is_routable
+  ) AS resolved_routes
 ),
 selected AS (
   SELECT picked.id
@@ -127,7 +135,10 @@ selected AS (
       AND resolved_target = routes.resolved_target
       AND resolved_destination = routes.resolved_destination
     ORDER BY id
-    LIMIT COLLECT_PER_ROUTE_LIMIT
+    LIMIT GREATEST(
+      1,
+      ((COLLECT_BATCH_TARGET::bigint + routes.route_count - 1) / routes.route_count)
+    )
   ) AS picked
 )
 SELECT events.*
@@ -204,10 +215,10 @@ collide with user columns.
   Since Pub/Sub and SQS send concurrently, the batch send bound is the maximum of
   the enabled backend bounds, not their sum. In `global_ordered` mode the
   selected-event bound is `COLLECT_GLOBAL_LIMIT`. In `per_route_ordered` mode
-  the selected-event count is data-dependent because every route contributes up
-  to `COLLECT_PER_ROUTE_LIMIT`; the implementation must compute send bounds from
-  the actual selected batch composition before sending, or otherwise keep the
-  watchdog alive during long valid batches.
+  the selected-event count is data-dependent because every eligible route
+  contributes up to its computed per-route cap; the implementation must compute
+  send bounds from the actual selected batch composition before sending, or
+  otherwise keep the watchdog alive during long valid batches.
   - `pubsubBound = ORDERED_GROUP_BATCH_CAP × (PUBLISH_TIMEOUT_MS +
     PUBLISH_RESULT_GRACE_MS)` (one slow ordered key sending its capped run
     sequentially).
@@ -756,8 +767,9 @@ this spec says so explicitly.
     `global_ordered`, `per_route_ordered`).
   - `COLLECT_GLOBAL_LIMIT` (default: `100`), the maximum rows selected per batch
     in `global_ordered` mode. It does not apply in `per_route_ordered` mode.
-  - `COLLECT_PER_ROUTE_LIMIT` (default: `40`), the maximum rows selected per
-    resolved `(target, destination)` route in `per_route_ordered` mode.
+  - `COLLECT_BATCH_TARGET` (default: `2500`), the approximate target rows
+    selected per batch in `per_route_ordered` mode, spread across eligible
+    resolved `(target, destination)` routes.
   - `SQS_SEND_CONCURRENCY` (default: `8`).
   - `ORDERED_GROUP_BATCH_CAP` (default: `8`), the maximum events sent for one
     Pub/Sub ordering key or SQS FIFO message group from a selected batch.

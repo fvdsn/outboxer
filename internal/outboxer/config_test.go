@@ -51,8 +51,8 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	if cfg.CollectGlobalLimit != 100 {
 		t.Fatalf("expected default global collection limit 100, got %d", cfg.CollectGlobalLimit)
 	}
-	if cfg.CollectPerRouteLimit != 40 {
-		t.Fatalf("expected default per-route collection limit 40, got %d", cfg.CollectPerRouteLimit)
+	if cfg.CollectBatchTarget != 2500 {
+		t.Fatalf("expected default batch collection target 2500, got %d", cfg.CollectBatchTarget)
 	}
 }
 
@@ -270,8 +270,8 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"Env: COLLECTION_MODE",
 		"--collect-global-limit",
 		"Env: COLLECT_GLOBAL_LIMIT",
-		"--collect-per-route-limit",
-		"Env: COLLECT_PER_ROUTE_LIMIT",
+		"--collect-batch-target",
+		"Env: COLLECT_BATCH_TARGET",
 		"--sqs-send-concurrency",
 		"Env: SQS_SEND_CONCURRENCY",
 		"--sqs-api-endpoint",
@@ -567,9 +567,9 @@ func TestValidateRequiresPositiveCollectionLimits(t *testing.T) {
 
 	cfg = testConfig()
 	cfg.CollectionMode = collectionModeGlobalOrdered
-	cfg.CollectPerRouteLimit = 0
+	cfg.CollectBatchTarget = 0
 	if err := cfg.validate(); err == nil {
-		t.Fatal("expected zero per-route collection limit to fail even in global mode")
+		t.Fatal("expected zero batch collection target to fail even in global mode")
 	}
 }
 

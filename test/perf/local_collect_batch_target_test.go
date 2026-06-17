@@ -34,7 +34,7 @@ const (
 	perfAWSRegion      = "us-east-1"
 )
 
-func TestLocalCollectPerRouteLimitPerf(t *testing.T) {
+func TestLocalCollectBatchTargetPerf(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping local performance test in short mode")
 	}
@@ -49,22 +49,22 @@ func TestLocalCollectPerRouteLimitPerf(t *testing.T) {
 
 	records := getenvInt("OUTBOXER_PERF_RECORDS", 1_000_000)
 	routes := getenvInt("OUTBOXER_PERF_ROUTES", 100)
-	limits := getenvIntList("OUTBOXER_PERF_LIMITS", []int{40, 100, 500, 1000})
+	targets := getenvIntList("OUTBOXER_PERF_BATCH_TARGETS", []int{100, 250, 500, 2500})
 
-	t.Logf("perf setup records=%d routes=%d limits=%v", records, routes, limits)
+	t.Logf("perf setup records=%d routes=%d batch_targets=%v", records, routes, targets)
 
 	if !getenvBool("OUTBOXER_PERF_SKIP_PUBSUB", false) {
 		t.Run("pubsub", func(t *testing.T) {
 			topicIDs := createPerfPubSubTopics(t, ctx, routes)
-			runBackendLimitSweep(t, ctx, binary, db, "pubsub", topicIDs, records, limits)
+			runBackendTargetSweep(t, ctx, binary, db, "pubsub", topicIDs, records, targets)
 		})
 	}
 
 	if !getenvBool("OUTBOXER_PERF_SKIP_SQS", false) {
 		t.Run("sqs", func(t *testing.T) {
-			for _, limit := range limits {
-				queueURLs := createPerfSQSQueues(t, ctx, routes, limit)
-				result := runBackendOnce(t, ctx, binary, db, "sqs", queueURLs, records, limit)
+			for _, target := range targets {
+				queueURLs := createPerfSQSQueues(t, ctx, routes, target)
+				result := runBackendOnce(t, ctx, binary, db, "sqs", queueURLs, records, target)
 				t.Log(result.String())
 				deletePerfSQSQueues(t, ctx, queueURLs)
 			}
@@ -76,25 +76,25 @@ type perfResult struct {
 	backend string
 	records int
 	routes  int
-	limit   int
+	target  int
 	elapsed time.Duration
 	rate    float64
 }
 
 func (r perfResult) String() string {
-	return fmt.Sprintf("PERF backend=%s records=%d routes=%d collect_per_route_limit=%d elapsed=%s rate=%.0f events/s",
-		r.backend, r.records, r.routes, r.limit, r.elapsed.Round(time.Millisecond), r.rate)
+	return fmt.Sprintf("PERF backend=%s records=%d routes=%d collect_batch_target=%d elapsed=%s rate=%.0f events/s",
+		r.backend, r.records, r.routes, r.target, r.elapsed.Round(time.Millisecond), r.rate)
 }
 
-func runBackendLimitSweep(t *testing.T, ctx context.Context, binary string, db *sql.DB, backend string, destinations []string, records int, limits []int) {
+func runBackendTargetSweep(t *testing.T, ctx context.Context, binary string, db *sql.DB, backend string, destinations []string, records int, targets []int) {
 	t.Helper()
-	for _, limit := range limits {
-		result := runBackendOnce(t, ctx, binary, db, backend, destinations, records, limit)
+	for _, target := range targets {
+		result := runBackendOnce(t, ctx, binary, db, backend, destinations, records, target)
 		t.Log(result.String())
 	}
 }
 
-func runBackendOnce(t *testing.T, ctx context.Context, binary string, db *sql.DB, backend string, destinations []string, records int, limit int) perfResult {
+func runBackendOnce(t *testing.T, ctx context.Context, binary string, db *sql.DB, backend string, destinations []string, records int, target int) perfResult {
 	t.Helper()
 	table := "outboxer_perf_" + backend + "_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	createPerfEventsTable(t, ctx, db, table)
@@ -105,7 +105,7 @@ func runBackendOnce(t *testing.T, ctx context.Context, binary string, db *sql.DB
 	insertPerfEvents(t, ctx, db, table, destinations, records)
 	createPerfRouteIndex(t, ctx, db, table, destinations[0])
 
-	process := startOutboxer(t, ctx, binary, table, backend, destinations[0], limit)
+	process := startOutboxer(t, ctx, binary, table, backend, destinations[0], target)
 	started := time.Now()
 	waitForTableCount(t, ctx, db, table, 0)
 	elapsed := time.Since(started)
@@ -115,7 +115,7 @@ func runBackendOnce(t *testing.T, ctx context.Context, binary string, db *sql.DB
 		backend: backend,
 		records: records,
 		routes:  len(destinations),
-		limit:   limit,
+		target:  target,
 		elapsed: elapsed,
 		rate:    float64(records) / elapsed.Seconds(),
 	}
@@ -184,7 +184,7 @@ func createPerfRouteIndex(t *testing.T, ctx context.Context, db *sql.DB, table s
 	}
 }
 
-func startOutboxer(t *testing.T, ctx context.Context, binary string, table string, backend string, defaultDestination string, limit int) *runningProcess {
+func startOutboxer(t *testing.T, ctx context.Context, binary string, table string, backend string, defaultDestination string, target int) *runningProcess {
 	t.Helper()
 	var output bytes.Buffer
 	args := []string{
@@ -202,7 +202,7 @@ func startOutboxer(t *testing.T, ctx context.Context, binary string, table strin
 		"EVENT_TIMESTAMP":           "timestamp",
 		"COLLECTION_MODE":           "per_route_ordered",
 		"COLLECT_GLOBAL_LIMIT":      "100",
-		"COLLECT_PER_ROUTE_LIMIT":   strconv.Itoa(limit),
+		"COLLECT_BATCH_TARGET":      strconv.Itoa(target),
 		"ORDERED_GROUP_BATCH_CAP":   "1000",
 		"SQS_SEND_CONCURRENCY":      getenv("OUTBOXER_PERF_SQS_SEND_CONCURRENCY", "64"),
 		"POLL_INTERVAL_MS":          "0",
@@ -273,10 +273,10 @@ func createPerfPubSubTopics(t *testing.T, ctx context.Context, routes int) []str
 	return topics
 }
 
-func createPerfSQSQueues(t *testing.T, ctx context.Context, routes int, limit int) []string {
+func createPerfSQSQueues(t *testing.T, ctx context.Context, routes int, target int) []string {
 	t.Helper()
 	client := newSQSClient(t, ctx)
-	prefix := fmt.Sprintf("perf-sqs-%d-%d", limit, time.Now().UnixNano())
+	prefix := fmt.Sprintf("perf-sqs-%d-%d", target, time.Now().UnixNano())
 	queues := make([]string, routes)
 	for route := range routes {
 		output, err := client.CreateQueue(ctx, &sqs.CreateQueueInput{

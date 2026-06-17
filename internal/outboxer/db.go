@@ -129,7 +129,7 @@ func (a *app) selectEvents(ctx context.Context, tx *sql.Tx) ([]event, error) {
 
 func (a *app) selectEventsQuery() (string, []any) {
 	if a.cfg.CollectionMode == collectionModePerRouteOrdered {
-		return a.selectPerRouteOrderedEventsQuery(), []any{a.cfg.CollectPerRouteLimit}
+		return a.selectPerRouteOrderedEventsQuery(), []any{a.cfg.CollectBatchTarget}
 	}
 
 	query := fmt.Sprintf(
@@ -158,8 +158,11 @@ func (a *app) selectPerRouteOrderedEventsQuery() string {
 
 	return fmt.Sprintf(
 		`WITH routes AS (`+
+			`SELECT resolved_target, resolved_destination, count(*) OVER () AS route_count `+
+			`FROM (`+
 			`SELECT DISTINCT %s AS resolved_target, %s AS resolved_destination `+
 			`FROM %s AS %s WHERE %s`+
+			`) AS resolved_routes`+
 			`), selected AS (`+
 			`SELECT picked.%s AS id `+
 			`FROM routes `+
@@ -168,7 +171,7 @@ func (a *app) selectPerRouteOrderedEventsQuery() string {
 			`FROM %s AS %s `+
 			`WHERE %s AND %s `+
 			`ORDER BY %s.%s `+
-			`LIMIT $1`+
+			`LIMIT GREATEST(1, (($1::bigint + routes.route_count - 1) / routes.route_count))`+
 			`) AS picked`+
 			`) SELECT %s.* FROM %s AS %s JOIN selected ON %s.%s = selected.id ORDER BY %s.%s FOR UPDATE`,
 		sourceTargetExpr,
