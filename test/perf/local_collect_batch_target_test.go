@@ -75,16 +75,67 @@ func TestLocalCollectBatchTargetPerf(t *testing.T) {
 	}
 }
 
+func TestLocalOrderedGroupBatchCapPerf(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping local performance test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), getenvDuration("OUTBOXER_PERF_TIMEOUT", 45*time.Minute))
+	defer cancel()
+
+	root := repoRoot(t)
+	binary := buildOutboxer(t, root)
+	db := openPerfDB(t, ctx)
+	defer db.Close()
+
+	records := getenvInt("OUTBOXER_PERF_RECORDS", 100_000)
+	routes := getenvInt("OUTBOXER_PERF_ROUTES", 100)
+	orderingKeys := getenvInt("OUTBOXER_PERF_ORDERING_KEYS", 10)
+	collectBatchTarget := getenvInt("OUTBOXER_PERF_COLLECT_BATCH_TARGET", 5000)
+	caps := getenvIntList("OUTBOXER_PERF_ORDERED_GROUP_CAPS", []int{10, 25, 50, 100, 250, 500, 1000, 2500, 5000})
+	routeCounts := routeEventCounts(t, records, routes, "power_law")
+	plans := orderedPerfDestinationPlans(t, routeCounts, orderingKeys)
+
+	t.Logf("ordered perf setup records=%d logical_routes=%d destinations=%d ordered_records=%d ordering_keys=%d route_distribution=power_law route_counts=%s collect_batch_target=%d ordered_group_caps=%v",
+		records, routes, len(plans), orderedPerfRecords(plans), orderingKeys, routeCountSummary(routeCounts), collectBatchTarget, caps)
+
+	if !getenvBool("OUTBOXER_PERF_SKIP_PUBSUB", false) {
+		t.Run("pubsub", func(t *testing.T) {
+			topicIDs := createPerfPubSubTopics(t, ctx, len(plans))
+			runOrderedBackendCapSweep(t, ctx, binary, db, "pubsub", withPlanDestinations(plans, topicIDs), records, routes, orderingKeys, collectBatchTarget, caps)
+		})
+	}
+
+	if !getenvBool("OUTBOXER_PERF_SKIP_SQS", false) {
+		t.Run("sqs", func(t *testing.T) {
+			for _, cap := range caps {
+				queueURLs := createPerfSQSQueuesForPlans(t, ctx, plans, cap)
+				result := runOrderedBackendOnce(t, ctx, binary, db, "sqs", withPlanDestinations(plans, queueURLs), records, routes, orderingKeys, collectBatchTarget, cap)
+				t.Log(result.String())
+				deletePerfSQSQueues(t, ctx, queueURLs)
+			}
+		})
+	}
+}
+
 type perfResult struct {
-	backend string
-	records int
-	routes  int
-	target  int
-	elapsed time.Duration
-	rate    float64
+	backend          string
+	records          int
+	routes           int
+	destinations     int
+	target           int
+	orderedGroupCap  int
+	orderedRecords   int
+	orderingKeyCount int
+	elapsed          time.Duration
+	rate             float64
 }
 
 func (r perfResult) String() string {
+	if r.orderedGroupCap > 0 {
+		return fmt.Sprintf("PERF backend=%s records=%d logical_routes=%d destinations=%d ordered_records=%d ordering_keys=%d collect_batch_target=%d ordered_group_batch_cap=%d elapsed=%s rate=%.0f events/s",
+			r.backend, r.records, r.routes, r.destinations, r.orderedRecords, r.orderingKeyCount, r.target, r.orderedGroupCap, r.elapsed.Round(time.Millisecond), r.rate)
+	}
 	return fmt.Sprintf("PERF backend=%s records=%d routes=%d collect_batch_target=%d elapsed=%s rate=%.0f events/s",
 		r.backend, r.records, r.routes, r.target, r.elapsed.Round(time.Millisecond), r.rate)
 }
@@ -108,7 +159,7 @@ func runBackendOnce(t *testing.T, ctx context.Context, binary string, db *sql.DB
 	insertPerfEvents(t, ctx, db, table, destinations, routeCounts)
 	createPerfRouteIndex(t, ctx, db, table, destinations[0])
 
-	process := startOutboxer(t, ctx, binary, table, backend, destinations[0], target)
+	process := startOutboxer(t, ctx, binary, table, backend, destinations[0], target, 1000)
 	started := time.Now()
 	waitForTableCount(t, ctx, db, table, 0)
 	elapsed := time.Since(started)
@@ -170,6 +221,183 @@ func insertPerfEvents(t *testing.T, ctx context.Context, db *sql.DB, table strin
 	`, ident(table), ident(destTable)))
 	if err != nil {
 		t.Fatalf("insert perf events: %v", err)
+	}
+}
+
+type orderedPerfDestinationPlan struct {
+	route             int
+	ordered           bool
+	destination       string
+	eventCount        int
+	orderingKeyCounts []int
+}
+
+func orderedPerfDestinationPlans(t *testing.T, routeCounts []int, orderingKeys int) []orderedPerfDestinationPlan {
+	t.Helper()
+	if orderingKeys <= 0 {
+		t.Fatalf("ordering key count must be positive, got %d", orderingKeys)
+	}
+
+	plans := []orderedPerfDestinationPlan{}
+	for route, count := range routeCounts {
+		orderedCount := count / 2
+		unorderedCount := count - orderedCount
+		if unorderedCount > 0 {
+			plans = append(plans, orderedPerfDestinationPlan{
+				route:      route,
+				eventCount: unorderedCount,
+			})
+		}
+		if orderedCount > 0 {
+			plans = append(plans, orderedPerfDestinationPlan{
+				route:             route,
+				ordered:           true,
+				eventCount:        orderedCount,
+				orderingKeyCounts: powerLawRouteEventCounts(orderedCount, orderingKeys),
+			})
+		}
+	}
+	return plans
+}
+
+func withPlanDestinations(plans []orderedPerfDestinationPlan, destinations []string) []orderedPerfDestinationPlan {
+	if len(plans) != len(destinations) {
+		panic(fmt.Sprintf("plan count %d does not match destination count %d", len(plans), len(destinations)))
+	}
+	out := append([]orderedPerfDestinationPlan(nil), plans...)
+	for i := range out {
+		out[i].destination = destinations[i]
+	}
+	return out
+}
+
+func orderedPerfRecords(plans []orderedPerfDestinationPlan) int {
+	total := 0
+	for _, plan := range plans {
+		if plan.ordered {
+			total += plan.eventCount
+		}
+	}
+	return total
+}
+
+func runOrderedBackendCapSweep(t *testing.T, ctx context.Context, binary string, db *sql.DB, backend string, plans []orderedPerfDestinationPlan, records int, routes int, orderingKeys int, collectBatchTarget int, caps []int) {
+	t.Helper()
+	for _, cap := range caps {
+		result := runOrderedBackendOnce(t, ctx, binary, db, backend, plans, records, routes, orderingKeys, collectBatchTarget, cap)
+		t.Log(result.String())
+	}
+}
+
+func runOrderedBackendOnce(t *testing.T, ctx context.Context, binary string, db *sql.DB, backend string, plans []orderedPerfDestinationPlan, records int, routes int, orderingKeys int, collectBatchTarget int, orderedGroupCap int) perfResult {
+	t.Helper()
+	table := "outboxer_perf_ordered_" + backend + "_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	createPerfEventsTable(t, ctx, db, table)
+	defer func() {
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
+	}()
+
+	insertOrderedPerfEvents(t, ctx, db, table, plans)
+	createPerfRouteIndex(t, ctx, db, table, plans[0].destination)
+
+	process := startOutboxer(t, ctx, binary, table, backend, plans[0].destination, collectBatchTarget, orderedGroupCap)
+	started := time.Now()
+	waitForTableCount(t, ctx, db, table, 0)
+	elapsed := time.Since(started)
+	stopOutboxer(t, process)
+
+	return perfResult{
+		backend:          backend,
+		records:          records,
+		routes:           routes,
+		destinations:     len(plans),
+		target:           collectBatchTarget,
+		orderedGroupCap:  orderedGroupCap,
+		orderedRecords:   orderedPerfRecords(plans),
+		orderingKeyCount: orderingKeys,
+		elapsed:          elapsed,
+		rate:             float64(records) / elapsed.Seconds(),
+	}
+}
+
+func insertOrderedPerfEvents(t *testing.T, ctx context.Context, db *sql.DB, table string, plans []orderedPerfDestinationPlan) {
+	t.Helper()
+	if len(plans) == 0 {
+		t.Fatal("ordered perf plan is empty")
+	}
+	destTable := table + "_destinations"
+	keyTable := table + "_keys"
+	_, err := db.ExecContext(ctx, fmt.Sprintf(`
+		CREATE TABLE %s (
+			destination_index int PRIMARY KEY,
+			route int NOT NULL,
+			destination text NOT NULL,
+			event_count int NOT NULL,
+			ordered boolean NOT NULL
+		)
+	`, ident(destTable)))
+	if err != nil {
+		t.Fatalf("create ordered destinations table: %v", err)
+	}
+	_, err = db.ExecContext(ctx, fmt.Sprintf(`
+		CREATE TABLE %s (
+			destination_index int NOT NULL,
+			key_index int NOT NULL,
+			event_count int NOT NULL
+		)
+	`, ident(keyTable)))
+	if err != nil {
+		t.Fatalf("create ordering keys table: %v", err)
+	}
+	defer func() {
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(destTable)))
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(keyTable)))
+	}()
+
+	for index, plan := range plans {
+		if plan.destination == "" {
+			t.Fatalf("plan %d has no destination", index)
+		}
+		_, err = db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (destination_index, route, destination, event_count, ordered) VALUES ($1, $2, $3, $4, $5)`, ident(destTable)),
+			index, plan.route, plan.destination, plan.eventCount, plan.ordered)
+		if err != nil {
+			t.Fatalf("insert ordered destination %d: %v", index, err)
+		}
+		for keyIndex, count := range plan.orderingKeyCounts {
+			if count == 0 {
+				continue
+			}
+			_, err = db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (destination_index, key_index, event_count) VALUES ($1, $2, $3)`, ident(keyTable)),
+				index, keyIndex, count)
+			if err != nil {
+				t.Fatalf("insert ordering key %d for destination %d: %v", keyIndex, index, err)
+			}
+		}
+	}
+
+	_, err = db.ExecContext(ctx, fmt.Sprintf(`
+		INSERT INTO %s (id, timestamp, payload, destination)
+		SELECT 'event-' || lpad(destinations.route::text, 3, '0') || '-u-' || lpad(gs::text, 7, '0'),
+			now(), 'payload', destinations.destination
+		FROM %s AS destinations
+		JOIN LATERAL generate_series(1, destinations.event_count) AS gs ON true
+		WHERE destinations.ordered = false
+	`, ident(table), ident(destTable)))
+	if err != nil {
+		t.Fatalf("insert unordered perf events: %v", err)
+	}
+
+	_, err = db.ExecContext(ctx, fmt.Sprintf(`
+		INSERT INTO %s (id, timestamp, payload, destination, ordering_key)
+		SELECT 'event-' || lpad(destinations.route::text, 3, '0') || '-o-' || lpad(keys.key_index::text, 3, '0') || '-' || lpad(gs::text, 7, '0'),
+			now(), 'payload', destinations.destination, 'key-' || lpad(keys.key_index::text, 3, '0')
+		FROM %s AS destinations
+		JOIN %s AS keys ON keys.destination_index = destinations.destination_index
+		JOIN LATERAL generate_series(1, keys.event_count) AS gs ON true
+		WHERE destinations.ordered = true
+	`, ident(table), ident(destTable), ident(keyTable)))
+	if err != nil {
+		t.Fatalf("insert ordered perf events: %v", err)
 	}
 }
 
@@ -254,7 +482,7 @@ func createPerfRouteIndex(t *testing.T, ctx context.Context, db *sql.DB, table s
 	}
 }
 
-func startOutboxer(t *testing.T, ctx context.Context, binary string, table string, backend string, defaultDestination string, target int) *runningProcess {
+func startOutboxer(t *testing.T, ctx context.Context, binary string, table string, backend string, defaultDestination string, target int, orderedGroupCap int) *runningProcess {
 	t.Helper()
 	var output bytes.Buffer
 	args := []string{
@@ -271,7 +499,7 @@ func startOutboxer(t *testing.T, ctx context.Context, binary string, table strin
 		"EVENT_ID":                  "id",
 		"EVENT_TIMESTAMP":           "timestamp",
 		"COLLECT_BATCH_TARGET":      strconv.Itoa(target),
-		"ORDERED_GROUP_BATCH_CAP":   "1000",
+		"ORDERED_GROUP_BATCH_CAP":   strconv.Itoa(orderedGroupCap),
 		"SQS_SEND_CONCURRENCY":      getenv("OUTBOXER_PERF_SQS_SEND_CONCURRENCY", "64"),
 		"POLL_INTERVAL_MS":          "0",
 		"ERROR_COOLDOWN_MS":         "1000",
@@ -354,6 +582,31 @@ func createPerfSQSQueues(t *testing.T, ctx context.Context, routes int, target i
 			t.Fatalf("create SQS queue %d: %v", route, err)
 		}
 		queues[route] = aws.ToString(output.QueueUrl)
+	}
+	return queues
+}
+
+func createPerfSQSQueuesForPlans(t *testing.T, ctx context.Context, plans []orderedPerfDestinationPlan, orderedGroupCap int) []string {
+	t.Helper()
+	client := newSQSClient(t, ctx)
+	prefix := fmt.Sprintf("perf-sqs-ogc-%d-%d", orderedGroupCap, time.Now().UnixNano())
+	queues := make([]string, len(plans))
+	for index, plan := range plans {
+		name := fmt.Sprintf("%s-%03d", prefix, index)
+		attributes := map[string]string{}
+		if plan.ordered {
+			name += ".fifo"
+			attributes["FifoQueue"] = "true"
+			attributes["ContentBasedDeduplication"] = "false"
+		}
+		output, err := client.CreateQueue(ctx, &sqs.CreateQueueInput{
+			QueueName:  aws.String(name),
+			Attributes: attributes,
+		})
+		if err != nil {
+			t.Fatalf("create SQS queue %d: %v", index, err)
+		}
+		queues[index] = aws.ToString(output.QueueUrl)
 	}
 	return queues
 }
