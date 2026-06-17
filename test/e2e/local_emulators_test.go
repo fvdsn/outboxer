@@ -249,6 +249,86 @@ func TestLocalEmulatorE2ETwoOutboxersPreserveOrderedPubSub(t *testing.T) {
 	assertPubSubOrdering(t, messages, key, count)
 }
 
+func TestLocalEmulatorE2ETwoOutboxersSplitByTargetOnSameTable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	root := repoRoot(t)
+	binary := buildOutboxer(t, root)
+	runID := strings.ReplaceAll(fmt.Sprintf("e2e-%d", time.Now().UnixNano()), "-", "_")
+
+	db := openE2EDB(t, ctx)
+	defer db.Close()
+	table := "outboxer_" + runID
+	createEventsTable(t, ctx, db, table)
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
+	})
+
+	t.Setenv("PUBSUB_EMULATOR_HOST", e2ePubSubEndpoint)
+	pubsubClient := newPubSubClient(t, ctx)
+	defer pubsubClient.Close()
+
+	topic := "ps_split_target_" + runID
+	subscription := topic + "_sub"
+	createPubSubTopicAndSubscription(t, ctx, pubsubClient, topic, subscription)
+
+	sqsClient := newSQSClient(t, ctx)
+	queue := createSQSQueue(t, ctx, sqsClient, "split-target-"+runID, false)
+
+	events := []eventRow{}
+	for i := 0; i < 20; i++ {
+		events = append(events, eventRow{
+			id:          fmt.Sprintf("pubsub-split-%02d", i),
+			target:      "pubsub",
+			destination: topic,
+			payload:     fmt.Sprintf("pubsub-split-%02d", i),
+			attributes:  `{"kind":"pubsub-split"}`,
+		})
+		events = append(events, eventRow{
+			id:          fmt.Sprintf("sqs-split-%02d", i),
+			target:      "sqs",
+			destination: queue,
+			payload:     fmt.Sprintf("sqs-split-%02d", i),
+			attributes:  `{"kind":"sqs-split"}`,
+		})
+	}
+	insertEvents(t, ctx, db, table, events)
+
+	commonOverrides := map[string]string{
+		"COLLECTION_MODE":           "per_route_ordered",
+		"COLLECT_GLOBAL_LIMIT":      "5",
+		"COLLECT_PER_ROUTE_LIMIT":   "5",
+		"POLL_INTERVAL_MS":          "10",
+		"ERROR_COOLDOWN_MS":         "50",
+		"PUBLISH_TIMEOUT_MS":        "5000",
+		"PUBLISH_RESULT_GRACE_MS":   "500",
+		"WATCHDOG_INTERVAL_MS":      "60000",
+		"AWS_WEB_IDENTITY_PROVIDER": "",
+	}
+	pubsubOverrides := copyStringMap(commonOverrides)
+	pubsubOverrides["PUBSUB_ENABLED"] = "true"
+	pubsubOverrides["SQS_ENABLED"] = "false"
+	pubsubOverrides["DEFAULT_SQS_QUEUE_URL"] = ""
+	sqsOverrides := copyStringMap(commonOverrides)
+	sqsOverrides["PUBSUB_ENABLED"] = "false"
+	sqsOverrides["SQS_ENABLED"] = "true"
+	sqsOverrides["DEFAULT_PUBSUB_TOPIC"] = ""
+
+	pubsubProcess := startOutboxer(t, ctx, binary, table, pubsubOverrides)
+	sqsProcess := startOutboxer(t, ctx, binary, table, sqsOverrides)
+
+	pubsubMessages := receivePubSubMessages(t, ctx, pubsubClient, subscription, 20)
+	sqsMessages := receiveSQSMessages(t, ctx, sqsClient, queue, 20)
+
+	waitForEmptyTable(t, ctx, db, table)
+	stopOutboxer(t, pubsubProcess)
+	stopOutboxer(t, sqsProcess)
+
+	assertBodies(t, pubsubMessages, "pubsub-split-", 20)
+	assertBodies(t, sqsMessages, "sqs-split-", 20)
+}
+
 func TestLocalEmulatorE2EPerRouteBrokenDestinationDoesNotBlockHealthyRoute(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
