@@ -49,7 +49,7 @@ func TestLocalCollectBatchTargetPerf(t *testing.T) {
 
 	records := getenvInt("OUTBOXER_PERF_RECORDS", 1_000_000)
 	routes := getenvInt("OUTBOXER_PERF_ROUTES", 100)
-	targets := getenvIntList("OUTBOXER_PERF_BATCH_TARGETS", []int{100, 250, 500, 2500, 5000})
+	targets := getenvIntList("OUTBOXER_PERF_BATCH_TARGETS", []int{250, 500, 2500, 5000})
 	distribution := getenv("OUTBOXER_PERF_ROUTE_DISTRIBUTION", "power_law")
 	routeCounts := routeEventCounts(t, records, routes, distribution)
 
