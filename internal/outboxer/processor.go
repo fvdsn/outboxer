@@ -142,6 +142,7 @@ func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 		}
 		return result, fmtDBError(err)
 	}
+	markProcessorProgress()
 
 	return result, batchErr
 }
@@ -162,6 +163,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	if err != nil {
 		return batchResult{}, fmtDBError(err)
 	}
+	markProcessorProgress()
 	result := batchResult{selected: len(events)}
 	if len(events) > 0 {
 		slog.Info("Processing batch", "count", len(events))
@@ -230,6 +232,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		}
 		return result, fmtDBError(err)
 	}
+	markProcessorProgress()
 
 	if senderErr != nil {
 		return result, senderErr

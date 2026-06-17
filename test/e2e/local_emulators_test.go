@@ -249,6 +249,78 @@ func TestLocalEmulatorE2ETwoOutboxersPreserveOrderedPubSub(t *testing.T) {
 	assertPubSubOrdering(t, messages, key, count)
 }
 
+func TestLocalEmulatorE2EPerRouteBrokenDestinationDoesNotBlockHealthyRoute(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	root := repoRoot(t)
+	binary := buildOutboxer(t, root)
+	runID := strings.ReplaceAll(fmt.Sprintf("e2e-%d", time.Now().UnixNano()), "-", "_")
+
+	db := openE2EDB(t, ctx)
+	defer db.Close()
+	table := "outboxer_" + runID
+	createEventsTable(t, ctx, db, table)
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
+	})
+
+	t.Setenv("PUBSUB_EMULATOR_HOST", e2ePubSubEndpoint)
+	pubsubClient := newPubSubClient(t, ctx)
+	defer pubsubClient.Close()
+
+	topic := "ps_per_route_healthy_" + runID
+	subscription := topic + "_sub"
+	createPubSubTopicAndSubscription(t, ctx, pubsubClient, topic, subscription)
+
+	sqsClient := newSQSClient(t, ctx)
+	missingQueue := strings.TrimRight(getenv("OUTBOXER_E2E_SQS_ENDPOINT", e2eSQSEndpoint), "/") + "/000000000000/missing-" + runID
+	if _, err := sqsClient.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{QueueUrl: aws.String(missingQueue)}); err == nil {
+		t.Fatalf("missing test queue unexpectedly exists: %s", missingQueue)
+	}
+
+	events := []eventRow{}
+	for i := 0; i < 12; i++ {
+		events = append(events, eventRow{
+			id:          fmt.Sprintf("000-sqs-broken-%02d", i),
+			target:      "sqs",
+			destination: missingQueue,
+			payload:     fmt.Sprintf("sqs-broken-%02d", i),
+			attributes:  `{"kind":"sqs-broken"}`,
+		})
+	}
+	for i := 0; i < 3; i++ {
+		events = append(events, eventRow{
+			id:          fmt.Sprintf("900-pubsub-healthy-%02d", i),
+			target:      "pubsub",
+			destination: topic,
+			payload:     fmt.Sprintf("pubsub-healthy-%02d", i),
+			attributes:  `{"kind":"pubsub-healthy"}`,
+		})
+	}
+	insertEvents(t, ctx, db, table, events)
+
+	process := startOutboxer(t, ctx, binary, table, map[string]string{
+		"COLLECTION_MODE":           "per_route_ordered",
+		"COLLECT_GLOBAL_LIMIT":      "5",
+		"COLLECT_PER_ROUTE_LIMIT":   "5",
+		"SQS_SEND_CONCURRENCY":      "1",
+		"PUBLISH_TIMEOUT_MS":        "1000",
+		"PUBLISH_RESULT_GRACE_MS":   "200",
+		"ERROR_COOLDOWN_MS":         "50",
+		"POLL_INTERVAL_MS":          "50",
+		"ORDERED_GROUP_BATCH_CAP":   "5",
+		"WATCHDOG_INTERVAL_MS":      "60000",
+		"AWS_WEB_IDENTITY_PROVIDER": "",
+	})
+
+	messages := receivePubSubMessages(t, ctx, pubsubClient, subscription, 3)
+	waitForTableCount(t, ctx, db, table, 12)
+	stopOutboxer(t, process)
+
+	assertBodies(t, messages, "pubsub-healthy-", 3)
+}
+
 type eventRow struct {
 	id          string
 	target      string
@@ -585,13 +657,18 @@ func receiveSQSMessages(t *testing.T, ctx context.Context, client *sqs.Client, q
 
 func waitForEmptyTable(t *testing.T, ctx context.Context, db *sql.DB, table string) {
 	t.Helper()
-	waitUntil(t, ctx, "empty event table", func(ctx context.Context) error {
+	waitForTableCount(t, ctx, db, table, 0)
+}
+
+func waitForTableCount(t *testing.T, ctx context.Context, db *sql.DB, table string, want int) {
+	t.Helper()
+	waitUntil(t, ctx, fmt.Sprintf("event table count %d", want), func(ctx context.Context) error {
 		var remaining int
 		if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT count(*) FROM %s", ident(table))).Scan(&remaining); err != nil {
 			return err
 		}
-		if remaining != 0 {
-			return fmt.Errorf("%d events remain", remaining)
+		if remaining != want {
+			return fmt.Errorf("%d events remain, want %d", remaining, want)
 		}
 		return nil
 	})

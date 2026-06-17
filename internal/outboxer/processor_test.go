@@ -1026,3 +1026,99 @@ func TestPostgresIntegrationProcessesAndDeletesEvents(t *testing.T) {
 		t.Fatalf("expected empty batch to select 0 events, got %d", result.selected)
 	}
 }
+
+func TestPostgresIntegrationPerRouteSelectionAcrossAllRoutes(t *testing.T) {
+	dsn := os.Getenv("OUTBOXER_INTEGRATION_PG_DSN")
+	if dsn == "" {
+		t.Skip("set OUTBOXER_INTEGRATION_PG_DSN to run the Postgres integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	table := "outboxer_test_" + strings.ReplaceAll(strconvNano(), "-", "_")
+	_, err = db.ExecContext(ctx, fmt.Sprintf(`
+		CREATE TABLE %s (
+			id text PRIMARY KEY,
+			timestamp timestamptz,
+			payload text NOT NULL,
+			target text,
+			destination text,
+			ordering_key text,
+			attributes jsonb
+		)
+	`, ident(table)))
+	if err != nil {
+		t.Fatalf("create test table: %v", err)
+	}
+	defer func() {
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
+	}()
+
+	for i := 0; i < 100; i++ {
+		_, err = db.ExecContext(ctx, fmt.Sprintf(`
+			INSERT INTO %s (id, timestamp, payload, target, destination)
+			VALUES ($1, now(), 'payload', 'sqs', 'queue-a')
+		`, ident(table)), fmt.Sprintf("000-route-a-%03d", i))
+		if err != nil {
+			t.Fatalf("insert route A event %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 10; i++ {
+		_, err = db.ExecContext(ctx, fmt.Sprintf(`
+			INSERT INTO %s (id, timestamp, payload, target, destination)
+			VALUES ($1, now(), 'payload', 'pubsub', 'topic-b')
+		`, ident(table)), fmt.Sprintf("900-route-b-%03d", i))
+		if err != nil {
+			t.Fatalf("insert route B event %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 5; i++ {
+		_, err = db.ExecContext(ctx, fmt.Sprintf(`
+			INSERT INTO %s (id, timestamp, payload, target, destination)
+			VALUES ($1, now(), 'payload', 'kafka', 'topic-c')
+		`, ident(table)), fmt.Sprintf("999-unknown-%03d", i))
+		if err != nil {
+			t.Fatalf("insert unknown-target event %d: %v", i, err)
+		}
+	}
+
+	cfg := testConfig()
+	cfg.EventTable = table
+	cfg.CollectionMode = collectionModePerRouteOrdered
+	cfg.CollectGlobalLimit = 5
+	cfg.CollectPerRouteLimit = 40
+	a := &app{cfg: cfg, db: db}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	events, err := a.selectEvents(ctx, tx)
+	if err != nil {
+		t.Fatalf("select events: %v", err)
+	}
+	if len(events) != 50 {
+		t.Fatalf("expected 50 selected events, got %d", len(events))
+	}
+
+	counts := map[string]int{}
+	for _, evt := range events {
+		counts[eventString(evt, cfg.EventDestination)]++
+		if target := eventString(evt, cfg.EventTarget); target != eventTargetPubSub && target != eventTargetSQS {
+			t.Fatalf("per-route selection included unroutable target %q in event %#v", target, evt.columns)
+		}
+	}
+	want := map[string]int{"queue-a": 40, "topic-b": 10}
+	if !reflect.DeepEqual(counts, want) {
+		t.Fatalf("unexpected selected route counts: got %#v want %#v", counts, want)
+	}
+}
