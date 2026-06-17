@@ -81,3 +81,36 @@ Outboxer sends the event and deletes the row once the send is complete.
 INSERT INTO events (payload)
 VALUES ('{"type":"user.created","id":"123"}');
 ```
+
+Note that the Outboxer must always run as at least one active instance. It continuously polls
+from a single PostgreSQL connection.
+
+## Supported Features
+
+ - GCP Pub/Sub
+    - Ordering keys and ordered publishing
+    - Custom attributes
+    - Multiple topics
+    - Default topic
+    - Keyless publishing from GCP or AWS via Google external account credentials
+ - AWS SQS
+    - Standard queues with batch sends
+    - FIFO queues and message groups
+    - Stable deduplication IDs from event IDs
+    - Custom attributes
+    - Multiple queues
+    - Default queue
+    - AWS role assumption
+    - Keyless publishing from AWS or GCP via web identity federation
+ - Multi instances
+    - Split per backend (GCP / AWS)
+    - Split per queue / topic
+ - Outbox processing
+   - At-least-once delivery
+   - Ordered processing by event ID
+   - Transactional delete after confirmed publish
+   - Configurable table and column names
+   - Dynamic routing with `target` and `destination`
+   - Optional destination ownership with `PUBSUB_DESTINATIONS` and `SQS_DESTINATIONS`
+   - Safe multi-instance deployments when split by backend or destination
+   - Graceful shutdown, health endpoint, timeouts, and watchdog
