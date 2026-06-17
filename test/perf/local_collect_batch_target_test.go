@@ -50,13 +50,16 @@ func TestLocalCollectBatchTargetPerf(t *testing.T) {
 	records := getenvInt("OUTBOXER_PERF_RECORDS", 1_000_000)
 	routes := getenvInt("OUTBOXER_PERF_ROUTES", 100)
 	targets := getenvIntList("OUTBOXER_PERF_BATCH_TARGETS", []int{100, 250, 500, 2500, 5000})
+	distribution := getenv("OUTBOXER_PERF_ROUTE_DISTRIBUTION", "power_law")
+	routeCounts := routeEventCounts(t, records, routes, distribution)
 
-	t.Logf("perf setup records=%d routes=%d batch_targets=%v", records, routes, targets)
+	t.Logf("perf setup records=%d routes=%d distribution=%s route_counts=%s batch_targets=%v",
+		records, routes, distribution, routeCountSummary(routeCounts), targets)
 
 	if !getenvBool("OUTBOXER_PERF_SKIP_PUBSUB", false) {
 		t.Run("pubsub", func(t *testing.T) {
 			topicIDs := createPerfPubSubTopics(t, ctx, routes)
-			runBackendTargetSweep(t, ctx, binary, db, "pubsub", topicIDs, records, targets)
+			runBackendTargetSweep(t, ctx, binary, db, "pubsub", topicIDs, routeCounts, records, targets)
 		})
 	}
 
@@ -64,7 +67,7 @@ func TestLocalCollectBatchTargetPerf(t *testing.T) {
 		t.Run("sqs", func(t *testing.T) {
 			for _, target := range targets {
 				queueURLs := createPerfSQSQueues(t, ctx, routes, target)
-				result := runBackendOnce(t, ctx, binary, db, "sqs", queueURLs, records, target)
+				result := runBackendOnce(t, ctx, binary, db, "sqs", queueURLs, routeCounts, records, target)
 				t.Log(result.String())
 				deletePerfSQSQueues(t, ctx, queueURLs)
 			}
@@ -86,15 +89,15 @@ func (r perfResult) String() string {
 		r.backend, r.records, r.routes, r.target, r.elapsed.Round(time.Millisecond), r.rate)
 }
 
-func runBackendTargetSweep(t *testing.T, ctx context.Context, binary string, db *sql.DB, backend string, destinations []string, records int, targets []int) {
+func runBackendTargetSweep(t *testing.T, ctx context.Context, binary string, db *sql.DB, backend string, destinations []string, routeCounts []int, records int, targets []int) {
 	t.Helper()
 	for _, target := range targets {
-		result := runBackendOnce(t, ctx, binary, db, backend, destinations, records, target)
+		result := runBackendOnce(t, ctx, binary, db, backend, destinations, routeCounts, records, target)
 		t.Log(result.String())
 	}
 }
 
-func runBackendOnce(t *testing.T, ctx context.Context, binary string, db *sql.DB, backend string, destinations []string, records int, target int) perfResult {
+func runBackendOnce(t *testing.T, ctx context.Context, binary string, db *sql.DB, backend string, destinations []string, routeCounts []int, records int, target int) perfResult {
 	t.Helper()
 	table := "outboxer_perf_" + backend + "_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	createPerfEventsTable(t, ctx, db, table)
@@ -102,7 +105,7 @@ func runBackendOnce(t *testing.T, ctx context.Context, binary string, db *sql.DB
 		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
 	}()
 
-	insertPerfEvents(t, ctx, db, table, destinations, records)
+	insertPerfEvents(t, ctx, db, table, destinations, routeCounts)
 	createPerfRouteIndex(t, ctx, db, table, destinations[0])
 
 	process := startOutboxer(t, ctx, binary, table, backend, destinations[0], target)
@@ -139,10 +142,13 @@ func createPerfEventsTable(t *testing.T, ctx context.Context, db *sql.DB, table 
 	}
 }
 
-func insertPerfEvents(t *testing.T, ctx context.Context, db *sql.DB, table string, destinations []string, records int) {
+func insertPerfEvents(t *testing.T, ctx context.Context, db *sql.DB, table string, destinations []string, routeCounts []int) {
 	t.Helper()
+	if len(destinations) != len(routeCounts) {
+		t.Fatalf("destination count %d does not match route count %d", len(destinations), len(routeCounts))
+	}
 	destTable := table + "_destinations"
-	_, err := db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE %s (route int PRIMARY KEY, destination text NOT NULL)`, ident(destTable)))
+	_, err := db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE %s (route int PRIMARY KEY, destination text NOT NULL, event_count int NOT NULL)`, ident(destTable)))
 	if err != nil {
 		t.Fatalf("create destinations table: %v", err)
 	}
@@ -150,7 +156,7 @@ func insertPerfEvents(t *testing.T, ctx context.Context, db *sql.DB, table strin
 		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(destTable)))
 	}()
 	for route, destination := range destinations {
-		_, err = db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (route, destination) VALUES ($1, $2)`, ident(destTable)), route, destination)
+		_, err = db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (route, destination, event_count) VALUES ($1, $2, $3)`, ident(destTable)), route, destination, routeCounts[route])
 		if err != nil {
 			t.Fatalf("insert destination %d: %v", route, err)
 		}
@@ -158,13 +164,77 @@ func insertPerfEvents(t *testing.T, ctx context.Context, db *sql.DB, table strin
 
 	_, err = db.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO %s (id, timestamp, payload, destination)
-		SELECT format('event-%%07s', gs), now(), 'payload', destinations.destination
-		FROM generate_series(1, $1) AS gs
-		JOIN %s AS destinations ON destinations.route = ((gs - 1) %% $2)
-	`, ident(table), ident(destTable)), records, len(destinations))
+		SELECT 'event-' || lpad(destinations.route::text, 3, '0') || '-' || lpad(gs::text, 7, '0'), now(), 'payload', destinations.destination
+		FROM %s AS destinations
+		JOIN LATERAL generate_series(1, destinations.event_count) AS gs ON true
+	`, ident(table), ident(destTable)))
 	if err != nil {
 		t.Fatalf("insert perf events: %v", err)
 	}
+}
+
+func routeEventCounts(t *testing.T, records int, routes int, distribution string) []int {
+	t.Helper()
+	if records <= 0 {
+		t.Fatalf("records must be positive, got %d", records)
+	}
+	if routes <= 0 {
+		t.Fatalf("routes must be positive, got %d", routes)
+	}
+
+	switch distribution {
+	case "uniform":
+		return uniformRouteEventCounts(records, routes)
+	case "power_law":
+		return powerLawRouteEventCounts(records, routes)
+	default:
+		t.Fatalf("unsupported OUTBOXER_PERF_ROUTE_DISTRIBUTION %q: use uniform or power_law", distribution)
+		return nil
+	}
+}
+
+func uniformRouteEventCounts(records int, routes int) []int {
+	counts := make([]int, routes)
+	for route := range counts {
+		counts[route] = records / routes
+		if route < records%routes {
+			counts[route]++
+		}
+	}
+	return counts
+}
+
+func powerLawRouteEventCounts(records int, routes int) []int {
+	counts := make([]int, routes)
+	remaining := records
+	for route := 0; route < routes-1; route++ {
+		count := (remaining + 1) / 2
+		counts[route] = count
+		remaining -= count
+	}
+	counts[routes-1] = remaining
+	return counts
+}
+
+func routeCountSummary(counts []int) string {
+	nonZero := 0
+	for _, count := range counts {
+		if count > 0 {
+			nonZero++
+		}
+	}
+
+	parts := []string{}
+	for route, count := range counts {
+		if route >= 10 {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%d:%d", route, count))
+	}
+	if len(counts) > 10 {
+		parts = append(parts, fmt.Sprintf("... non_zero=%d/%d", nonZero, len(counts)))
+	}
+	return strings.Join(parts, ",")
 }
 
 func createPerfRouteIndex(t *testing.T, ctx context.Context, db *sql.DB, table string, defaultDestination string) {
