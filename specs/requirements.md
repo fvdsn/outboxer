@@ -1,6 +1,6 @@
 # Event processing requirements & Stage 1 design
 
-Status: **requirements agreed; Stage 1 implementation in progress.**
+Status: **Stage 1 implemented.**
 
 Processing has two steps: **collecting** the events to send, and **sending**
 them. Collection supports two modes; sending is redesigned and delivered in
@@ -144,7 +144,7 @@ ranking and joining. The ranking query may compute synthetic columns, but the
 final projection must return only base event-table columns so synthetic values do
 not leak into `event.columns` or collide with user columns.
 
-## Step 2 — Sending events (to be redesigned)
+## Step 2 — Sending events
 
 ### Correctness invariant
 
