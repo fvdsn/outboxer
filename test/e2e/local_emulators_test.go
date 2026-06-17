@@ -203,8 +203,6 @@ func TestLocalEmulatorE2ETwoOutboxersPreserveOrderedPubSub(t *testing.T) {
 		"PUBSUB_ENABLED":            "true",
 		"SQS_ENABLED":               "false",
 		"DEFAULT_PUBSUB_TOPIC":      topic,
-		"COLLECTION_MODE":           "global_ordered",
-		"COLLECT_GLOBAL_LIMIT":      "10",
 		"COLLECT_BATCH_TARGET":      "40",
 		"ORDERED_GROUP_BATCH_CAP":   "10",
 		"SQS_SEND_CONCURRENCY":      "1",
@@ -296,8 +294,6 @@ func TestLocalEmulatorE2ETwoOutboxersSplitByTargetOnSameTable(t *testing.T) {
 	insertEvents(t, ctx, db, table, events)
 
 	commonOverrides := map[string]string{
-		"COLLECTION_MODE":           "per_route_ordered",
-		"COLLECT_GLOBAL_LIMIT":      "5",
 		"COLLECT_BATCH_TARGET":      "5",
 		"POLL_INTERVAL_MS":          "10",
 		"ERROR_COOLDOWN_MS":         "50",
@@ -329,7 +325,7 @@ func TestLocalEmulatorE2ETwoOutboxersSplitByTargetOnSameTable(t *testing.T) {
 	assertBodies(t, sqsMessages, "sqs-split-", 20)
 }
 
-func TestLocalEmulatorE2EPerRouteBrokenDestinationDoesNotBlockHealthyRoute(t *testing.T) {
+func TestLocalEmulatorE2ERouteBrokenDestinationDoesNotBlockHealthyRoute(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
@@ -349,7 +345,7 @@ func TestLocalEmulatorE2EPerRouteBrokenDestinationDoesNotBlockHealthyRoute(t *te
 	pubsubClient := newPubSubClient(t, ctx)
 	defer pubsubClient.Close()
 
-	topic := "ps_per_route_healthy_" + runID
+	topic := "ps_route_healthy_" + runID
 	subscription := topic + "_sub"
 	createPubSubTopicAndSubscription(t, ctx, pubsubClient, topic, subscription)
 
@@ -381,8 +377,6 @@ func TestLocalEmulatorE2EPerRouteBrokenDestinationDoesNotBlockHealthyRoute(t *te
 	insertEvents(t, ctx, db, table, events)
 
 	process := startOutboxer(t, ctx, binary, table, map[string]string{
-		"COLLECTION_MODE":           "per_route_ordered",
-		"COLLECT_GLOBAL_LIMIT":      "5",
 		"COLLECT_BATCH_TARGET":      "5",
 		"SQS_SEND_CONCURRENCY":      "1",
 		"PUBLISH_TIMEOUT_MS":        "1000",
@@ -569,8 +563,6 @@ func startOutboxer(t *testing.T, ctx context.Context, binary string, table strin
 		"PG_PASSWORD":             getenv("OUTBOXER_E2E_PG_PASSWORD", "outboxer"),
 		"PG_DATABASE":             getenv("OUTBOXER_E2E_PG_DATABASE", "outboxer"),
 		"PG_SSL":                  "false",
-		"COLLECTION_MODE":         "per_route_ordered",
-		"COLLECT_GLOBAL_LIMIT":    "100",
 		"COLLECT_BATCH_TARGET":    "5000",
 		"ORDERED_GROUP_BATCH_CAP": "8",
 		"SQS_SEND_CONCURRENCY":    "4",

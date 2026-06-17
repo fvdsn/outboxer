@@ -200,8 +200,6 @@ func startOutboxer(t *testing.T, ctx context.Context, binary string, table strin
 		"EVENT_PAYLOAD":             "payload",
 		"EVENT_ID":                  "id",
 		"EVENT_TIMESTAMP":           "timestamp",
-		"COLLECTION_MODE":           "per_route_ordered",
-		"COLLECT_GLOBAL_LIMIT":      "100",
 		"COLLECT_BATCH_TARGET":      strconv.Itoa(target),
 		"ORDERED_GROUP_BATCH_CAP":   "1000",
 		"SQS_SEND_CONCURRENCY":      getenv("OUTBOXER_PERF_SQS_SEND_CONCURRENCY", "64"),

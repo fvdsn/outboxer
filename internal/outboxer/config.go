@@ -10,13 +10,6 @@ import (
 	"time"
 )
 
-type collectionMode string
-
-const (
-	collectionModeGlobalOrdered   collectionMode = "global_ordered"
-	collectionModePerRouteOrdered collectionMode = "per_route_ordered"
-)
-
 type appConfig struct {
 	EventTable       string
 	EventID          string
@@ -27,8 +20,6 @@ type appConfig struct {
 	EventOrderingKey string
 	EventAttributes  string
 
-	CollectionMode       collectionMode
-	CollectGlobalLimit   int
 	CollectBatchTarget   int
 	SQSSendConcurrency   int
 	OrderedGroupBatchCap int
@@ -96,10 +87,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addStringFlag(flags, &options, "Event table", &cfg.EventOrderingKey, "event-ordering-key", cfg.EventOrderingKey, "Ordering key / FIFO message group column.", "EVENT_ORDERING_KEY")
 	addStringFlag(flags, &options, "Event table", &cfg.EventAttributes, "event-attributes", cfg.EventAttributes, "JSON attributes column.", "EVENT_ATTRIBUTES")
 
-	collectionModeValue := string(cfg.CollectionMode)
-	addStringFlag(flags, &options, "Batch processing", &collectionModeValue, "collection-mode", collectionModeValue, "Collection mode: global_ordered or per_route_ordered.", "COLLECTION_MODE")
-	addIntFlag(flags, &options, "Batch processing", &cfg.CollectGlobalLimit, "collect-global-limit", cfg.CollectGlobalLimit, "Maximum rows selected per batch in global_ordered mode.", "COLLECT_GLOBAL_LIMIT")
-	addIntFlag(flags, &options, "Batch processing", &cfg.CollectBatchTarget, "collect-batch-target", cfg.CollectBatchTarget, "Approximate target rows selected per batch in per_route_ordered mode, spread across eligible routes.", "COLLECT_BATCH_TARGET")
+	addIntFlag(flags, &options, "Batch processing", &cfg.CollectBatchTarget, "collect-batch-target", cfg.CollectBatchTarget, "Approximate target rows selected per batch, spread across eligible routes.", "COLLECT_BATCH_TARGET")
 	addIntFlag(flags, &options, "Batch processing", &cfg.SQSSendConcurrency, "sqs-send-concurrency", cfg.SQSSendConcurrency, "Maximum concurrent SQS send requests.", "SQS_SEND_CONCURRENCY")
 	addIntFlag(flags, &options, "Batch processing", &cfg.OrderedGroupBatchCap, "ordered-group-batch-cap", cfg.OrderedGroupBatchCap, "Maximum events sent for one ordered key/group in one batch.", "ORDERED_GROUP_BATCH_CAP")
 
@@ -155,7 +143,6 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 		return appConfig{}, err
 	}
 
-	cfg.CollectionMode = collectionMode(collectionModeValue)
 	cfg.WatchdogInterval = time.Duration(watchdogIntervalMS) * time.Millisecond
 	cfg.ErrorCooldown = time.Duration(errorCooldownMS) * time.Millisecond
 	cfg.PollInterval = time.Duration(pollIntervalMS) * time.Millisecond
@@ -191,12 +178,6 @@ func (cfg appConfig) validate() error {
 	if cfg.SQSEnabled && cfg.DefaultSQSQueueURL == "" && cfg.EventDestination == "" {
 		return fmt.Errorf("SQS needs a destination: set EVENT_DESTINATION or DEFAULT_SQS_QUEUE_URL")
 	}
-	if cfg.CollectionMode != collectionModeGlobalOrdered && cfg.CollectionMode != collectionModePerRouteOrdered {
-		return fmt.Errorf("unsupported collection mode %q: set COLLECTION_MODE to %q or %q", cfg.CollectionMode, collectionModeGlobalOrdered, collectionModePerRouteOrdered)
-	}
-	if cfg.CollectGlobalLimit <= 0 {
-		return fmt.Errorf("global collection limit (%d) must be positive: set COLLECT_GLOBAL_LIMIT", cfg.CollectGlobalLimit)
-	}
 	if cfg.CollectBatchTarget <= 0 {
 		return fmt.Errorf("batch collection target (%d) must be positive: set COLLECT_BATCH_TARGET", cfg.CollectBatchTarget)
 	}
@@ -214,10 +195,6 @@ func (cfg appConfig) validate() error {
 	}
 	if cfg.PollInterval > 0 && cfg.WatchdogInterval < 10*cfg.PollInterval {
 		return fmt.Errorf("watchdog interval (%s) must be at least 10x the poll interval (%s) to avoid false deadlocks: increase WATCHDOG_INTERVAL_MS or decrease POLL_INTERVAL_MS", cfg.WatchdogInterval, cfg.PollInterval)
-	}
-	bound := cfg.batchSendBound()
-	if bound > 0 && cfg.WatchdogInterval <= bound {
-		return fmt.Errorf("watchdog interval (%s) must exceed worst-case batch send bound (%s): increase WATCHDOG_INTERVAL_MS or reduce COLLECT_GLOBAL_LIMIT/PUBLISH_TIMEOUT_MS", cfg.WatchdogInterval, bound)
 	}
 	if cfg.AWSWebIdentityProvider != "" {
 		if cfg.AWSWebIdentityProvider != awsWebIdentityProviderGoogle {
@@ -244,8 +221,6 @@ func loadConfigFromEnv() appConfig {
 		EventOrderingKey: getenv("EVENT_ORDERING_KEY", "ordering_key"),
 		EventAttributes:  getenv("EVENT_ATTRIBUTES", "attributes"),
 
-		CollectionMode:       collectionMode(getenv("COLLECTION_MODE", string(collectionModePerRouteOrdered))),
-		CollectGlobalLimit:   getenvInt("COLLECT_GLOBAL_LIMIT", 100),
 		CollectBatchTarget:   getenvInt("COLLECT_BATCH_TARGET", 5000),
 		SQSSendConcurrency:   getenvInt("SQS_SEND_CONCURRENCY", 8),
 		OrderedGroupBatchCap: getenvInt("ORDERED_GROUP_BATCH_CAP", 8),
@@ -286,45 +261,6 @@ func loadConfigFromEnv() appConfig {
 		AWSWebIdentityProvider:     getenv("AWS_WEB_IDENTITY_PROVIDER", ""),
 		AWSWebIdentityAudience:     getenv("AWS_WEB_IDENTITY_AUDIENCE", ""),
 	}
-}
-
-func (cfg appConfig) batchSendBound() time.Duration {
-	if cfg.CollectionMode != collectionModeGlobalOrdered {
-		return 0
-	}
-
-	var bounds []time.Duration
-	if cfg.PubSubEnabled {
-		bounds = append(bounds, time.Duration(cfg.OrderedGroupBatchCap)*(cfg.PublishTimeout+cfg.PublishResultGrace))
-	}
-	if cfg.SQSEnabled {
-		standardWaves := ceilDiv(cfg.CollectGlobalLimit, cfg.SQSSendConcurrency)
-		bounds = append(bounds, time.Duration(standardWaves)*cfg.PublishTimeout)
-
-		fifoWaves := ceilDiv(cfg.CollectGlobalLimit, cfg.SQSSendConcurrency)
-		if cfg.OrderedGroupBatchCap > fifoWaves {
-			fifoWaves = cfg.OrderedGroupBatchCap
-		}
-		bounds = append(bounds, time.Duration(fifoWaves)*cfg.PublishTimeout)
-	}
-
-	var maxBound time.Duration
-	for _, bound := range bounds {
-		if bound > maxBound {
-			maxBound = bound
-		}
-	}
-	return maxBound
-}
-
-func ceilDiv(n int, d int) int {
-	if d <= 0 {
-		return 0
-	}
-	if n <= 0 {
-		return 0
-	}
-	return (n + d - 1) / d
 }
 
 func optionHelp(description string, envVar string, defaultValue any) string {

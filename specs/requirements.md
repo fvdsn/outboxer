@@ -3,12 +3,12 @@
 Status: **Stage 1 implemented.**
 
 Processing has two steps: **collecting** the events to send, and **sending**
-them. Collection supports two modes; sending is redesigned and delivered in
-stages.
+them. Collection spreads each batch across eligible routes; sending is
+redesigned and delivered in stages.
 
 ## Step 1 — Collecting events
 
-### Shared collection requirements
+### Collection requirements
 
 - **Safe under multiple instances** — especially for ordering. Processing events
   from the same ordered queue on multiple instances concurrently would break
@@ -22,46 +22,13 @@ stages.
   producers can still insert new rows into the table.
 - **One commit point.** In Stage 1, selected events are sent, `done` events are
   deleted, and the transaction commits once at the end of the batch.
-- **Optional columns and default destinations still work.** Any collector mode
-  must support the same schema flexibility as routing:
+- **Optional columns and default destinations still work.** The collector must
+  support the same schema flexibility as routing:
   - the target column may be absent when exactly one backend is enabled;
   - the destination column may be absent when the enabled backend(s) have default
     destinations configured;
   - missing optional target/destination columns participate in grouping through
     their resolved routing/default values, not by requiring new database columns.
-
-### Collection mode A — `global_ordered`
-
-This is the current collection behavior.
-
-- Select at most `COLLECT_GLOBAL_LIMIT` events across the whole table, ordered
-  by event id.
-- This provides first-come-first-served progress by age across all events.
-- It does not guarantee equal per-destination share. A large old backlog or a
-  broken old destination can fill consecutive batches until it is fixed or the
-  backlog drains.
-
-Shape:
-
-```sql
-SELECT *
-FROM events
-ORDER BY id
-LIMIT COLLECT_GLOBAL_LIMIT
-FOR UPDATE;
-```
-
-The real query uses configured table/column names and runs inside the batch
-transaction.
-
-### Collection mode B — `per_route_ordered`
-
-This mode is intended for deployments where one broken destination must not
-completely stop unrelated destinations.
-
-Requirements:
-
-- This is the default mode.
 - Select approximately `COLLECT_BATCH_TARGET` events per batch, spread across
   every eligible resolved `(target, destination)` route.
 - The effective per-route cap is computed at collection time as
@@ -70,22 +37,18 @@ Requirements:
 - Consider **all** eligible resolved `(target, destination)` routes in the table
   in the same collection query, not only a subset of routes chosen by a prior
   query.
-- Do **not** apply `COLLECT_GLOBAL_LIMIT` in this mode. A global cap is
-  fundamentally incompatible with the requirement to select across all routes:
-  it would reintroduce a subset of routes chosen by global age.
 - Only events that resolve to an enabled backend and a concrete destination are
-  eligible for collection in this mode. Routing failures (R7, R10-R12) are not
-  selected, logged, or sent by `per_route_ordered`; they remain in the table
-  until configuration or code changes make them routable, or until an operator
-  intentionally uses `global_ordered`.
+  eligible for collection. Routing failures (R7, R10-R12) are not selected,
+  logged, or sent by the collector; they remain in the table until
+  configuration or code changes make them routable.
 - A valid route whose provider sends are broken or retrying can consume at most
   its computed per-route cap in one selected batch and therefore cannot occupy
   the entire selected batch while other valid routes have eligible events.
-- This mode does not make healthy routes independent of broken routes within the
-  same Stage 1 transaction. A broken route can still slow the batch until its
-  bounded sender operations return, because all `done` events commit together at
-  the end. Early break / circuit behavior for broken routes is a later
-  improvement.
+- Collection does not make healthy routes independent of broken routes within
+  the same Stage 1 transaction. A broken route can still slow the batch until
+  its bounded sender operations return, because all `done` events commit
+  together at the end. Early break / circuit behavior for broken routes is a
+  later improvement.
 - The selected batch size is data-dependent and may exceed
   `COLLECT_BATCH_TARGET` by at most `eligible_route_count - 1`, because every
   eligible route gets at least one slot. This is an intentional tradeoff. It
@@ -106,8 +69,8 @@ The grouping key is the **eligible resolved route**:
   default destination when one exists. An empty resolved destination is a
   retryable routing failure and is not eligible in this mode.
 - Known-but-disabled targets, unknown targets, ambiguous empty targets, and
-  missing destinations still remain retryable routing failures. This mode simply
-  does not select them.
+  missing destinations still remain retryable routing failures. The collector
+  simply does not select them.
 
 Shape:
 
@@ -211,14 +174,12 @@ collide with user columns.
   the send. `PUBLISH_TIMEOUT_MS` must be positive for every enabled backend.
   Disabling it would leave SQS sends bounded only by SDK/transport defaults or
   the process watchdog, and would make ordered Pub/Sub outcomes unbounded. The
-  worst-case batch send time must be derived from the enabled backend limits.
-  Since Pub/Sub and SQS send concurrently, the batch send bound is the maximum of
-  the enabled backend bounds, not their sum. In `global_ordered` mode the
-  selected-event bound is `COLLECT_GLOBAL_LIMIT`. In `per_route_ordered` mode
-  the selected-event count is data-dependent because every eligible route
-  contributes up to its computed per-route cap; the implementation must compute
-  send bounds from the actual selected batch composition before sending, or
-  otherwise keep the watchdog alive during long valid batches.
+  worst-case batch send time must be derived from the actual selected batch
+  composition before sending, or the implementation must otherwise keep the
+  watchdog alive during long valid batches. Since Pub/Sub and SQS send
+  concurrently, the batch send bound is the maximum of the enabled backend
+  bounds, not their sum. The selected-event count is data-dependent because
+  every eligible route contributes up to its computed per-route cap.
   - `pubsubBound = ORDERED_GROUP_BATCH_CAP × (PUBLISH_TIMEOUT_MS +
     PUBLISH_RESULT_GRACE_MS)` (one slow ordered key sending its capped run
     sequentially).
@@ -231,17 +192,15 @@ collide with user columns.
     `selected_max_fifo_group_events <= ORDERED_GROUP_BATCH_CAP` (covers both
     many independent FIFO groups limited by the global semaphore and one hot FIFO
     group sending its capped run sequentially).
-  - `batchSendBound = max(enabled(pubsubBound), enabled(sqsStandardBound),
+  - `sendBound = max(enabled(pubsubBound), enabled(sqsStandardBound),
     enabled(sqsFifoBound))`.
   The watchdog heartbeat must advance during long-running batches, not only once
   per batch. The processor/senders must advance it after meaningful progress:
   selection completed, each bounded provider operation/result completed,
-  database delete completed, and commit completed. Static startup validation of a
-  full batch bound is sufficient only for `global_ordered`, where the
-  selected-event bound is configured. In `per_route_ordered`, the selected route
-  count is data-dependent, so a legitimately large per-route batch must not trip
-  a false deadlock as long as its individual bounded operations keep making
-  progress.
+  database delete completed, and commit completed. The selected route count is
+  data-dependent, so a static startup validation of the full batch send bound is
+  not required and must not false-fail a legitimate route-heavy batch as long as
+  its individual bounded operations keep making progress.
 - **S10 — Interruptible** — sending respects context cancellation; S0 covers
   interrupted in-flight events.
 - **S11 — Poison events are removed.** Poison means the selected backend can
@@ -250,11 +209,9 @@ collide with user columns.
   exists. Routing failures are not poison: an unknown target might become
   supported after an Outboxer upgrade, an ambiguous target might become routable
   after configuration changes, and a missing destination can be fixed by adding a
-  default. Routing failures are kept. In `global_ordered` mode, selected routing
-  failures are logged through the bounded failure logger and can clog collection
-  until fixed. In `per_route_ordered` mode, routing failures are not eligible for
-  selection, so they are neither sent nor logged by the processor. All other
-  failures are retried (cadence per S12).
+  default. Routing failures are kept, but they are not eligible for selection,
+  so they are neither sent nor logged by the processor. All other failures are
+  retried (cadence per S12).
 - **S12 — Back off on database errors only.** Busy-looping the DB is desired (it
   keeps latency low and is not harmful), so it is the default. Only a
   *database/transaction* error (BeginTx/SELECT/DELETE/COMMIT failing — connection
@@ -559,37 +516,33 @@ Interruption — not really failures:
 
 Poison removal fixes the *never-drainable content* clog. Operator/code-action
 failures (R4–R7, R10–R12) are **not** poison (they could succeed later), so we
-cannot drop them without risking loss. In `global_ordered` mode, a
-badly-misconfigured destination or unsupported target can accumulate at the
-front and crowd the window until the operator fixes it or Outboxer is upgraded,
-and selected routing failures are logged through the bounded failure logger. In
-`per_route_ordered` mode, routing failures are ignored by collection and remain
-pending until they become routable; they cannot crowd selection, but they also
-are not logged by the processor while unroutable. A valid route whose provider
-sends are broken can still slow a batch until its bounded sender operations
-return; Stage 1 commits all `done` events together. The remaining risks are fast
-retry of broken valid routes and large batches when many valid routes have
-pending events. Surface these via metrics/alerting ("events failing for
-destination X for N minutes", "oldest event age by destination", "selected
-routes per batch") rather than by dropping retryable events.
+cannot drop them without risking loss. Routing failures are ignored by
+collection and remain pending until they become routable; they cannot crowd
+selection, but they also are not logged by the processor while unroutable. A
+valid route whose provider sends are broken can still slow a batch until its
+bounded sender operations return; Stage 1 commits all `done` events together.
+The remaining risks are fast retry of broken valid routes and large batches when
+many valid routes have pending events. Surface these via metrics/alerting
+("events failing for destination X for N minutes", "oldest event age by
+destination", "selected routes per batch") rather than by dropping retryable
+events.
 
 The SDK clients pace *throttling/transient* sender errors with their own
 backoff, but a *persistent fast-fail* (auth denied, queue not found — R4/R5)
 returns immediately, so the busy loop re-hits that sender's API rapidly. Routing
-failures (R7, R10–R12) do not hit a provider API. In `global_ordered`, they can
-still fast-loop through collection and bounded logging. In `per_route_ordered`,
-they are not selected. Log flood is bounded by S13; API re-hits are left to the
-managed service's own throttling. If this proves harmful in practice, add a
-small no-progress pace specifically for fast-failing sends or routing failures
-— not done now, since it trades away the low-latency busy loop we want.
+failures (R7, R10–R12) do not hit a provider API and are not selected. Log flood
+is bounded by S13; API re-hits are left to the managed service's own throttling.
+If this proves harmful in practice, add a small no-progress pace specifically
+for fast-failing sends or routing failures — not done now, since it trades away
+the low-latency busy loop we want.
 
 ### Changes vs. current behavior
 
 - SQS oversized + sender-fault → already dropped. ✓
 - Routing failures (R10–R12) are currently *left* and accumulate → stay kept in
   Stage 1 (unchanged), because dropping them would lose events recoverable by
-  config or a future Outboxer build. In `per_route_ordered`, they are not
-  selected until they become routable.
+  config or a future Outboxer build. They are not selected until they become
+  routable.
 - Pub/Sub oversized/known-invalid (content-poison) is currently retried forever →
   becomes dropped poison; ambiguous backend rejects are isolated before any event
   is removed.
@@ -647,15 +600,12 @@ Sender errors are classified outside the `done` set:
 ### Batch orchestration — single commit
 
 1. `BEGIN` on the one connection — [collection: stable connections]
-2. Select events using the configured collection mode (`global_ordered` or
-   `per_route_ordered`) and lock the selected rows with `FOR UPDATE`, without
+2. Select eligible events and lock the selected rows with `FOR UPDATE`, without
    `SKIP LOCKED`. This serializes Outboxer processors on the oldest selected
    rows while allowing producers to keep inserting new events. — [collection]
 3. Route to `pubsub` / `sqs` / retryable routing failure using the routing
-   classification table. In `global_ordered`, selected routing failures (R7,
-   R10–R12) are **kept** and logged through the bounded failure logger. In
-   `per_route_ordered`, routing failures are not selected by the collector. —
-   [S11, S0, S13]
+   classification table. Routing failures are not selected by the collector. —
+   [S11, S0]
 4. `pubsubSender.Send` and `sqsSender.Send` **concurrently** under the shutdown
    context. Senders apply `PUBLISH_TIMEOUT` per provider publish operation and
    configure any internal provider timeout needed to make that bound real. — [S3,
@@ -759,17 +709,11 @@ No backward-compatibility guarantee or migration effort is required before
 this spec says so explicitly.
 
 - Remove: `BATCH_WORKERS`, `BATCH_MAX_SEQUENTIAL`.
-- Rename: `BATCH_SIZE` → `COLLECT_GLOBAL_LIMIT`; `BATCH_SIZE` is removed, not
-  supported as an alias.
 - Keep: `ERROR_COOLDOWN_MS`, `POLL_INTERVAL_MS`, `PUBLISH_TIMEOUT_MS`.
 - Add:
-  - `COLLECTION_MODE` (default: `per_route_ordered`; valid values:
-    `global_ordered`, `per_route_ordered`).
-  - `COLLECT_GLOBAL_LIMIT` (default: `100`), the maximum rows selected per batch
-    in `global_ordered` mode. It does not apply in `per_route_ordered` mode.
   - `COLLECT_BATCH_TARGET` (default: `5000`), the approximate target rows
-    selected per batch in `per_route_ordered` mode, spread across eligible
-    resolved `(target, destination)` routes.
+    selected per batch, spread across eligible resolved `(target, destination)`
+    routes.
   - `SQS_SEND_CONCURRENCY` (default: `8`).
   - `ORDERED_GROUP_BATCH_CAP` (default: `8`), the maximum events sent for one
     Pub/Sub ordering key or SQS FIFO message group from a selected batch.

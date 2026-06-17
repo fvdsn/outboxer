@@ -326,8 +326,6 @@ func testConfig() appConfig {
 		EventOrderingKey: "ordering_key",
 		EventAttributes:  "attributes",
 
-		CollectionMode:       collectionModeGlobalOrdered,
-		CollectGlobalLimit:   32,
 		CollectBatchTarget:   5000,
 		SQSSendConcurrency:   8,
 		OrderedGroupBatchCap: 8,
@@ -344,10 +342,18 @@ func testConfig() appConfig {
 }
 
 const (
-	selectEventsSQL = `SELECT * FROM "events" ORDER BY "id" LIMIT $1 FOR UPDATE`
-	deleteOneSQL    = `DELETE FROM "events" WHERE "id" IN ($1)`
-	deleteTwoSQL    = `DELETE FROM "events" WHERE "id" IN ($1, $2)`
+	deleteOneSQL = `DELETE FROM "events" WHERE "id" IN ($1)`
+	deleteTwoSQL = `DELETE FROM "events" WHERE "id" IN ($1, $2)`
 )
+
+func expectSelectEvents(mock sqlmock.Sqlmock, a *app) *sqlmock.ExpectedQuery {
+	query, args := a.selectEventsQuery()
+	values := make([]driver.Value, len(args))
+	for i, arg := range args {
+		values[i] = arg
+	}
+	return mock.ExpectQuery(query).WithArgs(values...)
+}
 
 func newMockProcessorApp(t *testing.T, cfg appConfig) (*app, sqlmock.Sqlmock, func()) {
 	t.Helper()

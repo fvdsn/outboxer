@@ -51,25 +51,15 @@ These are cross-cutting assertions that many scenarios should verify.
 | CFG-08 | `ORDERED_GROUP_BATCH_CAP` is zero or negative. | Validation fails. |
 | CFG-09 | `SQS_SEND_CONCURRENCY` is zero or negative. | Validation fails. |
 | CFG-10 | `WATCHDOG_INTERVAL_MS < 10 * POLL_INTERVAL_MS` when polling is enabled. | Validation fails. |
-| CFG-11 | Watchdog interval does not exceed computed `batchSendBound` plus margin. | Validation fails with an error that names the limiting bound. |
-| CFG-12 | Watchdog interval equals or exceeds the computed bound plus margin. | Validation succeeds. |
-| CFG-13 | Legacy `BATCH_SIZE` is set. | It has no effect on `COLLECT_GLOBAL_LIMIT`; before 1.0 it is not accepted as a deprecated alias. |
-| CFG-14 | `COLLECTION_MODE` is empty. | Default is `per_route_ordered`. |
-| CFG-15 | `COLLECTION_MODE` is not `global_ordered` or `per_route_ordered`. | Validation fails. |
-| CFG-16 | `COLLECT_GLOBAL_LIMIT` is zero or negative. | Validation fails even when `COLLECTION_MODE=per_route_ordered`, so invalid config does not sit latent. |
-| CFG-17 | `COLLECT_BATCH_TARGET` is zero or negative. | Validation fails even when `COLLECTION_MODE=global_ordered`, so invalid config does not sit latent. |
+| CFG-11 | `COLLECT_BATCH_TARGET` is zero or negative. | Validation fails. |
 
 Watchdog bound cases:
 
-- Pub/Sub only: `batchSendBound = ORDERED_GROUP_BATCH_CAP * (PUBLISH_TIMEOUT_MS + PUBLISH_RESULT_GRACE_MS)`.
-- SQS standard only in `global_ordered`: `batchSendBound = ceil(COLLECT_GLOBAL_LIMIT / SQS_SEND_CONCURRENCY) * PUBLISH_TIMEOUT_MS` as a conservative bound for byte-size splits.
-- SQS FIFO only in `global_ordered`: `batchSendBound = max(ceil(COLLECT_GLOBAL_LIMIT / SQS_SEND_CONCURRENCY), ORDERED_GROUP_BATCH_CAP) * PUBLISH_TIMEOUT_MS`.
-- In `per_route_ordered`, the selected count is data-dependent; watchdog tests
-  should compute the bound from the actual selected batch composition, not from
-  `COLLECT_GLOBAL_LIMIT`.
+- The selected count is data-dependent; watchdog tests should keep the watchdog
+  alive during long valid batches instead of relying on a static startup bound.
 - Pub/Sub concurrency is bounded by publisher flow control and ordered-key
   sequencing; `SQS_SEND_CONCURRENCY` affects SQS only.
-- Both backends: `batchSendBound` is the max of the enabled backend bounds, not
+- Both backends: the send bound is the max of the enabled backend bounds, not
   their sum.
 
 ## Routing
@@ -86,7 +76,7 @@ Watchdog bound cases:
 | ROUTE-08 | Routed event has empty destination and no backend default. | Kept as R12; not `done`. |
 | ROUTE-09 | Target names a known disabled backend and destination is also empty. | R7 takes precedence over R12. |
 
-## Collection modes
+## Collection
 
 These scenarios test selection before sender routing. Use a real database query
 or a close SQL-level fake; this is where ordering, limits, and projected columns
@@ -94,22 +84,18 @@ matter.
 
 | ID | Scenario | Expected |
 | --- | --- | --- |
-| COLLECT-GLOBAL-01 | `global_ordered` with 250 valid events and `COLLECT_GLOBAL_LIMIT=100`. | Selects the first 100 rows by event id and locks only those rows with `FOR UPDATE`. |
-| COLLECT-GLOBAL-02 | `global_ordered` has 100 old events for route A and 10 newer events for route B, limit 100. | Selects the 100 oldest route A events; route B waits for a later batch. |
-| COLLECT-GLOBAL-03 | `global_ordered` has only routing failures at the front. | Selects them by id; processor logs bounded routing failures after classification and deletes none. |
-| COLLECT-GLOBAL-04 | `global_ordered` selects rows with optional target/destination columns present. | Returns only base event-table columns; no synthetic routing columns are added. |
-| COLLECT-ROUTE-01 | `per_route_ordered` has 10 routes with 10 valid events each and `COLLECT_BATCH_TARGET=100`. | Selects all 100 events in one batch, ordered by id within each route. |
-| COLLECT-ROUTE-02 | `per_route_ordered` has one route with 100 valid events and `COLLECT_BATCH_TARGET=40`. | Selects the first 40 events for that route; later events remain for later batches. |
-| COLLECT-ROUTE-03 | `per_route_ordered` has 100 old valid events for route A and 10 newer valid events for route B, `COLLECT_BATCH_TARGET=40`. | Computes an effective cap of 20 per route, selects 20 from route A and 10 from route B; route A cannot occupy the whole selected batch. |
-| COLLECT-ROUTE-04 | `per_route_ordered` has only R7/R10/R11/R12 routing failures. | Selects zero rows; no sender is called and no routing-failure log is emitted by the processor. |
-| COLLECT-ROUTE-05 | `per_route_ordered` has routing failures plus valid routes. | Selects only events that resolve to enabled backends with non-empty destinations; routing failures remain pending. |
-| COLLECT-ROUTE-06 | `per_route_ordered` has empty targets with exactly one backend enabled. | Empty target events are eligible and grouped under that enabled backend. |
-| COLLECT-ROUTE-07 | `per_route_ordered` has empty destinations and a backend default. | Events are eligible and grouped under the resolved default destination. |
-| COLLECT-ROUTE-08 | `per_route_ordered` has empty destinations and no backend default. | Events are not eligible; they remain pending as R12. |
-| COLLECT-ROUTE-09 | `per_route_ordered` has explicit destination `D` and empty destination resolving to default `D`. | Both forms share the same resolved route and therefore the same computed per-route cap. |
-| COLLECT-ROUTE-10 | `per_route_ordered` discovers routes and selects per-route rows using synthetic `resolved_target` / `resolved_destination` values. | Final selected rows contain only base event-table columns; synthetic columns do not leak into `event.columns`. |
-| COLLECT-ROUTE-11 | `per_route_ordered` sees many valid routes. | No `COLLECT_GLOBAL_LIMIT` is applied; selected count is at most `eligible_route_count * ceil(COLLECT_BATCH_TARGET / eligible_route_count)`, with every eligible route getting at least one slot. |
-| COLLECT-ROUTE-12 | Two Outboxer instances select concurrently in either mode. | The first transaction locks selected rows with `FOR UPDATE`; the second blocks on those rows instead of processing the same events. |
+| COLLECT-01 | 10 routes with 10 valid events each and `COLLECT_BATCH_TARGET=100`. | Selects all 100 events in one batch, ordered by id within each route. |
+| COLLECT-02 | One route has 100 valid events and `COLLECT_BATCH_TARGET=40`. | Selects the first 40 events for that route; later events remain for later batches. |
+| COLLECT-03 | 100 old valid events for route A and 10 newer valid events for route B, `COLLECT_BATCH_TARGET=40`. | Computes an effective cap of 20 per route, selects 20 from route A and 10 from route B; route A cannot occupy the whole selected batch. |
+| COLLECT-04 | The table has only R7/R10/R11/R12 routing failures. | Selects zero rows; no sender is called and no routing-failure log is emitted by the processor. |
+| COLLECT-05 | The table has routing failures plus valid routes. | Selects only events that resolve to enabled backends with non-empty destinations; routing failures remain pending. |
+| COLLECT-06 | Empty targets with exactly one backend enabled. | Empty target events are eligible and grouped under that enabled backend. |
+| COLLECT-07 | Empty destinations and a backend default. | Events are eligible and grouped under the resolved default destination. |
+| COLLECT-08 | Empty destinations and no backend default. | Events are not eligible; they remain pending as R12. |
+| COLLECT-09 | Explicit destination `D` and empty destination resolving to default `D`. | Both forms share the same resolved route and therefore the same computed per-route cap. |
+| COLLECT-10 | Collection discovers routes and selects route rows using synthetic `resolved_target` / `resolved_destination` values. | Final selected rows contain only base event-table columns; synthetic columns do not leak into `event.columns`. |
+| COLLECT-11 | Many valid routes have pending events. | Selected count is at most `eligible_route_count * ceil(COLLECT_BATCH_TARGET / eligible_route_count)`, with every eligible route getting at least one slot. |
+| COLLECT-12 | Two Outboxer instances select concurrently. | The first transaction locks selected rows with `FOR UPDATE`; the second blocks on those rows instead of processing the same events. |
 
 ## Batch orchestration
 
@@ -123,10 +109,9 @@ matter.
 | BATCH-06 | Begin/select fails. | No sender is called; cooldown applies. |
 | BATCH-07 | Empty selected batch and `POLL_INTERVAL_MS = 0`. | No sleep. |
 | BATCH-08 | Empty selected batch and `POLL_INTERVAL_MS > 0`. | Sleeps until poll interval or context cancellation. |
-| BATCH-09 | `global_ordered` selects routing failures only. | No sender is called; nothing is deleted; bounded failure log records the failures. |
 | BATCH-10 | Pub/Sub sender and SQS sender both enabled. | They run concurrently; batch time is bounded by the slower backend, not the sum. |
-| BATCH-11 | `per_route_ordered` table contains only routing failures. | No rows are selected; no sender is called; nothing is deleted; no routing-failure log is emitted by the processor. |
-| BATCH-12 | `per_route_ordered` selects a valid route whose provider fast-fails and another valid route that succeeds. | Successful route events are deleted at commit; failed route events remain. The failed route may slow the batch until bounded sender operations return, but it does not prevent selection of the other route. |
+| BATCH-11 | The table contains only routing failures. | No rows are selected; no sender is called; nothing is deleted; no routing-failure log is emitted by the processor. |
+| BATCH-12 | Collection selects a valid route whose provider fast-fails and another valid route that succeeds. | Successful route events are deleted at commit; failed route events remain. The failed route may slow the batch until bounded sender operations return, but it does not prevent selection of the other route. |
 | BATCH-13 | Sender returns `done` and fatal-after-commit error, then delete fails. | Delete/transaction error is logged, but processing still stops; it must not loop in the same process after an unknown ordered outcome. |
 | BATCH-14 | Sender returns `done` and fatal-after-commit error, delete succeeds, then commit fails. | Commit error is logged, restart may duplicate provider-accepted events, and processing still stops; it must not continue behind the unknown ordered outcome. |
 
@@ -136,31 +121,25 @@ These scenarios are intentionally larger than the focused unit cases. They shoul
 catch mistakes in routing, grouping, chunking, delete accounting, defaults, and
 provider-call shape before live integration tests exist.
 
-Each scenario names the collection mode and any non-default limits needed to make
-the selected-batch size unambiguous.
+Each scenario names any non-default limits needed to make the selected-batch
+size unambiguous.
 
 | ID | Scenario | Expected |
 | --- | --- | --- |
-| REAL-OK-01 | `global_ordered`, SQS-only standard queue, 100 events, one queue, `COLLECT_GLOBAL_LIMIT=100`, `SQS_SEND_CONCURRENCY` high enough not to serialize everything. | Selects 100 events; exactly 10 `SendMessageBatch` calls of 10 entries each; all 100 IDs are returned in `done`; no FIFO fields are set. |
-| REAL-OK-02 | `per_route_ordered`, SQS-only standard queue, 100 events, one queue, `COLLECT_BATCH_TARGET=100`. | Selects 100 events for the one route; exactly 10 `SendMessageBatch` calls of 10 entries each; all 100 IDs are `done`. |
-| REAL-OK-03 | `per_route_ordered`, SQS-only standard queue, 100 events split across 10 queue URLs, 10 per queue, default `COLLECT_BATCH_TARGET=5000`. | Selects all 100 events; each queue receives one batch of 10; the global SQS semaphore is respected across queues; all IDs are `done`. |
-| REAL-OK-04 | `global_ordered`, Pub/Sub-only unordered, 100 events, one topic, `COLLECT_GLOBAL_LIMIT=100`. | Selects 100 events; one cached publisher is used; 100 publishes are enqueued; `Flush()` is called for the topic before result waits; all IDs are `done`. |
-| REAL-OK-05 | `per_route_ordered`, Pub/Sub-only unordered, 100 events split across 10 topics, 10 per topic, default `COLLECT_BATCH_TARGET=5000`. | Selects all 100 events; one cached publisher per topic; each topic is flushed; all IDs are `done`; no topic receives another topic's messages. |
-| REAL-OK-06 | `global_ordered`, both backends enabled, 100 events mixed 50 Pub/Sub and 50 SQS standard, one topic and one queue, `COLLECT_GLOBAL_LIMIT=100`. | Processor routes each event to the correct backend, both senders run in the same selected batch, Pub/Sub publishes 50 messages, SQS sends 5 batches, and one database delete covers all 100 IDs. |
-| REAL-OK-07 | `per_route_ordered`, both backends enabled, 100 events mixed across 5 Pub/Sub topics and 5 SQS standard queues, 10 per destination, default `COLLECT_BATCH_TARGET=5000`. | Selects all 100 events; messages are grouped by backend and destination; every destination receives exactly its intended 10 events; all selected IDs are deleted. |
-| REAL-OK-08 | `per_route_ordered`, Pub/Sub-only with no target column and a default topic, 100 events with empty destination, `COLLECT_BATCH_TARGET=100`. | All events route to Pub/Sub default topic, publish successfully, and are deleted. |
-| REAL-OK-09 | `per_route_ordered`, SQS-only with no target column and a default standard queue URL, 100 events with empty destination, `COLLECT_BATCH_TARGET=100`. | All events route to the default queue, send as 10 standard batches, and are deleted. |
-| REAL-OK-10 | `per_route_ordered`, both backends enabled with explicit targets and a mix of explicit destinations plus backend defaults. | Empty Pub/Sub destinations use the Pub/Sub default, empty SQS destinations use the SQS default, explicit destinations are preserved, and all valid events are deleted according to each route's cap. |
-| REAL-OK-11 | `per_route_ordered`, mixed Pub/Sub unordered and Pub/Sub ordered events for multiple topics and keys, all successful. | Unordered events batch/flush by topic; ordered events remain sequential per `(topic, ordering_key)`; all selected IDs are `done`. |
-| REAL-OK-12 | `per_route_ordered`, mixed SQS standard and FIFO destinations, all successful. | Standard queues batch by 10; FIFO queues send one message at a time per group; each FIFO group preserves order; independent standard/FIFO destinations may progress concurrently. |
-| REAL-OK-13 | `global_ordered`, collection limit is smaller than backlog: process 250 valid standard SQS events with `COLLECT_GLOBAL_LIMIT=100` over repeated `processOneBatch` calls. | Each loop selects at most 100 events, deletes exactly the selected successes, and the fourth loop selects 0 after all events are gone. |
-| REAL-OK-14 | `per_route_ordered`, large successful selected batch includes duplicate-looking values across non-ID columns. | Delete accounting uses only selected event IDs, not payload/topic/queue/body values; every selected ID is deleted exactly once. |
-| REAL-OK-15 | `per_route_ordered`, 250 valid standard SQS events for one queue with `COLLECT_BATCH_TARGET=100`. | Three processor loops drain the backlog as 100, 100, 50 selected events; SQS sends 10, 10, 5 standard batches. |
-| REAL-OK-16 | `per_route_ordered`, 250 valid standard SQS events split across 5 queues, 50 per queue, with `COLLECT_BATCH_TARGET=250`. | One processor loop can select all 250 valid events; each queue receives 5 batches of 10. |
-| REAL-OK-17 | `per_route_ordered`, 120 old events for a broken SQS queue and 20 newer events for a healthy Pub/Sub topic, with `COLLECT_BATCH_TARGET=40`. | Computes an effective cap of 20 per route, selects 20 broken SQS events and all 20 Pub/Sub events; Pub/Sub successes are committed, SQS failures remain. |
-| REAL-OK-18 | Same data as REAL-OK-17 but `global_ordered` with `COLLECT_GLOBAL_LIMIT=100`. | Selects the 100 oldest SQS events; Pub/Sub topic is not processed in that batch. |
-| REAL-OK-19 | `per_route_ordered`, table contains 20 unknown-target events older than 20 valid SQS events. | Selects and sends the 20 valid SQS events; unknown-target rows remain pending and unlogged by the processor. |
-| REAL-OK-20 | `global_ordered`, table contains 20 unknown-target events older than 20 valid SQS events with `COLLECT_GLOBAL_LIMIT=20`. | Selects only unknown-target rows; logs bounded R10 failures; sends nothing and deletes nothing. |
+| REAL-OK-01 | SQS-only standard queue, 100 events, one queue, `COLLECT_BATCH_TARGET=100`. | Selects 100 events for the one route; exactly 10 `SendMessageBatch` calls of 10 entries each; all 100 IDs are `done`. |
+| REAL-OK-02 | SQS-only standard queue, 100 events split across 10 queue URLs, 10 per queue, default `COLLECT_BATCH_TARGET=5000`. | Selects all 100 events; each queue receives one batch of 10; the global SQS semaphore is respected across queues; all IDs are `done`. |
+| REAL-OK-03 | Pub/Sub-only unordered, 100 events split across 10 topics, 10 per topic, default `COLLECT_BATCH_TARGET=5000`. | Selects all 100 events; one cached publisher per topic; each topic is flushed; all IDs are `done`; no topic receives another topic's messages. |
+| REAL-OK-04 | Both backends enabled, 100 events mixed across 5 Pub/Sub topics and 5 SQS standard queues, 10 per destination, default `COLLECT_BATCH_TARGET=5000`. | Selects all 100 events; messages are grouped by backend and destination; every destination receives exactly its intended 10 events; all selected IDs are deleted. |
+| REAL-OK-05 | Pub/Sub-only with no target column and a default topic, 100 events with empty destination, `COLLECT_BATCH_TARGET=100`. | All events route to Pub/Sub default topic, publish successfully, and are deleted. |
+| REAL-OK-06 | SQS-only with no target column and a default standard queue URL, 100 events with empty destination, `COLLECT_BATCH_TARGET=100`. | All events route to the default queue, send as 10 standard batches, and are deleted. |
+| REAL-OK-07 | Both backends enabled with explicit targets and a mix of explicit destinations plus backend defaults. | Empty Pub/Sub destinations use the Pub/Sub default, empty SQS destinations use the SQS default, explicit destinations are preserved, and all valid events are deleted according to each route's cap. |
+| REAL-OK-08 | Mixed Pub/Sub unordered and Pub/Sub ordered events for multiple topics and keys, all successful. | Unordered events batch/flush by topic; ordered events remain sequential per `(topic, ordering_key)`; all selected IDs are `done`. |
+| REAL-OK-09 | Mixed SQS standard and FIFO destinations, all successful. | Standard queues batch by 10; FIFO queues send one message at a time per group; each FIFO group preserves order; independent standard/FIFO destinations may progress concurrently. |
+| REAL-OK-10 | Large successful selected batch includes duplicate-looking values across non-ID columns. | Delete accounting uses only selected event IDs, not payload/topic/queue/body values; every selected ID is deleted exactly once. |
+| REAL-OK-11 | 250 valid standard SQS events for one queue with `COLLECT_BATCH_TARGET=100`. | Three processor loops drain the backlog as 100, 100, 50 selected events; SQS sends 10, 10, 5 standard batches. |
+| REAL-OK-12 | 250 valid standard SQS events split across 5 queues, 50 per queue, with `COLLECT_BATCH_TARGET=250`. | One processor loop can select all 250 valid events; each queue receives 5 batches of 10. |
+| REAL-OK-13 | 120 old events for a broken SQS queue and 20 newer events for a healthy Pub/Sub topic, with `COLLECT_BATCH_TARGET=40`. | Computes an effective cap of 20 per route, selects 20 broken SQS events and all 20 Pub/Sub events; Pub/Sub successes are committed, SQS failures remain. |
+| REAL-OK-14 | Table contains 20 unknown-target events older than 20 valid SQS events. | Selects and sends the 20 valid SQS events; unknown-target rows remain pending and unlogged by the processor. |
 
 ## Failure logging
 
@@ -348,6 +327,5 @@ The scenario list is deliberately larger than the first implementation PR needs.
 Start with the P0 safety paths: no loss, ordered failure stops, Pub/Sub unknown
 ordered result is fatal-after-commit, SQS FIFO never batches same-group events,
 content poison is deleted only after local proof or single-event isolation, and
-routing failures are never deleted as poison. Also cover both collection modes
-early: `global_ordered` selects/logs routing failures, while
-`per_route_ordered` leaves them unselected until they become routable.
+routing failures are never deleted as poison. Also cover collection early:
+routing failures are left unselected until they become routable.

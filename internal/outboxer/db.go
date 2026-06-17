@@ -128,19 +128,10 @@ func (a *app) selectEvents(ctx context.Context, tx *sql.Tx) ([]event, error) {
 }
 
 func (a *app) selectEventsQuery() (string, []any) {
-	if a.cfg.CollectionMode == collectionModePerRouteOrdered {
-		return a.selectPerRouteOrderedEventsQuery(), []any{a.cfg.CollectBatchTarget}
-	}
-
-	query := fmt.Sprintf(
-		"SELECT * FROM %s ORDER BY %s LIMIT $1 FOR UPDATE",
-		ident(a.cfg.EventTable),
-		ident(a.cfg.EventID),
-	)
-	return query, []any{a.cfg.CollectGlobalLimit}
+	return a.selectEventsQuerySQL(), []any{a.cfg.CollectBatchTarget}
 }
 
-func (a *app) selectPerRouteOrderedEventsQuery() string {
+func (a *app) selectEventsQuerySQL() string {
 	table := ident(a.cfg.EventTable)
 	idCol := ident(a.cfg.EventID)
 	sourceAlias := "route_source"
