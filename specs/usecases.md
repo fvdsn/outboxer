@@ -48,10 +48,9 @@ These are cross-cutting assertions that many scenarios should verify.
 | CFG-05 | `PUBLISH_TIMEOUT_MS` is zero. | Validation fails for Pub/Sub-only, SQS-only, and both-backend configs. |
 | CFG-06 | `PUBLISH_TIMEOUT_MS` is negative. | Validation fails. |
 | CFG-07 | `PUBLISH_RESULT_GRACE_MS` is negative. | Validation fails. |
-| CFG-08 | `ORDERED_GROUP_BATCH_CAP` is zero or negative. | Validation fails. |
-| CFG-09 | `SQS_SEND_CONCURRENCY` is zero or negative. | Validation fails. |
-| CFG-10 | `WATCHDOG_INTERVAL_MS < 10 * POLL_INTERVAL_MS` when polling is enabled. | Validation fails. |
-| CFG-11 | `COLLECT_BATCH_TARGET` is zero or negative. | Validation fails. |
+| CFG-08 | `SQS_SEND_CONCURRENCY` is zero or negative. | Validation fails. |
+| CFG-09 | `WATCHDOG_INTERVAL_MS < 10 * POLL_INTERVAL_MS` when polling is enabled. | Validation fails. |
+| CFG-10 | `COLLECT_BATCH_TARGET` is zero or negative. | Validation fails. |
 
 Watchdog bound cases:
 
@@ -159,7 +158,7 @@ size unambiguous.
 | PS-OK-03 | Ordered events for one key all succeed. | Events are published one at a time in input order; each next publish happens only after prior success. |
 | PS-OK-04 | Ordered events for multiple keys all succeed. | Each key is sequential internally; different keys may progress concurrently. |
 | PS-OK-05 | Ordered and unordered events are mixed. | Ordered keys preserve order; unordered events may batch normally; all successes returned in `done`. |
-| PS-OK-06 | More than `ORDERED_GROUP_BATCH_CAP` events for one ordering key are selected. | Only capped count is attempted; remainder is kept for a later batch. |
+| PS-OK-06 | Many events for one ordering key are selected. | All selected events are attempted sequentially; collection, timeout, and watchdog progress bound the run. |
 | PS-OK-07 | Publisher already exists for topic. | Sender reuses cached publisher and does not recreate it. |
 | PS-OK-08 | Sender closes. | Each cached publisher receives `Stop()` exactly once. |
 
@@ -224,7 +223,7 @@ Boundary values should be table-driven with "just below", "exactly at", and
 | SQS-OK-04 | Standard queue with many events and concurrency 2. | Batch requests run in at most 2 concurrent waves. |
 | SQS-OK-05 | FIFO queue with one message group and 3 events. | Three single-message sends in order; no multi-entry batch for that group. |
 | SQS-OK-06 | FIFO queue with two message groups. | Each group is sequential internally; groups may run concurrently under the global semaphore. |
-| SQS-OK-07 | FIFO group has more than `ORDERED_GROUP_BATCH_CAP` events. | Only capped count is attempted; remainder is kept. |
+| SQS-OK-07 | Many FIFO events for one message group are selected. | All selected events are attempted sequentially as single-message sends. |
 | SQS-OK-08 | FIFO event has no ordering key. | Stable provider-safe synthetic `MessageGroupId` is derived from event ID. |
 | SQS-OK-09 | FIFO event ID is valid as dedup ID. | Raw event ID may be used as `MessageDeduplicationId`. |
 | SQS-OK-10 | FIFO event ID is too long or has invalid characters. | Stable collision-resistant digest is used as provider-safe dedup ID. |
@@ -274,7 +273,7 @@ identifier lengths.
 
 | ID | Scenario | Expected |
 | --- | --- | --- |
-| ORDER-01 | Batch 1 selects ordered events 1-8 for a key; cap is 8; batch 2 selects 9-16. | Provider sees 1-16 in order across batches if all succeed. |
+| ORDER-01 | Batch 1 selects ordered events 1-8 for a key; batch 2 selects 9-16. | Provider sees 1-16 in order across batches if all succeed. |
 | ORDER-02 | Batch 1 ordered event 4 fails retryably. | Batch 1 sends 1-4 only for that key; 5-8 are kept. Batch 2 cannot send 5 before 4 succeeds. |
 | ORDER-03 | Ordered event succeeds at provider but transaction commit fails. | Next run may duplicate that event, but must not delete a later event ahead of it. |
 | ORDER-04 | Two Outboxer instances run concurrently. | Second instance blocks on `FOR UPDATE`; it does not process the same ordered queue concurrently. |

@@ -268,9 +268,7 @@ func (a *app) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue st
 		if _, ok := groups[groupID]; !ok {
 			groupOrder = append(groupOrder, groupID)
 		}
-		if len(groups[groupID]) < a.cfg.OrderedGroupBatchCap {
-			groups[groupID] = append(groups[groupID], evt)
-		}
+		groups[groupID] = append(groups[groupID], evt)
 	}
 
 	errs := make(chan error, len(groupOrder))

@@ -204,7 +204,6 @@ func TestLocalEmulatorE2ETwoOutboxersPreserveOrderedPubSub(t *testing.T) {
 		"SQS_ENABLED":               "false",
 		"DEFAULT_PUBSUB_TOPIC":      topic,
 		"COLLECT_BATCH_TARGET":      "40",
-		"ORDERED_GROUP_BATCH_CAP":   "10",
 		"SQS_SEND_CONCURRENCY":      "1",
 		"POLL_INTERVAL_MS":          "10",
 		"PUBLISH_TIMEOUT_MS":        "5000",
@@ -383,7 +382,6 @@ func TestLocalEmulatorE2ERouteBrokenDestinationDoesNotBlockHealthyRoute(t *testi
 		"PUBLISH_RESULT_GRACE_MS":   "200",
 		"ERROR_COOLDOWN_MS":         "50",
 		"POLL_INTERVAL_MS":          "50",
-		"ORDERED_GROUP_BATCH_CAP":   "5",
 		"WATCHDOG_INTERVAL_MS":      "60000",
 		"AWS_WEB_IDENTITY_PROVIDER": "",
 	})
@@ -564,7 +562,6 @@ func startOutboxer(t *testing.T, ctx context.Context, binary string, table strin
 		"PG_DATABASE":             getenv("OUTBOXER_E2E_PG_DATABASE", "outboxer"),
 		"PG_SSL":                  "false",
 		"COLLECT_BATCH_TARGET":    "5000",
-		"ORDERED_GROUP_BATCH_CAP": "8",
 		"SQS_SEND_CONCURRENCY":    "4",
 		"POLL_INTERVAL_MS":        "50",
 		"ERROR_COOLDOWN_MS":       "50",

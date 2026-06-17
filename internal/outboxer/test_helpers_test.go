@@ -326,9 +326,8 @@ func testConfig() appConfig {
 		EventOrderingKey: "ordering_key",
 		EventAttributes:  "attributes",
 
-		CollectBatchTarget:   5000,
-		SQSSendConcurrency:   8,
-		OrderedGroupBatchCap: 8,
+		CollectBatchTarget: 5000,
+		SQSSendConcurrency: 8,
 
 		WatchdogInterval:   time.Hour,
 		HealthPort:         9999,

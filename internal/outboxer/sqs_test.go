@@ -677,9 +677,8 @@ func TestSendSQSEventsFIFOProcessesDifferentGroups(t *testing.T) {
 	}
 }
 
-func TestSendSQSEventsFIFOAppliesGroupBatchCap(t *testing.T) {
+func TestSendSQSEventsFIFOProcessesWholeSelectedGroup(t *testing.T) {
 	cfg := testConfig()
-	cfg.OrderedGroupBatchCap = 2
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a := &app{cfg: cfg, sqs: sqs}
 	var deleted []any
@@ -696,11 +695,11 @@ func TestSendSQSEventsFIFOAppliesGroupBatchCap(t *testing.T) {
 		t.Fatalf("sendSQSEvents returned error: %v", err)
 	}
 
-	if !reflect.DeepEqual(deleted, []any{"event-1", "event-2"}) {
+	if !reflect.DeepEqual(deleted, []any{"event-1", "event-2", "event-3"}) {
 		t.Fatalf("unexpected deleted ids: %#v", deleted)
 	}
-	if len(sqs.requests) != 2 {
-		t.Fatalf("expected cap to send two requests, got %#v", sqs.requests)
+	if len(sqs.requests) != 3 {
+		t.Fatalf("expected one request per selected FIFO group event, got %#v", sqs.requests)
 	}
 }
 

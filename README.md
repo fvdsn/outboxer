@@ -170,7 +170,6 @@ outboxer --help
 | --- | --- | --- | --- |
 | `--collect-batch-target` | `COLLECT_BATCH_TARGET` | `5000` | Approximate target rows selected per batch, spread across eligible routes. |
 | `--sqs-send-concurrency` | `SQS_SEND_CONCURRENCY` | `8` | Maximum concurrent SQS send requests. |
-| `--ordered-group-batch-cap` | `ORDERED_GROUP_BATCH_CAP` | `8` | Maximum events sent for one ordered key/group in one batch. |
 | `--error-cooldown-ms` | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors in milliseconds. |
 | `--poll-interval-ms` | `POLL_INTERVAL_MS` | `0` | Sleep after an empty batch in milliseconds. The default keeps polling immediately. |
 | `--watchdog-interval-ms` | `WATCHDOG_INTERVAL_MS` | `600000` | Watchdog interval in milliseconds. Must be at least 10x `POLL_INTERVAL_MS` when polling is enabled. |

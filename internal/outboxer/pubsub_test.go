@@ -435,9 +435,8 @@ func TestSendPubsubEventsFlushesEachUnorderedTopic(t *testing.T) {
 	}
 }
 
-func TestSendPubsubEventsOrderedKeySuccessIsSequentialAndCapped(t *testing.T) {
+func TestSendPubsubEventsOrderedKeySuccessIsSequential(t *testing.T) {
 	cfg := testConfig()
-	cfg.OrderedGroupBatchCap = 2
 	pubsub := &fakePubSubPublisher{}
 	a := &app{cfg: cfg, pubsub: pubsub}
 	var deleted []any
@@ -454,25 +453,24 @@ func TestSendPubsubEventsOrderedKeySuccessIsSequentialAndCapped(t *testing.T) {
 		t.Fatalf("sendPubsubEvents returned error: %v", err)
 	}
 
-	if !reflect.DeepEqual(deleted, []any{"event-1", "event-2"}) {
+	if !reflect.DeepEqual(deleted, []any{"event-1", "event-2", "event-3"}) {
 		t.Fatalf("unexpected deleted ids: %#v", deleted)
 	}
-	if len(pubsub.messages) != 2 {
-		t.Fatalf("expected cap to publish two messages, got %#v", pubsub.messages)
+	if len(pubsub.messages) != 3 {
+		t.Fatalf("expected all selected ordered messages to publish, got %#v", pubsub.messages)
 	}
 	for i, message := range pubsub.messages {
-		if got, want := string(message.Data), []string{"one", "two"}[i]; got != want {
+		if got, want := string(message.Data), []string{"one", "two", "three"}[i]; got != want {
 			t.Fatalf("message %d data = %q, want %q", i, got, want)
 		}
 	}
-	if !reflect.DeepEqual(pubsub.flushes, []string{"topic-1", "topic-1"}) {
+	if !reflect.DeepEqual(pubsub.flushes, []string{"topic-1", "topic-1", "topic-1"}) {
 		t.Fatalf("expected per-message ordered flushes, got %#v", pubsub.flushes)
 	}
 }
 
 func TestSendPubsubEventsOrderedKeyPreservesOrderAcrossBatches(t *testing.T) {
 	cfg := testConfig()
-	cfg.OrderedGroupBatchCap = 2
 	pubsub := &fakePubSubPublisher{}
 	a := &app{cfg: cfg, pubsub: pubsub}
 
@@ -486,7 +484,6 @@ func TestSendPubsubEventsOrderedKeyPreservesOrderAcrossBatches(t *testing.T) {
 	}
 
 	secondBatch := []event{
-		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "ordering_key": "key-a"}},
 		{columns: map[string]any{"id": "event-4", "destination": "topic-1", "payload": "four", "ordering_key": "key-a"}},
 	}
 	if err := a.sendPubsubEvents(context.Background(), secondBatch, func(any) {}); err != nil {

@@ -75,7 +75,7 @@ func TestLocalCollectBatchTargetPerf(t *testing.T) {
 	}
 }
 
-func TestLocalOrderedGroupBatchCapPerf(t *testing.T) {
+func TestLocalMixedOrderedSkewPerf(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping local performance test in short mode")
 	}
@@ -92,28 +92,26 @@ func TestLocalOrderedGroupBatchCapPerf(t *testing.T) {
 	routes := getenvInt("OUTBOXER_PERF_ROUTES", 100)
 	orderingKeys := getenvInt("OUTBOXER_PERF_ORDERING_KEYS", 10)
 	collectBatchTarget := getenvInt("OUTBOXER_PERF_COLLECT_BATCH_TARGET", 5000)
-	caps := getenvIntList("OUTBOXER_PERF_ORDERED_GROUP_CAPS", []int{10, 25, 50, 100, 250, 500, 1000, 2500, 5000})
 	routeCounts := routeEventCounts(t, records, routes, "power_law")
 	plans := orderedPerfDestinationPlans(t, routeCounts, orderingKeys)
 
-	t.Logf("ordered perf setup records=%d logical_routes=%d destinations=%d ordered_records=%d ordering_keys=%d route_distribution=power_law route_counts=%s collect_batch_target=%d ordered_group_caps=%v",
-		records, routes, len(plans), orderedPerfRecords(plans), orderingKeys, routeCountSummary(routeCounts), collectBatchTarget, caps)
+	t.Logf("mixed ordered perf setup records=%d logical_routes=%d destinations=%d ordered_records=%d ordering_keys=%d route_distribution=power_law route_counts=%s collect_batch_target=%d",
+		records, routes, len(plans), orderedPerfRecords(plans), orderingKeys, routeCountSummary(routeCounts), collectBatchTarget)
 
 	if !getenvBool("OUTBOXER_PERF_SKIP_PUBSUB", false) {
 		t.Run("pubsub", func(t *testing.T) {
 			topicIDs := createPerfPubSubTopics(t, ctx, len(plans))
-			runOrderedBackendCapSweep(t, ctx, binary, db, "pubsub", withPlanDestinations(plans, topicIDs), records, routes, orderingKeys, collectBatchTarget, caps)
+			result := runOrderedBackendOnce(t, ctx, binary, db, "pubsub", withPlanDestinations(plans, topicIDs), records, routes, orderingKeys, collectBatchTarget)
+			t.Log(result.String())
 		})
 	}
 
 	if !getenvBool("OUTBOXER_PERF_SKIP_SQS", false) {
 		t.Run("sqs", func(t *testing.T) {
-			for _, cap := range caps {
-				queueURLs := createPerfSQSQueuesForPlans(t, ctx, plans, cap)
-				result := runOrderedBackendOnce(t, ctx, binary, db, "sqs", withPlanDestinations(plans, queueURLs), records, routes, orderingKeys, collectBatchTarget, cap)
-				t.Log(result.String())
-				deletePerfSQSQueues(t, ctx, queueURLs)
-			}
+			queueURLs := createPerfSQSQueuesForPlans(t, ctx, plans)
+			result := runOrderedBackendOnce(t, ctx, binary, db, "sqs", withPlanDestinations(plans, queueURLs), records, routes, orderingKeys, collectBatchTarget)
+			t.Log(result.String())
+			deletePerfSQSQueues(t, ctx, queueURLs)
 		})
 	}
 }
@@ -124,7 +122,6 @@ type perfResult struct {
 	routes           int
 	destinations     int
 	target           int
-	orderedGroupCap  int
 	orderedRecords   int
 	orderingKeyCount int
 	elapsed          time.Duration
@@ -132,9 +129,9 @@ type perfResult struct {
 }
 
 func (r perfResult) String() string {
-	if r.orderedGroupCap > 0 {
-		return fmt.Sprintf("PERF backend=%s records=%d logical_routes=%d destinations=%d ordered_records=%d ordering_keys=%d collect_batch_target=%d ordered_group_batch_cap=%d elapsed=%s rate=%.0f events/s",
-			r.backend, r.records, r.routes, r.destinations, r.orderedRecords, r.orderingKeyCount, r.target, r.orderedGroupCap, r.elapsed.Round(time.Millisecond), r.rate)
+	if r.destinations > 0 {
+		return fmt.Sprintf("PERF backend=%s records=%d logical_routes=%d destinations=%d ordered_records=%d ordering_keys=%d collect_batch_target=%d elapsed=%s rate=%.0f events/s",
+			r.backend, r.records, r.routes, r.destinations, r.orderedRecords, r.orderingKeyCount, r.target, r.elapsed.Round(time.Millisecond), r.rate)
 	}
 	return fmt.Sprintf("PERF backend=%s records=%d routes=%d collect_batch_target=%d elapsed=%s rate=%.0f events/s",
 		r.backend, r.records, r.routes, r.target, r.elapsed.Round(time.Millisecond), r.rate)
@@ -159,7 +156,7 @@ func runBackendOnce(t *testing.T, ctx context.Context, binary string, db *sql.DB
 	insertPerfEvents(t, ctx, db, table, destinations, routeCounts)
 	createPerfRouteIndex(t, ctx, db, table, destinations[0])
 
-	process := startOutboxer(t, ctx, binary, table, backend, destinations[0], target, 1000)
+	process := startOutboxer(t, ctx, binary, table, backend, destinations[0], target)
 	started := time.Now()
 	waitForTableCount(t, ctx, db, table, 0)
 	elapsed := time.Since(started)
@@ -281,15 +278,7 @@ func orderedPerfRecords(plans []orderedPerfDestinationPlan) int {
 	return total
 }
 
-func runOrderedBackendCapSweep(t *testing.T, ctx context.Context, binary string, db *sql.DB, backend string, plans []orderedPerfDestinationPlan, records int, routes int, orderingKeys int, collectBatchTarget int, caps []int) {
-	t.Helper()
-	for _, cap := range caps {
-		result := runOrderedBackendOnce(t, ctx, binary, db, backend, plans, records, routes, orderingKeys, collectBatchTarget, cap)
-		t.Log(result.String())
-	}
-}
-
-func runOrderedBackendOnce(t *testing.T, ctx context.Context, binary string, db *sql.DB, backend string, plans []orderedPerfDestinationPlan, records int, routes int, orderingKeys int, collectBatchTarget int, orderedGroupCap int) perfResult {
+func runOrderedBackendOnce(t *testing.T, ctx context.Context, binary string, db *sql.DB, backend string, plans []orderedPerfDestinationPlan, records int, routes int, orderingKeys int, collectBatchTarget int) perfResult {
 	t.Helper()
 	table := "outboxer_perf_ordered_" + backend + "_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	createPerfEventsTable(t, ctx, db, table)
@@ -300,7 +289,7 @@ func runOrderedBackendOnce(t *testing.T, ctx context.Context, binary string, db 
 	insertOrderedPerfEvents(t, ctx, db, table, plans)
 	createPerfRouteIndex(t, ctx, db, table, plans[0].destination)
 
-	process := startOutboxer(t, ctx, binary, table, backend, plans[0].destination, collectBatchTarget, orderedGroupCap)
+	process := startOutboxer(t, ctx, binary, table, backend, plans[0].destination, collectBatchTarget)
 	started := time.Now()
 	waitForTableCount(t, ctx, db, table, 0)
 	elapsed := time.Since(started)
@@ -312,7 +301,6 @@ func runOrderedBackendOnce(t *testing.T, ctx context.Context, binary string, db 
 		routes:           routes,
 		destinations:     len(plans),
 		target:           collectBatchTarget,
-		orderedGroupCap:  orderedGroupCap,
 		orderedRecords:   orderedPerfRecords(plans),
 		orderingKeyCount: orderingKeys,
 		elapsed:          elapsed,
@@ -482,7 +470,7 @@ func createPerfRouteIndex(t *testing.T, ctx context.Context, db *sql.DB, table s
 	}
 }
 
-func startOutboxer(t *testing.T, ctx context.Context, binary string, table string, backend string, defaultDestination string, target int, orderedGroupCap int) *runningProcess {
+func startOutboxer(t *testing.T, ctx context.Context, binary string, table string, backend string, defaultDestination string, target int) *runningProcess {
 	t.Helper()
 	var output bytes.Buffer
 	args := []string{
@@ -499,7 +487,6 @@ func startOutboxer(t *testing.T, ctx context.Context, binary string, table strin
 		"EVENT_ID":                  "id",
 		"EVENT_TIMESTAMP":           "timestamp",
 		"COLLECT_BATCH_TARGET":      strconv.Itoa(target),
-		"ORDERED_GROUP_BATCH_CAP":   strconv.Itoa(orderedGroupCap),
 		"SQS_SEND_CONCURRENCY":      getenv("OUTBOXER_PERF_SQS_SEND_CONCURRENCY", "64"),
 		"POLL_INTERVAL_MS":          "0",
 		"ERROR_COOLDOWN_MS":         "1000",
@@ -586,10 +573,10 @@ func createPerfSQSQueues(t *testing.T, ctx context.Context, routes int, target i
 	return queues
 }
 
-func createPerfSQSQueuesForPlans(t *testing.T, ctx context.Context, plans []orderedPerfDestinationPlan, orderedGroupCap int) []string {
+func createPerfSQSQueuesForPlans(t *testing.T, ctx context.Context, plans []orderedPerfDestinationPlan) []string {
 	t.Helper()
 	client := newSQSClient(t, ctx)
-	prefix := fmt.Sprintf("perf-sqs-ogc-%d-%d", orderedGroupCap, time.Now().UnixNano())
+	prefix := fmt.Sprintf("perf-sqs-ordered-%d", time.Now().UnixNano())
 	queues := make([]string, len(plans))
 	for index, plan := range plans {
 		name := fmt.Sprintf("%s-%03d", prefix, index)

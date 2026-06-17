@@ -266,8 +266,6 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"Env: SQS_SEND_CONCURRENCY",
 		"--sqs-api-endpoint",
 		"Env: SQS_API_ENDPOINT",
-		"--ordered-group-batch-cap",
-		"Env: ORDERED_GROUP_BATCH_CAP",
 		"--publish-result-grace-ms",
 		"Env: PUBLISH_RESULT_GRACE_MS",
 		"--aws-role-session-name",
@@ -492,14 +490,6 @@ func TestValidateRequiresNonNegativePublishResultGrace(t *testing.T) {
 	cfg.PublishResultGrace = -time.Millisecond
 	if err := cfg.validate(); err == nil {
 		t.Fatal("expected error when publish result grace is negative")
-	}
-}
-
-func TestValidateRequiresPositiveOrderedGroupBatchCap(t *testing.T) {
-	cfg := testConfig()
-	cfg.OrderedGroupBatchCap = 0
-	if err := cfg.validate(); err == nil {
-		t.Fatal("expected error when ordered group batch cap is zero")
 	}
 }
 

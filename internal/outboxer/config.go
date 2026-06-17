@@ -20,9 +20,8 @@ type appConfig struct {
 	EventOrderingKey string
 	EventAttributes  string
 
-	CollectBatchTarget   int
-	SQSSendConcurrency   int
-	OrderedGroupBatchCap int
+	CollectBatchTarget int
+	SQSSendConcurrency int
 
 	LogLevel  string
 	LogFormat string
@@ -89,7 +88,6 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 
 	addIntFlag(flags, &options, "Batch processing", &cfg.CollectBatchTarget, "collect-batch-target", cfg.CollectBatchTarget, "Approximate target rows selected per batch, spread across eligible routes.", "COLLECT_BATCH_TARGET")
 	addIntFlag(flags, &options, "Batch processing", &cfg.SQSSendConcurrency, "sqs-send-concurrency", cfg.SQSSendConcurrency, "Maximum concurrent SQS send requests.", "SQS_SEND_CONCURRENCY")
-	addIntFlag(flags, &options, "Batch processing", &cfg.OrderedGroupBatchCap, "ordered-group-batch-cap", cfg.OrderedGroupBatchCap, "Maximum events sent for one ordered key/group in one batch.", "ORDERED_GROUP_BATCH_CAP")
 
 	var watchdogIntervalMS = int(cfg.WatchdogInterval / time.Millisecond)
 	var errorCooldownMS = int(cfg.ErrorCooldown / time.Millisecond)
@@ -187,9 +185,6 @@ func (cfg appConfig) validate() error {
 	if cfg.PublishResultGrace < 0 {
 		return fmt.Errorf("publish result grace (%s) must not be negative: set PUBLISH_RESULT_GRACE_MS", cfg.PublishResultGrace)
 	}
-	if cfg.OrderedGroupBatchCap <= 0 {
-		return fmt.Errorf("ordered group batch cap (%d) must be positive: set ORDERED_GROUP_BATCH_CAP", cfg.OrderedGroupBatchCap)
-	}
 	if cfg.SQSEnabled && cfg.SQSSendConcurrency <= 0 {
 		return fmt.Errorf("SQS send concurrency (%d) must be positive: set SQS_SEND_CONCURRENCY", cfg.SQSSendConcurrency)
 	}
@@ -221,9 +216,8 @@ func loadConfigFromEnv() appConfig {
 		EventOrderingKey: getenv("EVENT_ORDERING_KEY", "ordering_key"),
 		EventAttributes:  getenv("EVENT_ATTRIBUTES", "attributes"),
 
-		CollectBatchTarget:   getenvInt("COLLECT_BATCH_TARGET", 5000),
-		SQSSendConcurrency:   getenvInt("SQS_SEND_CONCURRENCY", 8),
-		OrderedGroupBatchCap: getenvInt("ORDERED_GROUP_BATCH_CAP", 8),
+		CollectBatchTarget: getenvInt("COLLECT_BATCH_TARGET", 5000),
+		SQSSendConcurrency: getenvInt("SQS_SEND_CONCURRENCY", 8),
 
 		LogLevel:  getenv("LOG_LEVEL", "info"),
 		LogFormat: getenv("LOG_FORMAT", "text"),

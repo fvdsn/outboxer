@@ -148,10 +148,12 @@ collide with user columns.
   multiplies with batch composition or queue count. Pub/Sub concurrency is
   bounded by the publisher client's flow control and by per-ordering-key
   sequencing; it is not controlled by `SQS_SEND_CONCURRENCY`.
-- **S4 — Bound ordered-group work per batch.** An ordered group can't be
-  parallelized, so a long run of events for one Pub/Sub ordering key or SQS FIFO
-  message group must not extend a batch's send time unboundedly. This is a
-  send-time bound, not per-queue collection fairness.
+- **S4 — Do not add a sender-side ordered-group cap.** Ordered Pub/Sub keys and
+  SQS FIFO message groups can't be parallelized internally, so their send time
+  is bounded by the selected batch composition and per-operation publish
+  timeout, not by a second sender-side cap. A cap after collection only makes
+  valid runs slower by forcing extra processor loops; collection is responsible
+  for keeping selected work reasonable.
 - **S5 — Recover from transient sender failures, including credential rotation.**
   Cache senders for the process lifetime and rely on the SDKs' automatic retry
   and credential refresh. Do not recreate clients/publishers in-process; if a
@@ -180,18 +182,17 @@ collide with user columns.
   concurrently, the batch send bound is the maximum of the enabled backend
   bounds, not their sum. The selected-event count is data-dependent because
   every eligible route contributes up to its computed per-route cap.
-  - `pubsubBound = ORDERED_GROUP_BATCH_CAP × (PUBLISH_TIMEOUT_MS +
-    PUBLISH_RESULT_GRACE_MS)` (one slow ordered key sending its capped run
-    sequentially).
+  - `pubsubBound = selected_max_pubsub_ordered_key_events ×
+    (PUBLISH_TIMEOUT_MS + PUBLISH_RESULT_GRACE_MS)` (one slow ordered key
+    sending its selected run sequentially).
   - `sqsStandardBound = ceil(selected_standard_sqs_events / SQS_SEND_CONCURRENCY) ×
     PUBLISH_TIMEOUT_MS` (conservative bound for standard queue batch requests in
     semaphore-limited waves; count chunks are 10 messages, but byte-size splits
     can force one-message requests).
   - `sqsFifoBound = max(ceil(selected_fifo_sqs_events / SQS_SEND_CONCURRENCY),
-    selected_max_fifo_group_events) × PUBLISH_TIMEOUT_MS`, where
-    `selected_max_fifo_group_events <= ORDERED_GROUP_BATCH_CAP` (covers both
-    many independent FIFO groups limited by the global semaphore and one hot FIFO
-    group sending its capped run sequentially).
+    selected_max_fifo_group_events) × PUBLISH_TIMEOUT_MS` (covers both many
+    independent FIFO groups limited by the global semaphore and one hot FIFO
+    group sending its selected run sequentially).
   - `sendBound = max(enabled(pubsubBound), enabled(sqsStandardBound),
     enabled(sqsFifoBound))`.
   The watchdog heartbeat must advance during long-running batches, not only once
@@ -715,8 +716,6 @@ this spec says so explicitly.
     selected per batch, spread across eligible resolved `(target, destination)`
     routes.
   - `SQS_SEND_CONCURRENCY` (default: `8`).
-  - `ORDERED_GROUP_BATCH_CAP` (default: `8`), the maximum events sent for one
-    Pub/Sub ordering key or SQS FIFO message group from a selected batch.
   - `PUBLISH_RESULT_GRACE_MS` (default: `5000`), the extra wait after the
     provider publish timeout for async client results.
 
@@ -747,8 +746,7 @@ flushes every key's buffered messages, not just this key's).
   publishing the *r*-th event of every active key, flush once, then `Get` them
   all. Fewer flushes, but it **couples key latencies**: a single slow key's
   `Get` stalls the whole round, so every other key waits at the pace of the
-  slowest — which undercuts the spirit of S4 (no one ordered group dominates).
-  The marginal flush savings aren't worth trading away key isolation.
+  slowest. The marginal flush savings aren't worth trading away key isolation.
 
 ### One `PUBLISH_TIMEOUT_MS` vs. per-backend timeouts
 

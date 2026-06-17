@@ -160,9 +160,7 @@ func (a *app) sendPubsubEvents(ctx context.Context, events []event, addIDToDelet
 		if _, ok := orderedByGroup[groupID]; !ok {
 			groupOrder = append(groupOrder, groupID)
 		}
-		if len(orderedByGroup[groupID]) < a.cfg.OrderedGroupBatchCap {
-			orderedByGroup[groupID] = append(orderedByGroup[groupID], evt)
-		}
+		orderedByGroup[groupID] = append(orderedByGroup[groupID], evt)
 	}
 
 	var joined error
