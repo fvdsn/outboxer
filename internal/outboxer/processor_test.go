@@ -340,6 +340,41 @@ func TestSelectEventsQuerySupportsMissingDestinationWithBackendDefaults(t *testi
 	}
 }
 
+func TestRouteOwnershipSQLRestrictsConfiguredDestinations(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubDestinations = []string{"topic-a", "topic-b"}
+	cfg.SQSDestinations = []string{"queue-a"}
+	a := &app{cfg: cfg}
+
+	got := a.routeOwnershipSQL("resolved_target", "resolved_destination")
+	want := "(resolved_target <> 'pubsub' OR resolved_destination IN ('topic-a', 'topic-b')) AND (resolved_target <> 'sqs' OR resolved_destination IN ('queue-a'))"
+	if got != want {
+		t.Fatalf("unexpected ownership predicate:\ngot  %s\nwant %s", got, want)
+	}
+}
+
+func TestSelectEventsQueryFiltersOwnedDestinations(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubDestinations = []string{"topic-a", "topic-b"}
+	cfg.SQSDestinations = []string{"queue-a"}
+	a := &app{cfg: cfg}
+
+	query, args := a.selectEventsQuery()
+	if !reflect.DeepEqual(args, []any{cfg.CollectBatchTarget}) {
+		t.Fatalf("collection query args = %#v, want %#v", args, []any{cfg.CollectBatchTarget})
+	}
+	for _, expected := range []string{
+		"\"route_source\".\"destination\", '')",
+		"IN ('topic-a', 'topic-b')",
+		"IN ('queue-a')",
+		"\"candidate\".\"destination\", '')",
+	} {
+		if !strings.Contains(query, expected) {
+			t.Fatalf("expected collection query to contain %q, got:\n%s", expected, query)
+		}
+	}
+}
+
 func TestProcessOneBatchEmptySelectionCommitsWithoutRoutingLog(t *testing.T) {
 	cfg := testConfig()
 	pubsub := &fakePubSubPublisher{}

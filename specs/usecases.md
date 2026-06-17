@@ -51,6 +51,8 @@ These are cross-cutting assertions that many scenarios should verify.
 | CFG-08 | `SQS_SEND_CONCURRENCY` is zero or negative. | Validation fails. |
 | CFG-09 | `WATCHDOG_INTERVAL_MS < 10 * POLL_INTERVAL_MS` when polling is enabled. | Validation fails. |
 | CFG-10 | `COLLECT_BATCH_TARGET` is zero or negative. | Validation fails. |
+| CFG-11 | `PUBSUB_DESTINATIONS` is set while Pub/Sub is disabled. | Validation fails. |
+| CFG-12 | `SQS_DESTINATIONS` is set while SQS is disabled. | Validation fails. |
 
 Watchdog bound cases:
 
@@ -95,6 +97,11 @@ matter.
 | COLLECT-10 | Collection discovers routes and selects route rows using synthetic `resolved_target` / `resolved_destination` values. | Final selected rows contain only base event-table columns; synthetic columns do not leak into `event.columns`. |
 | COLLECT-11 | Many valid routes have pending events. | Selected count is at most `eligible_route_count * ceil(COLLECT_BATCH_TARGET / eligible_route_count)`, with every eligible route getting at least one slot. |
 | COLLECT-12 | Two Outboxer instances select concurrently. | The first transaction locks selected rows with `FOR UPDATE`; the second blocks on those rows instead of processing the same events. |
+| COLLECT-13 | `PUBSUB_DESTINATIONS=topic-a,topic-b` and the table contains Pub/Sub events for `topic-a`, `topic-b`, and `topic-c`. | Selects only `topic-a` and `topic-b`; `topic-c` remains pending and is not logged as a routing failure by this process. |
+| COLLECT-14 | `SQS_DESTINATIONS=queue-a` and the table contains SQS events for `queue-a` and `queue-b`. | Selects only `queue-a`; `queue-b` remains pending and is not logged as a routing failure by this process. |
+| COLLECT-15 | Empty destination resolves to default destination `D`, and `D` is included in the backend destination allowlist. | The event is eligible and grouped with explicit destination `D`. |
+| COLLECT-16 | Two Outboxer instances on the same table have disjoint destination allowlists. | Each instance selects only its owned destination routes, so they can process without blocking on each other's rows. |
+| COLLECT-17 | Two Outboxer instances on the same table have overlapping destination allowlists. | Overlapping selected rows are still serialized by `FOR UPDATE`; they must not process the same ordered route concurrently. |
 
 ## Batch orchestration
 

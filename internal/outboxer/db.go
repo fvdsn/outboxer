@@ -290,7 +290,33 @@ func (a *app) routableSQL(targetExpr string, destinationExpr string, targetPredi
 	if targetPredicate == "" {
 		targetPredicate = fmt.Sprintf("%s IN (%s, %s)", targetExpr, sqlStringLiteral(eventTargetPubSub), sqlStringLiteral(eventTargetSQS))
 	}
-	return fmt.Sprintf("(%s) AND COALESCE(%s, '') <> ''", targetPredicate, destinationExpr)
+	return fmt.Sprintf("(%s) AND COALESCE(%s, '') <> '' AND %s", targetPredicate, destinationExpr, a.routeOwnershipSQL(targetExpr, destinationExpr))
+}
+
+func (a *app) routeOwnershipSQL(targetExpr string, destinationExpr string) string {
+	predicates := []string{}
+	if len(a.cfg.PubSubDestinations) > 0 {
+		predicates = append(predicates, fmt.Sprintf(
+			"(%s <> %s OR %s IN (%s))",
+			targetExpr,
+			sqlStringLiteral(eventTargetPubSub),
+			destinationExpr,
+			sqlStringList(a.cfg.PubSubDestinations),
+		))
+	}
+	if len(a.cfg.SQSDestinations) > 0 {
+		predicates = append(predicates, fmt.Sprintf(
+			"(%s <> %s OR %s IN (%s))",
+			targetExpr,
+			sqlStringLiteral(eventTargetSQS),
+			destinationExpr,
+			sqlStringList(a.cfg.SQSDestinations),
+		))
+	}
+	if len(predicates) == 0 {
+		return "TRUE"
+	}
+	return strings.Join(predicates, " AND ")
 }
 
 func scanEvents(rows *sql.Rows) ([]event, error) {
@@ -328,6 +354,14 @@ func scanEvents(rows *sql.Rows) ([]event, error) {
 
 func sqlStringLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func sqlStringList(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, sqlStringLiteral(value))
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func normalizeDBValue(value any) any {

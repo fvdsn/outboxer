@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -140,6 +141,8 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	t.Setenv("POLL_INTERVAL_MS", "250")
 	t.Setenv("PORT", "9090")
 	t.Setenv("HEALTH_PORT", "")
+	t.Setenv("PUBSUB_DESTINATIONS", "topic-a, topic-b ,,")
+	t.Setenv("SQS_DESTINATIONS", "queue-a,queue-b")
 
 	cfg, err := loadConfig(nil, io.Discard)
 	if err != nil {
@@ -154,6 +157,12 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	}
 	if cfg.HealthPort != 9090 {
 		t.Fatalf("expected PORT fallback, got %d", cfg.HealthPort)
+	}
+	if !reflect.DeepEqual(cfg.PubSubDestinations, []string{"topic-a", "topic-b"}) {
+		t.Fatalf("unexpected Pub/Sub destinations: %#v", cfg.PubSubDestinations)
+	}
+	if !reflect.DeepEqual(cfg.SQSDestinations, []string{"queue-a", "queue-b"}) {
+		t.Fatalf("unexpected SQS destinations: %#v", cfg.SQSDestinations)
 	}
 }
 
@@ -187,6 +196,8 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	t.Setenv("PG_SSL", "false")
 	t.Setenv("POLL_INTERVAL_MS", "250")
 	t.Setenv("WATCHDOG_INTERVAL_MS", "60000")
+	t.Setenv("PUBSUB_DESTINATIONS", "env-topic")
+	t.Setenv("SQS_DESTINATIONS", "env-queue")
 
 	cfg, err := loadConfig([]string{
 		"--event-payload=flag_payload",
@@ -197,6 +208,8 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 		"--pg-ssl=true",
 		"--poll-interval-ms=500",
 		"--watchdog-interval-ms=30000",
+		"--pubsub-destinations=flag-topic-a, flag-topic-b",
+		"--sqs-destinations=flag-queue",
 	}, io.Discard)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
@@ -225,6 +238,12 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	}
 	if cfg.WatchdogInterval != 30*time.Second {
 		t.Fatalf("expected flag watchdog interval, got %s", cfg.WatchdogInterval)
+	}
+	if !reflect.DeepEqual(cfg.PubSubDestinations, []string{"flag-topic-a", "flag-topic-b"}) {
+		t.Fatalf("expected flag Pub/Sub destinations, got %#v", cfg.PubSubDestinations)
+	}
+	if !reflect.DeepEqual(cfg.SQSDestinations, []string{"flag-queue"}) {
+		t.Fatalf("expected flag SQS destinations, got %#v", cfg.SQSDestinations)
 	}
 }
 
@@ -264,6 +283,10 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"Env: COLLECT_BATCH_TARGET",
 		"--sqs-send-concurrency",
 		"Env: SQS_SEND_CONCURRENCY",
+		"--pubsub-destinations",
+		"Env: PUBSUB_DESTINATIONS",
+		"--sqs-destinations",
+		"Env: SQS_DESTINATIONS",
 		"--sqs-api-endpoint",
 		"Env: SQS_API_ENDPOINT",
 		"--publish-result-grace-ms",
@@ -352,6 +375,22 @@ func TestValidateRequiresDestinationOrDefault(t *testing.T) {
 	cfg.DefaultSQSQueueURL = "https://sqs.example/q"
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("expected a default queue URL to satisfy SQS destination, got %v", err)
+	}
+}
+
+func TestValidateRequiresEnabledBackendForDestinationAllowlist(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubEnabled = false
+	cfg.PubSubDestinations = []string{"topic-a"}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when Pub/Sub destinations are configured while Pub/Sub is disabled")
+	}
+
+	cfg = testConfig()
+	cfg.SQSEnabled = false
+	cfg.SQSDestinations = []string{"queue-a"}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when SQS destinations are configured while SQS is disabled")
 	}
 }
 

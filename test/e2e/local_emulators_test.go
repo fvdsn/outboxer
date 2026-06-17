@@ -324,6 +324,153 @@ func TestLocalEmulatorE2ETwoOutboxersSplitByTargetOnSameTable(t *testing.T) {
 	assertBodies(t, sqsMessages, "sqs-split-", 20)
 }
 
+func TestLocalEmulatorE2ETwoOutboxersSplitByPubSubDestination(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	root := repoRoot(t)
+	binary := buildOutboxer(t, root)
+	runID := strings.ReplaceAll(fmt.Sprintf("e2e-%d", time.Now().UnixNano()), "-", "_")
+
+	db := openE2EDB(t, ctx)
+	defer db.Close()
+	table := "outboxer_" + runID
+	createEventsTable(t, ctx, db, table)
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
+	})
+
+	t.Setenv("PUBSUB_EMULATOR_HOST", e2ePubSubEndpoint)
+	pubsubClient := newPubSubClient(t, ctx)
+	defer pubsubClient.Close()
+
+	topicA := "ps_split_destination_a_" + runID
+	topicB := "ps_split_destination_b_" + runID
+	subscriptionA := topicA + "_sub"
+	subscriptionB := topicB + "_sub"
+	createPubSubTopicAndSubscription(t, ctx, pubsubClient, topicA, subscriptionA)
+	createPubSubTopicAndSubscription(t, ctx, pubsubClient, topicB, subscriptionB)
+
+	events := []eventRow{}
+	for i := 0; i < 25; i++ {
+		events = append(events, eventRow{
+			id:          fmt.Sprintf("pubsub-destination-a-%02d", i),
+			target:      "pubsub",
+			destination: topicA,
+			payload:     fmt.Sprintf("pubsub-destination-a-%02d", i),
+			attributes:  `{"kind":"pubsub-destination","topic":"a"}`,
+		})
+		events = append(events, eventRow{
+			id:          fmt.Sprintf("pubsub-destination-b-%02d", i),
+			target:      "pubsub",
+			destination: topicB,
+			payload:     fmt.Sprintf("pubsub-destination-b-%02d", i),
+			attributes:  `{"kind":"pubsub-destination","topic":"b"}`,
+		})
+	}
+	insertEvents(t, ctx, db, table, events)
+
+	commonOverrides := map[string]string{
+		"PUBSUB_ENABLED":            "true",
+		"SQS_ENABLED":               "false",
+		"DEFAULT_SQS_QUEUE_URL":     "",
+		"COLLECT_BATCH_TARGET":      "5",
+		"POLL_INTERVAL_MS":          "10",
+		"ERROR_COOLDOWN_MS":         "50",
+		"PUBLISH_TIMEOUT_MS":        "5000",
+		"PUBLISH_RESULT_GRACE_MS":   "500",
+		"WATCHDOG_INTERVAL_MS":      "60000",
+		"AWS_WEB_IDENTITY_PROVIDER": "",
+	}
+	overridesA := copyStringMap(commonOverrides)
+	overridesA["PUBSUB_DESTINATIONS"] = topicA
+	overridesB := copyStringMap(commonOverrides)
+	overridesB["PUBSUB_DESTINATIONS"] = topicB
+
+	processA := startOutboxer(t, ctx, binary, table, overridesA)
+	processB := startOutboxer(t, ctx, binary, table, overridesB)
+
+	messagesA := receivePubSubMessages(t, ctx, pubsubClient, subscriptionA, 25)
+	messagesB := receivePubSubMessages(t, ctx, pubsubClient, subscriptionB, 25)
+
+	waitForEmptyTable(t, ctx, db, table)
+	stopOutboxer(t, processA)
+	stopOutboxer(t, processB)
+
+	assertBodies(t, messagesA, "pubsub-destination-a-", 25)
+	assertBodies(t, messagesB, "pubsub-destination-b-", 25)
+}
+
+func TestLocalEmulatorE2ETwoOutboxersSplitBySQSDestination(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	root := repoRoot(t)
+	binary := buildOutboxer(t, root)
+	runID := strings.ReplaceAll(fmt.Sprintf("e2e-%d", time.Now().UnixNano()), "-", "_")
+
+	db := openE2EDB(t, ctx)
+	defer db.Close()
+	table := "outboxer_" + runID
+	createEventsTable(t, ctx, db, table)
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
+	})
+
+	sqsClient := newSQSClient(t, ctx)
+	queueA := createSQSQueue(t, ctx, sqsClient, "split-destination-a-"+runID, false)
+	queueB := createSQSQueue(t, ctx, sqsClient, "split-destination-b-"+runID, false)
+
+	events := []eventRow{}
+	for i := 0; i < 25; i++ {
+		events = append(events, eventRow{
+			id:          fmt.Sprintf("sqs-destination-a-%02d", i),
+			target:      "sqs",
+			destination: queueA,
+			payload:     fmt.Sprintf("sqs-destination-a-%02d", i),
+			attributes:  `{"kind":"sqs-destination","queue":"a"}`,
+		})
+		events = append(events, eventRow{
+			id:          fmt.Sprintf("sqs-destination-b-%02d", i),
+			target:      "sqs",
+			destination: queueB,
+			payload:     fmt.Sprintf("sqs-destination-b-%02d", i),
+			attributes:  `{"kind":"sqs-destination","queue":"b"}`,
+		})
+	}
+	insertEvents(t, ctx, db, table, events)
+
+	commonOverrides := map[string]string{
+		"PUBSUB_ENABLED":            "false",
+		"SQS_ENABLED":               "true",
+		"DEFAULT_PUBSUB_TOPIC":      "",
+		"COLLECT_BATCH_TARGET":      "5",
+		"POLL_INTERVAL_MS":          "10",
+		"ERROR_COOLDOWN_MS":         "50",
+		"PUBLISH_TIMEOUT_MS":        "5000",
+		"PUBLISH_RESULT_GRACE_MS":   "500",
+		"WATCHDOG_INTERVAL_MS":      "60000",
+		"AWS_WEB_IDENTITY_PROVIDER": "",
+	}
+	overridesA := copyStringMap(commonOverrides)
+	overridesA["SQS_DESTINATIONS"] = queueA
+	overridesB := copyStringMap(commonOverrides)
+	overridesB["SQS_DESTINATIONS"] = queueB
+
+	processA := startOutboxer(t, ctx, binary, table, overridesA)
+	processB := startOutboxer(t, ctx, binary, table, overridesB)
+
+	messagesA := receiveSQSMessages(t, ctx, sqsClient, queueA, 25)
+	messagesB := receiveSQSMessages(t, ctx, sqsClient, queueB, 25)
+
+	waitForEmptyTable(t, ctx, db, table)
+	stopOutboxer(t, processA)
+	stopOutboxer(t, processB)
+
+	assertBodies(t, messagesA, "sqs-destination-a-", 25)
+	assertBodies(t, messagesB, "sqs-destination-b-", 25)
+}
+
 func TestLocalEmulatorE2ERouteBrokenDestinationDoesNotBlockHealthyRoute(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

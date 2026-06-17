@@ -41,6 +41,20 @@ redesigned and delivered in stages.
   eligible for collection. Routing failures (R7, R10-R12) are not selected,
   logged, or sent by the collector; they remain in the table until
   configuration or code changes make them routable.
+- Optional backend destination allowlists restrict the destinations owned by an
+  Outboxer process:
+  - `PUBSUB_DESTINATIONS` is a comma-separated exact-match allowlist of resolved
+    Pub/Sub destinations this process owns.
+  - `SQS_DESTINATIONS` is a comma-separated exact-match allowlist of resolved
+    SQS destinations this process owns.
+  - An empty allowlist means all destinations for that enabled backend.
+  - The filter applies after resolving default destinations, so explicit
+    destination `D` and empty destination resolving to default `D` are owned by
+    the same allowlist entry.
+  - Events for non-owned destinations are invisible to that process: they are
+    not selected, sent, deleted, or logged as routing failures by it.
+  - If two processes have overlapping destination allowlists, the existing
+    `FOR UPDATE` row locking still serializes overlapping selected rows.
 - A valid route whose provider sends are broken or retrying can consume at most
   its computed per-route cap in one selected batch and therefore cannot occupy
   the entire selected batch while other valid routes have eligible events.
@@ -86,6 +100,7 @@ WITH routes AS (
       resolved_destination
     FROM events
     WHERE is_routable
+      AND is_owned_destination
   ) AS resolved_routes
 ),
 selected AS (
@@ -95,6 +110,7 @@ selected AS (
     SELECT id
     FROM events
     WHERE is_routable
+      AND is_owned_destination
       AND resolved_target = routes.resolved_target
       AND resolved_destination = routes.resolved_destination
     ORDER BY id
@@ -114,13 +130,15 @@ FOR UPDATE;
 The real implementation must generate `resolved_target`, `resolved_destination`,
 and `is_routable` from the configured columns, enabled backends, and backend
 defaults. `is_routable` is true only when the event resolves to an enabled
-backend and a non-empty destination. If a column is not configured or not present
-because it is optional, the generated SQL must use the corresponding default or
-routing expression instead of referencing the missing column. The sketch uses
-`id` for readability; the real query uses the configured event id column for
-selection and joining. The route-discovery and lateral selection query may
-compute synthetic columns, but the final projection must return only base
-event-table columns so synthetic values do not leak into `event.columns` or
+backend and a non-empty destination. `is_owned_destination` is true when the
+resolved destination is included by that backend's destination allowlist, or
+when the backend has no destination allowlist. If a column is not configured or
+not present because it is optional, the generated SQL must use the corresponding
+default or routing expression instead of referencing the missing column. The
+sketch uses `id` for readability; the real query uses the configured event id
+column for selection and joining. The route-discovery and lateral selection
+query may compute synthetic columns, but the final projection must return only
+base event-table columns so synthetic values do not leak into `event.columns` or
 collide with user columns.
 
 ## Step 2 — Sending events
@@ -716,6 +734,12 @@ this spec says so explicitly.
     selected per batch, spread across eligible resolved `(target, destination)`
     routes.
   - `SQS_SEND_CONCURRENCY` (default: `8`).
+  - `PUBSUB_DESTINATIONS` (default: empty), comma-separated exact-match Pub/Sub
+    destination allowlist owned by this process. Empty means all Pub/Sub
+    destinations.
+  - `SQS_DESTINATIONS` (default: empty), comma-separated exact-match SQS
+    destination allowlist owned by this process. Empty means all SQS
+    destinations.
   - `PUBLISH_RESULT_GRACE_MS` (default: `5000`), the extra wait after the
     provider publish timeout for async client results.
 

@@ -32,6 +32,8 @@ type appConfig struct {
 	SQSEnabled         bool
 	DefaultPubSubTopic string
 	DefaultSQSQueueURL string
+	PubSubDestinations []string
+	SQSDestinations    []string
 	PubSubProjectID    string
 	PubSubAPIEndpoint  string
 	SQSAPIEndpoint     string
@@ -98,6 +100,8 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	var pgQueryTimeoutMS = int(cfg.PGQueryTimeout / time.Millisecond)
 	var awsRoleDurationSeconds = int(cfg.AWSRoleDuration / time.Second)
 	var awsCredentialRefreshWindowMS = int(cfg.AWSCredentialRefreshWindow / time.Millisecond)
+	var pubsubDestinations = strings.Join(cfg.PubSubDestinations, ",")
+	var sqsDestinations = strings.Join(cfg.SQSDestinations, ",")
 
 	addIntFlag(flags, &options, "Batch processing", &errorCooldownMS, "error-cooldown-ms", errorCooldownMS, "Sleep after batch or database errors in milliseconds.", "ERROR_COOLDOWN_MS")
 	addIntFlag(flags, &options, "Batch processing", &pollIntervalMS, "poll-interval-ms", pollIntervalMS, "Sleep after an empty batch in milliseconds.", "POLL_INTERVAL_MS")
@@ -123,11 +127,13 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 
 	addBoolFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubEnabled, "pubsub-enabled", cfg.PubSubEnabled, "Enable publishing to Google Pub/Sub.", "PUBSUB_ENABLED")
 	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.DefaultPubSubTopic, "default-pubsub-topic", cfg.DefaultPubSubTopic, "Pub/Sub topic used when an event has no destination.", "DEFAULT_PUBSUB_TOPIC")
+	addStringFlag(flags, &options, "Google Pub/Sub", &pubsubDestinations, "pubsub-destinations", pubsubDestinations, "Comma-separated Pub/Sub destinations this process owns. Empty means all Pub/Sub destinations.", "PUBSUB_DESTINATIONS")
 	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubProjectID, "pubsub-project-id", cfg.PubSubProjectID, "Google Cloud project for Pub/Sub. Detected from ADC when empty.", "PUBSUB_PROJECT_ID")
 	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubAPIEndpoint, "pubsub-api-endpoint", cfg.PubSubAPIEndpoint, "Optional Pub/Sub API endpoint override.", "PUBSUB_API_ENDPOINT")
 
 	addBoolFlag(flags, &options, "AWS SQS", &cfg.SQSEnabled, "sqs-enabled", cfg.SQSEnabled, "Enable publishing to AWS SQS.", "SQS_ENABLED")
 	addStringFlag(flags, &options, "AWS SQS", &cfg.DefaultSQSQueueURL, "default-sqs-queue-url", cfg.DefaultSQSQueueURL, "SQS queue URL used when an event has no destination.", "DEFAULT_SQS_QUEUE_URL")
+	addStringFlag(flags, &options, "AWS SQS", &sqsDestinations, "sqs-destinations", sqsDestinations, "Comma-separated SQS destinations this process owns. Empty means all SQS destinations.", "SQS_DESTINATIONS")
 	addStringFlag(flags, &options, "AWS SQS", &cfg.SQSAPIEndpoint, "sqs-api-endpoint", cfg.SQSAPIEndpoint, "Optional SQS API endpoint override.", "SQS_API_ENDPOINT")
 	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRegion, "aws-region", cfg.AWSRegion, "AWS region for SQS and STS.", "AWS_REGION")
 	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRoleARN, "aws-role-arn", cfg.AWSRoleARN, "Optional AWS role to assume before publishing to SQS.", "AWS_ROLE_ARN")
@@ -150,6 +156,8 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	cfg.PGQueryTimeout = time.Duration(pgQueryTimeoutMS) * time.Millisecond
 	cfg.AWSRoleDuration = time.Duration(awsRoleDurationSeconds) * time.Second
 	cfg.AWSCredentialRefreshWindow = time.Duration(awsCredentialRefreshWindowMS) * time.Millisecond
+	cfg.PubSubDestinations = parseStringList(pubsubDestinations)
+	cfg.SQSDestinations = parseStringList(sqsDestinations)
 
 	return cfg, nil
 }
@@ -175,6 +183,12 @@ func (cfg appConfig) validate() error {
 	}
 	if cfg.SQSEnabled && cfg.DefaultSQSQueueURL == "" && cfg.EventDestination == "" {
 		return fmt.Errorf("SQS needs a destination: set EVENT_DESTINATION or DEFAULT_SQS_QUEUE_URL")
+	}
+	if !cfg.PubSubEnabled && len(cfg.PubSubDestinations) > 0 {
+		return fmt.Errorf("PUBSUB_DESTINATIONS requires PUBSUB_ENABLED=true")
+	}
+	if !cfg.SQSEnabled && len(cfg.SQSDestinations) > 0 {
+		return fmt.Errorf("SQS_DESTINATIONS requires SQS_ENABLED=true")
 	}
 	if cfg.CollectBatchTarget <= 0 {
 		return fmt.Errorf("batch collection target (%d) must be positive: set COLLECT_BATCH_TARGET", cfg.CollectBatchTarget)
@@ -228,6 +242,8 @@ func loadConfigFromEnv() appConfig {
 		SQSEnabled:         os.Getenv("SQS_ENABLED") == "true",
 		DefaultPubSubTopic: getenv("DEFAULT_PUBSUB_TOPIC", "default"),
 		DefaultSQSQueueURL: getenv("DEFAULT_SQS_QUEUE_URL", ""),
+		PubSubDestinations: parseStringList(getenv("PUBSUB_DESTINATIONS", "")),
+		SQSDestinations:    parseStringList(getenv("SQS_DESTINATIONS", "")),
 		PubSubProjectID:    getenv("PUBSUB_PROJECT_ID", ""),
 		PubSubAPIEndpoint:  getenv("PUBSUB_API_ENDPOINT", ""),
 		SQSAPIEndpoint:     getenv("SQS_API_ENDPOINT", ""),
@@ -255,6 +271,18 @@ func loadConfigFromEnv() appConfig {
 		AWSWebIdentityProvider:     getenv("AWS_WEB_IDENTITY_PROVIDER", ""),
 		AWSWebIdentityAudience:     getenv("AWS_WEB_IDENTITY_AUDIENCE", ""),
 	}
+}
+
+func parseStringList(value string) []string {
+	parts := strings.Split(value, ",")
+	out := []string{}
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func optionHelp(description string, envVar string, defaultValue any) string {
