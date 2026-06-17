@@ -328,7 +328,7 @@ func testConfig() appConfig {
 
 		CollectionMode:       collectionModeGlobalOrdered,
 		CollectGlobalLimit:   32,
-		CollectBatchTarget:   2500,
+		CollectBatchTarget:   5000,
 		SQSSendConcurrency:   8,
 		OrderedGroupBatchCap: 8,
 

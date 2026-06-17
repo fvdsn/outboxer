@@ -246,7 +246,7 @@ func loadConfigFromEnv() appConfig {
 
 		CollectionMode:       collectionMode(getenv("COLLECTION_MODE", string(collectionModePerRouteOrdered))),
 		CollectGlobalLimit:   getenvInt("COLLECT_GLOBAL_LIMIT", 100),
-		CollectBatchTarget:   getenvInt("COLLECT_BATCH_TARGET", 2500),
+		CollectBatchTarget:   getenvInt("COLLECT_BATCH_TARGET", 5000),
 		SQSSendConcurrency:   getenvInt("SQS_SEND_CONCURRENCY", 8),
 		OrderedGroupBatchCap: getenvInt("ORDERED_GROUP_BATCH_CAP", 8),
 

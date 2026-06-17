@@ -571,7 +571,7 @@ func startOutboxer(t *testing.T, ctx context.Context, binary string, table strin
 		"PG_SSL":                  "false",
 		"COLLECTION_MODE":         "per_route_ordered",
 		"COLLECT_GLOBAL_LIMIT":    "100",
-		"COLLECT_BATCH_TARGET":    "2500",
+		"COLLECT_BATCH_TARGET":    "5000",
 		"ORDERED_GROUP_BATCH_CAP": "8",
 		"SQS_SEND_CONCURRENCY":    "4",
 		"POLL_INTERVAL_MS":        "50",

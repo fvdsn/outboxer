@@ -767,7 +767,7 @@ this spec says so explicitly.
     `global_ordered`, `per_route_ordered`).
   - `COLLECT_GLOBAL_LIMIT` (default: `100`), the maximum rows selected per batch
     in `global_ordered` mode. It does not apply in `per_route_ordered` mode.
-  - `COLLECT_BATCH_TARGET` (default: `2500`), the approximate target rows
+  - `COLLECT_BATCH_TARGET` (default: `5000`), the approximate target rows
     selected per batch in `per_route_ordered` mode, spread across eligible
     resolved `(target, destination)` routes.
   - `SQS_SEND_CONCURRENCY` (default: `8`).

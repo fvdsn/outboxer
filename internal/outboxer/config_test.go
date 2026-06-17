@@ -51,8 +51,8 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	if cfg.CollectGlobalLimit != 100 {
 		t.Fatalf("expected default global collection limit 100, got %d", cfg.CollectGlobalLimit)
 	}
-	if cfg.CollectBatchTarget != 2500 {
-		t.Fatalf("expected default batch collection target 2500, got %d", cfg.CollectBatchTarget)
+	if cfg.CollectBatchTarget != 5000 {
+		t.Fatalf("expected default batch collection target 5000, got %d", cfg.CollectBatchTarget)
 	}
 }
 

@@ -49,7 +49,7 @@ func TestLocalCollectBatchTargetPerf(t *testing.T) {
 
 	records := getenvInt("OUTBOXER_PERF_RECORDS", 1_000_000)
 	routes := getenvInt("OUTBOXER_PERF_ROUTES", 100)
-	targets := getenvIntList("OUTBOXER_PERF_BATCH_TARGETS", []int{100, 250, 500, 2500})
+	targets := getenvIntList("OUTBOXER_PERF_BATCH_TARGETS", []int{100, 250, 500, 2500, 5000})
 
 	t.Logf("perf setup records=%d routes=%d batch_targets=%v", records, routes, targets)
 

@@ -279,12 +279,12 @@ func TestSelectEventsQueryUsesPerRouteOrderedBatchTargetAndBaseProjection(t *tes
 	cfg := testConfig()
 	cfg.CollectionMode = collectionModePerRouteOrdered
 	cfg.CollectGlobalLimit = 999
-	cfg.CollectBatchTarget = 2500
+	cfg.CollectBatchTarget = 5000
 	a := &app{cfg: cfg}
 
 	query, args := a.selectEventsQuery()
-	if !reflect.DeepEqual(args, []any{2500}) {
-		t.Fatalf("per-route query args = %#v, want %#v", args, []any{2500})
+	if !reflect.DeepEqual(args, []any{5000}) {
+		t.Fatalf("per-route query args = %#v, want %#v", args, []any{5000})
 	}
 	for _, expected := range []string{
 		"WITH routes AS (",
