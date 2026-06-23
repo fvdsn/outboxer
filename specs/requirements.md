@@ -785,9 +785,10 @@ Required counters:
 
 - `events_selected`: selected rows during the interval.
 - `events_sent`: provider-accepted events during the interval.
-- `events_deleted`: rows deleted from the outbox table during the interval.
-- `events_poison`: content-poison events removed during the interval.
-- `events_dlq`: poison events inserted into the DLQ during the interval.
+- `events_poison`: content-poison events removed during the interval. This
+  includes poison events that are also inserted into the DLQ.
+- `events_dlq`: poison events inserted into the DLQ during the interval. This is
+  a subset of `events_poison`, not an additional category.
 - `batches_processed`: committed batches during the interval.
 - `batch_errors`: database/transaction batch errors during the interval.
 - `sender_errors`: sender errors during the interval.
@@ -825,7 +826,6 @@ message="Statistics"
 stats_interval_ms=10000
 events_selected=5000
 events_sent=4980
-events_deleted=4990
 events_poison=10
 events_dlq=10
 batches_processed=12
