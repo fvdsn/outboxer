@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestEventBackendOptionsParseSelectedBackend(t *testing.T) {
@@ -169,5 +170,30 @@ func TestMalformedOptionsAreReportedAsPoison(t *testing.T) {
 	}
 	if len(output.poison) != 1 {
 		t.Fatalf("expected malformed options to report one poison event, got %#v", output)
+	}
+}
+
+func TestEventTimestampParsesUTCInstants(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  time.Time
+		ok    bool
+	}{
+		{"time", time.Date(2026, 6, 23, 12, 0, 0, 0, time.FixedZone("UTC+2", 2*60*60)), time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC), true},
+		{"rfc3339 offset", "2026-06-23T12:00:00+02:00", time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC), true},
+		{"timestamp without zone", "2026-06-23 12:00:00", time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC), true},
+		{"timestamp without zone bytes", []byte("2026-06-23 12:00:00.123456"), time.Date(2026, 6, 23, 12, 0, 0, 123456000, time.UTC), true},
+		{"empty", "", time.Time{}, false},
+		{"bad", "not-a-time", time.Time{}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := eventTimestamp(tt.value)
+			if ok != tt.ok || !got.Equal(tt.want) {
+				t.Fatalf("eventTimestamp(%#v) = %s, %t; want %s, %t", tt.value, got, ok, tt.want, tt.ok)
+			}
+		})
 	}
 }

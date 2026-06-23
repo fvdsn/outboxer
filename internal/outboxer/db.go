@@ -93,6 +93,9 @@ func (a *app) checkRequiredColumns(columns []string) error {
 	}
 
 	required := []string{a.cfg.EventID, a.cfg.EventPayload}
+	if a.cfg.MaxEventAge > 0 {
+		required = append(required, a.cfg.EventTimestamp)
+	}
 	if a.cfg.PubSubEnabled && a.cfg.SQSEnabled {
 		required = append(required, a.cfg.EventTarget)
 	}

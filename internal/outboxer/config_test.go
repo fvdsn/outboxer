@@ -55,6 +55,9 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	if cfg.DLQTable != "" {
 		t.Fatalf("expected DLQ table to be disabled by default, got %q", cfg.DLQTable)
 	}
+	if cfg.MaxEventAge != 0 {
+		t.Fatalf("expected max event age to be disabled by default, got %s", cfg.MaxEventAge)
+	}
 }
 
 func TestLoadConfigVerifiesTLSByDefault(t *testing.T) {
@@ -149,6 +152,7 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	t.Setenv("PORT", "9090")
 	t.Setenv("HEALTH_PORT", "")
 	t.Setenv("DLQ_TABLE", "dead_letters")
+	t.Setenv("MAX_EVENT_AGE_MS", "60000")
 	t.Setenv("PUBSUB_DESTINATIONS", "topic-a, topic-b ,,")
 	t.Setenv("SQS_DESTINATIONS", "queue-a,queue-b")
 
@@ -171,6 +175,9 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	}
 	if cfg.DLQTable != "dead_letters" {
 		t.Fatalf("expected env DLQ table, got %q", cfg.DLQTable)
+	}
+	if cfg.MaxEventAge != time.Minute {
+		t.Fatalf("expected env max event age, got %s", cfg.MaxEventAge)
 	}
 	if !reflect.DeepEqual(cfg.PubSubDestinations, []string{"topic-a", "topic-b"}) {
 		t.Fatalf("unexpected Pub/Sub destinations: %#v", cfg.PubSubDestinations)
@@ -212,6 +219,7 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	t.Setenv("POLL_INTERVAL_MS", "250")
 	t.Setenv("WATCHDOG_INTERVAL_MS", "60000")
 	t.Setenv("DLQ_TABLE", "env_dead_letters")
+	t.Setenv("MAX_EVENT_AGE_MS", "60000")
 	t.Setenv("PUBSUB_DESTINATIONS", "env-topic")
 	t.Setenv("SQS_DESTINATIONS", "env-queue")
 
@@ -226,6 +234,7 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 		"--poll-interval-ms=500",
 		"--watchdog-interval-ms=30000",
 		"--dlq-table=flag_dead_letters",
+		"--max-event-age-ms=120000",
 		"--pubsub-destinations=flag-topic-a, flag-topic-b",
 		"--sqs-destinations=flag-queue",
 	}, io.Discard)
@@ -262,6 +271,9 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	}
 	if cfg.DLQTable != "flag_dead_letters" {
 		t.Fatalf("expected flag DLQ table, got %q", cfg.DLQTable)
+	}
+	if cfg.MaxEventAge != 2*time.Minute {
+		t.Fatalf("expected flag max event age, got %s", cfg.MaxEventAge)
 	}
 	if !reflect.DeepEqual(cfg.PubSubDestinations, []string{"flag-topic-a", "flag-topic-b"}) {
 		t.Fatalf("expected flag Pub/Sub destinations, got %#v", cfg.PubSubDestinations)
@@ -309,6 +321,8 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"Env: COLLECT_BATCH_TARGET",
 		"--dlq-table",
 		"Env: DLQ_TABLE",
+		"--max-event-age-ms",
+		"Env: MAX_EVENT_AGE_MS",
 		"--sqs-send-concurrency",
 		"Env: SQS_SEND_CONCURRENCY",
 		"--pubsub-destinations",
@@ -452,6 +466,18 @@ func TestCheckRequiredColumns(t *testing.T) {
 			[]string{"id", "payload"},
 			false,
 		},
+		{
+			"max age requires timestamp column",
+			func(c *appConfig) { c.MaxEventAge = time.Minute },
+			[]string{"id", "payload", "target", "destination"},
+			true,
+		},
+		{
+			"max age accepts timestamp column",
+			func(c *appConfig) { c.MaxEventAge = time.Minute },
+			[]string{"id", "payload", "target", "destination", "timestamp"},
+			false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -557,6 +583,26 @@ func TestValidateRequiresNonNegativePublishResultGrace(t *testing.T) {
 	cfg.PublishResultGrace = -time.Millisecond
 	if err := cfg.validate(); err == nil {
 		t.Fatal("expected error when publish result grace is negative")
+	}
+}
+
+func TestValidateMaxEventAge(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxEventAge = -time.Millisecond
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when max event age is negative")
+	}
+
+	cfg = testConfig()
+	cfg.MaxEventAge = time.Minute
+	cfg.EventTimestamp = ""
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when max event age is enabled without timestamp column")
+	}
+
+	cfg.EventTimestamp = "timestamp"
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected max event age with timestamp column to be valid, got %v", err)
 	}
 }
 

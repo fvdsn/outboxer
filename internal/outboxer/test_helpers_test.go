@@ -337,6 +337,7 @@ func testConfig() appConfig {
 		ErrorCooldown:      time.Millisecond,
 		PublishTimeout:     30 * time.Second,
 		PublishResultGrace: 5 * time.Second,
+		MaxEventAge:        0,
 	}
 }
 
@@ -371,6 +372,10 @@ func newMockProcessorApp(t *testing.T, cfg appConfig) (*app, sqlmock.Sqlmock, fu
 
 func mockEventRows() *sqlmock.Rows {
 	return sqlmock.NewRows([]string{"id", "target", "destination", "payload", "options"})
+}
+
+func mockEventRowsWithTimestamp() *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"id", "target", "destination", "payload", "options", "timestamp"})
 }
 
 func testEvent(id, target, destination, payload, orderingKey string) event {

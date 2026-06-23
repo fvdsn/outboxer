@@ -41,6 +41,7 @@ type appConfig struct {
 	PollInterval       time.Duration
 	PublishTimeout     time.Duration
 	PublishResultGrace time.Duration
+	MaxEventAge        time.Duration
 
 	PGHost                  string
 	PGPort                  uint16
@@ -96,6 +97,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	var pollIntervalMS = int(cfg.PollInterval / time.Millisecond)
 	var publishTimeoutMS = int(cfg.PublishTimeout / time.Millisecond)
 	var publishResultGraceMS = int(cfg.PublishResultGrace / time.Millisecond)
+	var maxEventAgeMS = int(cfg.MaxEventAge / time.Millisecond)
 	var pgTimeoutMS = int(cfg.PGConnectTimeout / time.Millisecond)
 	var pgQueryTimeoutMS = int(cfg.PGQueryTimeout / time.Millisecond)
 	var awsRoleDurationSeconds = int(cfg.AWSRoleDuration / time.Second)
@@ -108,6 +110,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addIntFlag(flags, &options, "Batch processing", &watchdogIntervalMS, "watchdog-interval-ms", watchdogIntervalMS, "Watchdog interval in milliseconds.", "WATCHDOG_INTERVAL_MS")
 	addIntFlag(flags, &options, "Batch processing", &publishTimeoutMS, "publish-timeout-ms", publishTimeoutMS, "Timeout for a single publish call in milliseconds. Must be positive.", "PUBLISH_TIMEOUT_MS")
 	addIntFlag(flags, &options, "Batch processing", &publishResultGraceMS, "publish-result-grace-ms", publishResultGraceMS, "Extra wait after provider publish timeout for async publish results.", "PUBLISH_RESULT_GRACE_MS")
+	addIntFlag(flags, &options, "Batch processing", &maxEventAgeMS, "max-event-age-ms", maxEventAgeMS, "Maximum selected event age in milliseconds. 0 disables age-based poison.", "MAX_EVENT_AGE_MS")
 
 	addIntFlag(flags, &options, "HTTP / health", &cfg.HealthPort, "health-port", cfg.HealthPort, "HTTP health server port. Set to 0 to disable.", "HEALTH_PORT, PORT")
 
@@ -152,6 +155,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	cfg.PollInterval = time.Duration(pollIntervalMS) * time.Millisecond
 	cfg.PublishTimeout = time.Duration(publishTimeoutMS) * time.Millisecond
 	cfg.PublishResultGrace = time.Duration(publishResultGraceMS) * time.Millisecond
+	cfg.MaxEventAge = time.Duration(maxEventAgeMS) * time.Millisecond
 	cfg.PGConnectTimeout = time.Duration(pgTimeoutMS) * time.Millisecond
 	cfg.PGQueryTimeout = time.Duration(pgQueryTimeoutMS) * time.Millisecond
 	cfg.AWSRoleDuration = time.Duration(awsRoleDurationSeconds) * time.Second
@@ -201,6 +205,12 @@ func (cfg appConfig) validate() error {
 	}
 	if cfg.PublishResultGrace < 0 {
 		return fmt.Errorf("publish result grace (%s) must not be negative: set PUBLISH_RESULT_GRACE_MS", cfg.PublishResultGrace)
+	}
+	if cfg.MaxEventAge < 0 {
+		return fmt.Errorf("max event age (%s) must not be negative: set MAX_EVENT_AGE_MS", cfg.MaxEventAge)
+	}
+	if cfg.MaxEventAge > 0 && cfg.EventTimestamp == "" {
+		return fmt.Errorf("MAX_EVENT_AGE_MS requires an event timestamp column: set EVENT_TIMESTAMP")
 	}
 	if cfg.SQSEnabled && cfg.SQSSendConcurrency <= 0 {
 		return fmt.Errorf("SQS send concurrency (%d) must be positive: set SQS_SEND_CONCURRENCY", cfg.SQSSendConcurrency)
@@ -254,6 +264,7 @@ func loadConfigFromEnv() appConfig {
 		PollInterval:       time.Duration(getenvInt("POLL_INTERVAL_MS", 0)) * time.Millisecond,
 		PublishTimeout:     time.Duration(getenvInt("PUBLISH_TIMEOUT_MS", 30000)) * time.Millisecond,
 		PublishResultGrace: time.Duration(getenvInt("PUBLISH_RESULT_GRACE_MS", 5000)) * time.Millisecond,
+		MaxEventAge:        time.Duration(getenvInt("MAX_EVENT_AGE_MS", 0)) * time.Millisecond,
 
 		PGHost:                  getenv("PG_HOST", "localhost"),
 		PGPort:                  uint16(getenvInt("PG_PORT", 5432)),

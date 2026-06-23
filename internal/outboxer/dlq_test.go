@@ -377,3 +377,43 @@ func TestProcessOneBatchRollsBackWhenDeadLetterInsertFails(t *testing.T) {
 		t.Fatalf("expected poison event not to be sent to SQS, got %#v", sqs.requests)
 	}
 }
+
+func TestProcessOneBatchDeadLettersExpiredEvent(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubEnabled = false
+	cfg.MaxEventAge = time.Minute
+	cfg.DLQTable = "dead_letters"
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.sqs = sqs
+
+	rows := mockEventRowsWithTimestamp().AddRow("expired", "sqs", "queue-a", "payload", nil, time.Now().Add(-2*time.Minute))
+	mock.ExpectBegin()
+	expectSelectEvents(mock, a).WillReturnRows(rows)
+	mock.ExpectExec(insertDLQSQL).WithArgs(dlqPayloadMatcher{t: t, check: func(payload map[string]any) bool {
+		if payload["target"] != "sqs" || payload["destination"] != "queue-a" {
+			t.Errorf("unexpected resolved route in DLQ payload: %#v", payload)
+			return false
+		}
+		errorText, _ := payload["error"].(string)
+		if !strings.Contains(errorText, "expired") {
+			t.Errorf("unexpected DLQ error: %#v", payload["error"])
+			return false
+		}
+		return true
+	}}).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(deleteOneSQL).WithArgs("expired").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 1 {
+		t.Fatalf("expected one selected event, got %d", result.selected)
+	}
+	if len(sqs.requests) != 0 {
+		t.Fatalf("expected expired event not to be sent to SQS, got %#v", sqs.requests)
+	}
+}

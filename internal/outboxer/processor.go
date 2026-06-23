@@ -181,7 +181,16 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 
 	pubsubEvents := []event{}
 	sqsEvents := []event{}
+	poisonEvents := []poisonEvent{}
+	deleteIDs := []any{}
 	for _, evt := range events {
+		if a.isExpiredEvent(evt, time.Now().UTC()) {
+			poisonEvents = append(poisonEvents, poisonEvent{evt: evt, error: "Event expired by MAX_EVENT_AGE_MS"})
+			deleteIDs = append(deleteIDs, eventValue(evt, a.cfg.EventID))
+			markProcessorProgress()
+			continue
+		}
+
 		route := a.classifyRoute(evt)
 		markProcessorProgress()
 		switch route.backend {
@@ -225,8 +234,6 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	wg.Wait()
 	close(results)
 
-	deleteIDs := []any{}
-	poisonEvents := []poisonEvent{}
 	var senderErr error
 	for result := range results {
 		for _, evt := range result.output.confirmed {
@@ -262,6 +269,17 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	}
 
 	return result, nil
+}
+
+func (a *app) isExpiredEvent(evt event, now time.Time) bool {
+	if a.cfg.MaxEventAge <= 0 {
+		return false
+	}
+	timestamp, ok := eventTimestamp(eventValue(evt, a.cfg.EventTimestamp))
+	if !ok {
+		return false
+	}
+	return now.Sub(timestamp) > a.cfg.MaxEventAge
 }
 
 func (a *app) pubsubSender() sender {

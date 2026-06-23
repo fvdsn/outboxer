@@ -166,27 +166,41 @@ func stringMapToAnyMap(value map[string]string) map[string]any {
 }
 
 func eventLatency(value any) any {
-	var timestamp time.Time
-	switch typed := value.(type) {
-	case nil:
-		return nil
-	case time.Time:
-		timestamp = typed
-	case string:
-		parsed, err := time.Parse(time.RFC3339Nano, typed)
-		if err != nil {
-			return nil
-		}
-		timestamp = parsed
-	case []byte:
-		parsed, err := time.Parse(time.RFC3339Nano, string(typed))
-		if err != nil {
-			return nil
-		}
-		timestamp = parsed
-	default:
+	timestamp, ok := eventTimestamp(value)
+	if !ok {
 		return nil
 	}
 
 	return time.Since(timestamp).Seconds()
+}
+
+func eventTimestamp(value any) (time.Time, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return time.Time{}, false
+	case time.Time:
+		return typed.UTC(), true
+	case string:
+		return parseEventTimestampString(typed)
+	case []byte:
+		return parseEventTimestampString(string(typed))
+	default:
+		return time.Time{}, false
+	}
+}
+
+func parseEventTimestampString(value string) (time.Time, bool) {
+	if value == "" {
+		return time.Time{}, false
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed.UTC(), true
+	}
+	if parsed, err := time.ParseInLocation("2006-01-02 15:04:05.999999999", value, time.UTC); err == nil {
+		return parsed.UTC(), true
+	}
+	if parsed, err := time.ParseInLocation("2006-01-02 15:04:05", value, time.UTC); err == nil {
+		return parsed.UTC(), true
+	}
+	return time.Time{}, false
 }

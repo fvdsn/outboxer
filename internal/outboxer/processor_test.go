@@ -469,6 +469,64 @@ func TestProcessOneBatchDeletesContentPoisonAndConfirmedSendTogether(t *testing.
 	}
 }
 
+func TestProcessOneBatchDeletesExpiredEventWithoutProviderCall(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubEnabled = false
+	cfg.MaxEventAge = time.Minute
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.sqs = sqs
+
+	rows := mockEventRowsWithTimestamp().
+		AddRow("expired", "sqs", "queue-a", "payload", nil, time.Now().Add(-2*time.Minute)).
+		AddRow("fresh", "sqs", "queue-a", "payload", nil, time.Now())
+	mock.ExpectBegin()
+	expectSelectEvents(mock, a).WillReturnRows(rows)
+	mock.ExpectExec(deleteTwoSQL).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 2 {
+		t.Fatalf("expected two selected events, got %d", result.selected)
+	}
+	if len(sqs.requests) != 1 || len(sqs.requests[0].entries) != 1 || sqs.requests[0].entries[0].ID != "fresh" {
+		t.Fatalf("expected only fresh event to be sent, got %#v", sqs.requests)
+	}
+}
+
+func TestExpiredEventBoundaryAndInvalidTimestamps(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxEventAge = time.Minute
+	a := &app{cfg: cfg}
+	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name      string
+		timestamp any
+		want      bool
+	}{
+		{"older", now.Add(-time.Minute - time.Nanosecond), true},
+		{"boundary", now.Add(-time.Minute), false},
+		{"fresh", now.Add(-30 * time.Second), false},
+		{"future", now.Add(time.Minute), false},
+		{"nil", nil, false},
+		{"bad", "not-a-time", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evt := event{columns: map[string]any{"timestamp": tt.timestamp}}
+			if got := a.isExpiredEvent(evt, now); got != tt.want {
+				t.Fatalf("isExpiredEvent() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProcessOneBatchCommitsDoneBeforeFatalAfterCommit(t *testing.T) {
 	cfg := testConfig()
 	cfg.SQSEnabled = false
