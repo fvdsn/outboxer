@@ -53,6 +53,8 @@ These are cross-cutting assertions that many scenarios should verify.
 | CFG-10 | `COLLECT_BATCH_TARGET` is zero or negative. | Validation fails. |
 | CFG-11 | `PUBSUB_DESTINATIONS` is set while Pub/Sub is disabled. | Validation fails. |
 | CFG-12 | `SQS_DESTINATIONS` is set while SQS is disabled. | Validation fails. |
+| CFG-13 | `EVENT_OPTIONS` is unset. | Options column defaults to `options`. |
+| CFG-14 | `EVENT_OPTIONS` is empty. | Backend-specific options are disabled; every event behaves as if options were `{}`. |
 
 Watchdog bound cases:
 
@@ -76,6 +78,8 @@ Watchdog bound cases:
 | ROUTE-07 | Unknown target such as `kafka`. | Kept as R10; not `done`. |
 | ROUTE-08 | Routed event has empty destination and no backend default. | Kept as R12; not `done`. |
 | ROUTE-09 | Target names a known disabled backend and destination is also empty. | R7 takes precedence over R12. |
+| ROUTE-10 | `target` is empty, both backends are enabled, and `options` contains only `pubsub`. | Kept as R11; target is not inferred from options. |
+| ROUTE-11 | `target=pubsub` and `options` also contains an `sqs` section. | Routed to Pub/Sub; non-selected backend options are ignored. |
 
 ## Collection
 
@@ -102,6 +106,29 @@ matter.
 | COLLECT-15 | Empty destination resolves to default destination `D`, and `D` is included in the backend destination allowlist. | The event is eligible and grouped with explicit destination `D`. |
 | COLLECT-16 | Two Outboxer instances on the same table have disjoint destination allowlists. | Each instance selects only its owned destination routes, so they can process without blocking on each other's rows. |
 | COLLECT-17 | Two Outboxer instances on the same table have overlapping destination allowlists. | Overlapping selected rows are still serialized by `FOR UPDATE`; they must not process the same ordered route concurrently. |
+| COLLECT-18 | Events include different `options` values but the same resolved target and destination. | They share the same resolved route and collection cap; options do not affect route grouping. |
+| COLLECT-19 | Events have `options.pubsub.topic` or `options.sqs.queueUrl` values but empty `destination`. | Options destinations are ignored; events use backend defaults or remain R12. |
+
+## Options
+
+| ID | Scenario | Expected |
+| --- | --- | --- |
+| OPT-01 | Options column is absent or disabled. | Backend-specific options resolve to `{}`; sends use no explicit attributes or ordering/group key. |
+| OPT-02 | Options column is `NULL`. | Backend-specific options resolve to `{}`. |
+| OPT-03 | Options value is not a JSON object. | Selected event is content-poison P5 and is returned in `done` without a provider call. |
+| OPT-04 | Selected backend section is missing or `null`. | Backend-specific options resolve to `{}` for that backend. |
+| OPT-05 | Selected backend section is not a JSON object. | Selected event is content-poison P5 and is returned in `done` without a provider call. |
+| OPT-06 | `options.pubsub.orderingKey` is a string. | Pub/Sub sender uses it as the ordering key. |
+| OPT-07 | `options.pubsub.orderingKey` is non-string. | Event is content-poison P6; no provider call is made. |
+| OPT-08 | `options.sqs.messageGroupId` is a string for a FIFO queue. | SQS sender uses it as the `MessageGroupId`. |
+| OPT-09 | `options.sqs.messageGroupId` is non-string. | Event is content-poison P6; no provider call is made. |
+| OPT-10 | `options.pubsub.attributes` is an object with string values. | Pub/Sub message attributes are set from that object. |
+| OPT-11 | `options.sqs.attributes` is an object with string values. | SQS message attributes are set from that object. |
+| OPT-12 | Backend attributes option is non-object. | Event is content-poison P5; no provider call is made. |
+| OPT-13 | Backend attributes object contains non-string values. | Non-string values are dropped and logged; string values are still sent and validated. |
+| OPT-14 | Options contain unknown keys. | Unknown keys are ignored and do not make the event poison. |
+| OPT-15 | Event row still has legacy `ordering_key` and `attributes` columns. | They are ignored; only `options` supplies backend metadata. |
+| OPT-16 | `destination` column is present alongside options. | `destination` remains the only per-event destination source; options do not override it. |
 
 ## Batch orchestration
 
@@ -139,7 +166,7 @@ size unambiguous.
 | REAL-OK-05 | Pub/Sub-only with no target column and a default topic, 100 events with empty destination, `COLLECT_BATCH_TARGET=100`. | All events route to Pub/Sub default topic, publish successfully, and are deleted. |
 | REAL-OK-06 | SQS-only with no target column and a default standard queue URL, 100 events with empty destination, `COLLECT_BATCH_TARGET=100`. | All events route to the default queue, send as 10 standard batches, and are deleted. |
 | REAL-OK-07 | Both backends enabled with explicit targets and a mix of explicit destinations plus backend defaults. | Empty Pub/Sub destinations use the Pub/Sub default, empty SQS destinations use the SQS default, explicit destinations are preserved, and all valid events are deleted according to each route's cap. |
-| REAL-OK-08 | Mixed Pub/Sub unordered and Pub/Sub ordered events for multiple topics and keys, all successful. | Unordered events batch/flush by topic; ordered events remain sequential per `(topic, ordering_key)`; all selected IDs are `done`. |
+| REAL-OK-08 | Mixed Pub/Sub unordered and Pub/Sub ordered events for multiple topics and keys, all successful. | Unordered events batch/flush by topic; ordered events remain sequential per `(destination, options.pubsub.orderingKey)`; all selected IDs are `done`. |
 | REAL-OK-09 | Mixed SQS standard and FIFO destinations, all successful. | Standard queues batch by 10; FIFO queues send one message at a time per group; each FIFO group preserves order; independent standard/FIFO destinations may progress concurrently. |
 | REAL-OK-10 | Large successful selected batch includes duplicate-looking values across non-ID columns. | Delete accounting uses only selected event IDs, not payload/topic/queue/body values; every selected ID is deleted exactly once. |
 | REAL-OK-11 | 250 valid standard SQS events for one queue with `COLLECT_BATCH_TARGET=100`. | Three processor loops drain the backlog as 100, 100, 50 selected events; SQS sends 10, 10, 5 standard batches. |
@@ -186,8 +213,8 @@ Boundary values should be table-driven with "just below", "exactly at", and
 | PS-PRE-08 | Attribute value length exceeds 1024 bytes. | P5; no publish call. |
 | PS-PRE-09 | Attribute key starts with `goog`. | P5; no publish call. |
 | PS-PRE-10 | Non-string attributes are present. | Non-string attributes are dropped and logged; string attributes are still validated. |
-| PS-PRE-11 | Empty data, no attributes, no ordering key. | P4; no publish call. |
-| PS-PRE-12 | Empty data, no attributes, ordering key present. | Not local poison; publish in isolation before classification. |
+| PS-PRE-11 | Empty data, no Pub/Sub attributes, no `options.pubsub.orderingKey`. | P4; no publish call. |
+| PS-PRE-12 | Empty data, no Pub/Sub attributes, `options.pubsub.orderingKey` present. | Not local poison; publish in isolation before classification. |
 | PS-PRE-13 | Bare topic ID is syntactically valid. | Accepted for publish. |
 | PS-PRE-14 | Full `projects/{project}/topics/{topic}` name is syntactically valid. | Accepted for publish. |
 | PS-PRE-15 | Topic ID too short, starts with non-letter, starts with `goog`, or has invalid characters. | P7; no publish call. |
@@ -231,7 +258,7 @@ Boundary values should be table-driven with "just below", "exactly at", and
 | SQS-OK-05 | FIFO queue with one message group and 3 events. | Three single-message sends in order; no multi-entry batch for that group. |
 | SQS-OK-06 | FIFO queue with two message groups. | Each group is sequential internally; groups may run concurrently under the global semaphore. |
 | SQS-OK-07 | Many FIFO events for one message group are selected. | All selected events are attempted sequentially as single-message sends. |
-| SQS-OK-08 | FIFO event has no ordering key. | Stable provider-safe synthetic `MessageGroupId` is derived from event ID. |
+| SQS-OK-08 | FIFO event has no `options.sqs.messageGroupId`. | Stable provider-safe synthetic `MessageGroupId` is derived from event ID. |
 | SQS-OK-09 | FIFO event ID is valid as dedup ID. | Raw event ID may be used as `MessageDeduplicationId`. |
 | SQS-OK-10 | FIFO event ID is too long or has invalid characters. | Stable collision-resistant digest is used as provider-safe dedup ID. |
 | SQS-OK-11 | Standard batch entry ID would be invalid if raw event ID were used. | Stable provider-safe batch entry ID is derived. |
@@ -253,8 +280,8 @@ identifier lengths.
 | SQS-PRE-08 | Attribute name is invalid: empty, starts with `AWS.`/`Amazon.`, starts/ends with `.`, has `..`, or contains invalid chars. | P5; no provider call. |
 | SQS-PRE-09 | Attribute name or type exceeds 256 chars. | P5; no provider call. |
 | SQS-PRE-10 | Attribute value contains unsupported Unicode. | P4 or P5 as implemented, but must be local poison and not provider retry. |
-| SQS-PRE-11 | FIFO ordering key exceeds 128 chars. | P6; no provider call. |
-| SQS-PRE-12 | FIFO ordering key contains invalid characters. | P6; no provider call. |
+| SQS-PRE-11 | FIFO `options.sqs.messageGroupId` exceeds 128 chars. | P6; no provider call. |
+| SQS-PRE-12 | FIFO `options.sqs.messageGroupId` contains invalid characters. | P6; no provider call. |
 | SQS-PRE-13 | Queue URL is syntactically invalid. | P7; no provider call. |
 | SQS-PRE-14 | Queue URL is syntactically valid but provider returns not found. | R4; event kept. |
 
