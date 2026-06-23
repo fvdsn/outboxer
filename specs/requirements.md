@@ -756,6 +756,85 @@ If this proves harmful in practice, add a small no-progress pace specifically
 for fast-failing sends or routing failures — not done now, since it trades away
 the low-latency busy loop we want.
 
+## Operational statistics
+
+Outboxer must emit high-level operational statistics at a regular interval so
+operators can alert on stuck processing, growing backlog, poison/DLQ volume, and
+sender failure symptoms without inspecting backend-specific logs.
+
+Configuration:
+
+- `STATS_INTERVAL_MS` / `--stats-interval-ms`: interval between statistics log
+  lines. Default: `10000` (10 seconds).
+- `0` disables periodic statistics logging.
+- Negative values are invalid.
+
+Statistics output:
+
+- Stats are emitted as structured logs at `info` level with a stable message such
+  as `Statistics`.
+- Field names must be stable enough for log-based alerts.
+- Counters are process-local. They reset on process restart.
+- Each log line must include interval counters and cumulative counters where the
+  distinction matters for alerting.
+- Statistics are high-level and backend-agnostic. Backend-specific code should
+  only report generic sender outcomes through shared callbacks/counters; it must
+  not own stats log formatting or stats emission.
+
+Required counters:
+
+- `events_selected`: selected rows in the interval and total.
+- `events_confirmed`: provider-confirmed events in the interval and total.
+- `events_deleted`: rows deleted from the outbox table in the interval and total.
+- `events_poison`: content-poison events removed in the interval and total.
+- `events_dlq`: poison events inserted into the DLQ in the interval and total.
+- `batches_processed`: committed batches in the interval and total.
+- `batch_errors`: database/transaction batch errors in the interval and total.
+- `sender_errors`: sender errors in the interval and total.
+- `fatal_after_commit_errors`: fatal-after-commit sender errors in the interval
+  and total.
+
+Backlog / remaining events:
+
+- Outboxer must not run exact `count(*)` queries on the event table for periodic
+  statistics. Exact counts are too expensive on large outbox tables.
+- If a remaining-event value is reported, it must be explicitly labeled as an
+  estimate, for example `events_remaining_estimate`.
+- The estimate may use cheap PostgreSQL metadata such as `pg_class.reltuples` for
+  the configured event table, or it may be omitted when no cheap estimate is
+  available.
+- The estimate query, if implemented, must be bounded by `PG_QUERY_TIMEOUT_MS` and
+  must not run more frequently than the stats interval.
+- Remaining-event estimates are table-level estimates. They do not need to
+  account for this instance's route ownership filters, backend enablement, or
+  unroutable rows.
+
+Performance constraints:
+
+- Updating counters must be in-memory and lock-free or low-contention.
+- Stats emission must not block event processing on slow log output longer than a
+  normal log call would.
+- Stats collection must not require additional provider API calls.
+- Stats collection must not add queries to the hot path of every batch. Any DB
+  estimate is periodic only.
+
+Suggested stats log shape:
+
+```text
+message="Statistics"
+stats_interval_ms=10000
+events_selected=5000 events_selected_total=100000
+events_confirmed=4980 events_confirmed_total=99500
+events_deleted=4990 events_deleted_total=99700
+events_poison=10 events_poison_total=200
+events_dlq=10 events_dlq_total=200
+batches_processed=12 batches_processed_total=240
+batch_errors=0 batch_errors_total=3
+sender_errors=2 sender_errors_total=30
+fatal_after_commit_errors=0 fatal_after_commit_errors_total=1
+events_remaining_estimate=125000
+```
+
 ### Changes vs. current behavior
 
 - SQS oversized + sender-fault → already dropped. ✓
@@ -953,6 +1032,8 @@ this spec says so explicitly.
     provider publish timeout for async client results.
   - `MAX_EVENT_AGE_MS` (default: `0`), the instance-level maximum selected event
     age. `0` disables age-based poisoning.
+  - `STATS_INTERVAL_MS` (default: `10000`), the periodic statistics logging
+    interval. `0` disables statistics logging.
 
 `PUBLISH_TIMEOUT_MS` keeps its current default of `30000`. It must be positive
 whenever any backend is enabled. For Pub/Sub, ordered sends need a bounded
