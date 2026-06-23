@@ -271,35 +271,38 @@ func TestSQSLocalPrevalidationBoundaries(t *testing.T) {
 		}
 	}
 
-	if isSQSPoison([]byte("body"), nil, false, "", "", nil) {
+	if isSQSPoison([]byte("body"), nil, "", "", nil) {
 		t.Fatal("expected ordinary SQS body to be valid")
 	}
-	if !isSQSPoison(nil, nil, false, "", "", nil) {
+	if !isSQSPoison(nil, nil, "", "", nil) {
 		t.Fatal("expected empty SQS body to be poison")
 	}
-	if !isSQSPoison([]byte{0xff}, nil, false, "", "", nil) {
+	if !isSQSPoison([]byte{0xff}, nil, "", "", nil) {
 		t.Fatal("expected invalid UTF-8 SQS body to be poison")
 	}
-	if !isSQSPoison([]byte("body"), map[string]sqsMessageAttribute{"attr": sqsStringAttribute(string([]byte{0xff}))}, false, "", "", nil) {
+	if !isSQSPoison([]byte("body"), map[string]sqsMessageAttribute{"attr": sqsStringAttribute(string([]byte{0xff}))}, "", "", nil) {
 		t.Fatal("expected invalid UTF-8 SQS attribute value to be poison")
 	}
-	if isSQSPoison([]byte("body\t\n\r"), nil, false, "", "", nil) {
+	if isSQSPoison([]byte("body\t\n\r"), nil, "", "", nil) {
 		t.Fatal("expected allowed SQS boundary characters to be valid")
 	}
-	if !isSQSPoison([]byte(strings.Repeat("x", sqsEventMaxSizeByte+1)), nil, false, "", "", nil) {
+	if !isSQSPoison([]byte(strings.Repeat("x", sqsEventMaxSizeByte+1)), nil, "", "", nil) {
 		t.Fatal("expected oversized SQS message to be poison")
 	}
-	if !isSQSPoison([]byte("body"), nil, true, strings.Repeat("x", 129), "", nil) {
+	if !isSQSPoison([]byte("body"), nil, strings.Repeat("x", 129), "", nil) {
 		t.Fatal("expected overlong FIFO group id to be poison")
 	}
-	if !isSQSPoison([]byte("body"), nil, true, "bad\nkey", "", nil) {
+	if !isSQSPoison([]byte("body"), nil, "bad\nkey", "", nil) {
 		t.Fatal("expected invalid FIFO group id to be poison")
 	}
-	if !isSQSPoison([]byte("body"), nil, true, "", strings.Repeat("x", 129), nil) {
+	if !isSQSPoison([]byte("body"), nil, "bad\nkey", "", nil) {
+		t.Fatal("expected invalid standard fair queue group id to be poison")
+	}
+	if !isSQSPoison([]byte("body"), nil, "", strings.Repeat("x", 129), nil) {
 		t.Fatal("expected overlong deduplication id to be poison")
 	}
 	invalidDelay := int32(901)
-	if !isSQSPoison([]byte("body"), nil, false, "", "", &invalidDelay) {
+	if !isSQSPoison([]byte("body"), nil, "", "", &invalidDelay) {
 		t.Fatal("expected invalid delay to be poison")
 	}
 }
@@ -964,6 +967,8 @@ func TestSendSQS10EventsDropsInvalidProviderOptionsAsPoison(t *testing.T) {
 		{name: "dedup", options: map[string]any{"sqs": map[string]any{"messageGroupId": "group-a", "messageDeduplicationId": "bad\ndedup"}}},
 		{name: "delay", options: map[string]any{"sqs": map[string]any{"delaySeconds": 901}}},
 		{name: "delay type", options: map[string]any{"sqs": map[string]any{"delaySeconds": "30"}}},
+		{name: "empty trace", options: map[string]any{"sqs": map[string]any{"messageSystemAttributes": map[string]any{"AWSTraceHeader": ""}}}},
+		{name: "unknown system attribute", options: map[string]any{"sqs": map[string]any{"messageSystemAttributes": map[string]any{"Other": "value"}}}},
 	}
 
 	for _, tt := range tests {

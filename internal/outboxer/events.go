@@ -55,22 +55,6 @@ func eventBytes(evt event, column string) []byte {
 	}
 }
 
-func eventAttributes(evt event, column string) map[string]any {
-	value := eventValue(evt, column)
-	switch typed := value.(type) {
-	case nil:
-		return nil
-	case map[string]any:
-		return typed
-	case []byte:
-		return parseAttributesJSON(typed)
-	case string:
-		return parseAttributesJSON([]byte(typed))
-	default:
-		return nil
-	}
-}
-
 func eventPubSubOptions(evt event, cfg appConfig) (backendOptions, error) {
 	return eventBackendOptions(evt, cfg.EventOptions, eventTargetPubSub)
 }
@@ -122,7 +106,7 @@ func parseOptionsJSON(content []byte) (map[string]any, error) {
 	}
 	var decoded any
 	if err := json.Unmarshal(content, &decoded); err != nil {
-		return nil, fmt.Errorf("%w: %v", errMalformedOptions, err)
+		return nil, fmt.Errorf("%w: %w", errMalformedOptions, err)
 	}
 	if decoded == nil {
 		return nil, nil
@@ -179,18 +163,6 @@ func stringMapToAnyMap(value map[string]string) map[string]any {
 		out[key] = item
 	}
 	return out
-}
-
-func parseAttributesJSON(content []byte) map[string]any {
-	if len(content) == 0 {
-		return nil
-	}
-
-	attributes := map[string]any{}
-	if err := json.Unmarshal(content, &attributes); err != nil {
-		return nil
-	}
-	return attributes
 }
 
 func eventLatency(value any) any {

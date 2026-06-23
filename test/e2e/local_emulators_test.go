@@ -719,6 +719,9 @@ func eventOptionsJSON(evt eventRow) string {
 	if evt.attributes != "" && evt.attributes != "null" {
 		var attributes map[string]any
 		if err := json.Unmarshal([]byte(evt.attributes), &attributes); err == nil {
+			if backend == "sqs" {
+				attributes = nativeSQSAttributes(attributes)
+			}
 			section["attributes"] = attributes
 		}
 	}
@@ -730,6 +733,18 @@ func eventOptionsJSON(evt eventRow) string {
 		return "{}"
 	}
 	return string(payload)
+}
+
+func nativeSQSAttributes(attributes map[string]any) map[string]any {
+	native := make(map[string]any, len(attributes))
+	for key, value := range attributes {
+		if stringValue, ok := value.(string); ok {
+			native[key] = map[string]any{"DataType": "String", "StringValue": stringValue}
+		} else {
+			native[key] = value
+		}
+	}
+	return native
 }
 
 func eventTargetForDefaultOptions(evt eventRow) string {

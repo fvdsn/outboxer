@@ -442,7 +442,7 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 		entryID := providerSafeID(eventID, sqsBatchEntryIDPattern)
 		data := eventBytes(evt, a.cfg.EventPayload)
 		latency := eventLatency(timestamp)
-		if isSQSPoison(data, attributes, isFIFO, orderingKey, deduplicationID, delaySeconds) {
+		if isSQSPoison(data, attributes, orderingKey, deduplicationID, delaySeconds) {
 			callbacks.addPoisonID(id, "Event is invalid for SQS")
 			a.logFailure(ctx, "Failed to send event",
 				fmt.Sprintf("sqs|%s|%s|local-poison", queueURL, orderingKey),
@@ -622,7 +622,7 @@ func sanitizeStringAttributes(attributes map[string]any) (map[string]string, map
 	return kept, deleted
 }
 
-func isSQSPoison(body []byte, attributes map[string]sqsMessageAttribute, isFIFO bool, orderingKey string, deduplicationID string, delaySeconds *int32) bool {
+func isSQSPoison(body []byte, attributes map[string]sqsMessageAttribute, orderingKey string, deduplicationID string, delaySeconds *int32) bool {
 	if len(body) == 0 || !sqsAllowedUnicodeBytes(body) {
 		return true
 	}
@@ -632,7 +632,7 @@ func isSQSPoison(body []byte, attributes map[string]sqsMessageAttribute, isFIFO 
 	if !validSQSAttributes(attributes) {
 		return true
 	}
-	if isFIFO && orderingKey != "" && !sqsFIFOIDPattern.MatchString(orderingKey) {
+	if orderingKey != "" && !sqsFIFOIDPattern.MatchString(orderingKey) {
 		return true
 	}
 	if deduplicationID != "" && !sqsFIFOIDPattern.MatchString(deduplicationID) {
@@ -689,7 +689,7 @@ func sqsAttributes(options backendOptions) (map[string]sqsMessageAttribute, erro
 	for name, raw := range attributes {
 		attr, err := sqsMessageAttributeValue(raw)
 		if err != nil {
-			return nil, fmt.Errorf("%w: attribute %s: %v", errMalformedOptions, name, err)
+			return nil, fmt.Errorf("%w: attribute %s: %w", errMalformedOptions, name, err)
 		}
 		converted[name] = attr
 	}
@@ -793,20 +793,26 @@ func sqsDelaySeconds(options backendOptions) (*int32, error) {
 }
 
 func sqsAWSTraceHeader(options backendOptions) (string, error) {
-	attributes, err := options.attributesValue("messageSystemAttributes")
-	if err != nil {
-		return "", err
-	}
-	if attributes == nil {
-		return "", nil
-	}
-	value, ok := attributes["AWSTraceHeader"]
+	value, ok := options.values["messageSystemAttributes"]
 	if !ok || value == nil {
 		return "", nil
 	}
-	traceHeader, ok := value.(string)
+	attributes, ok := normalizeObject(value)
 	if !ok {
-		return "", fmt.Errorf("%w: AWSTraceHeader must be a string", errMalformedOptions)
+		return "", fmt.Errorf("%w: messageSystemAttributes must be an object", errMalformedOptions)
+	}
+	if len(attributes) == 0 {
+		return "", nil
+	}
+	if len(attributes) > 1 {
+		return "", fmt.Errorf("%w: only AWSTraceHeader is supported in messageSystemAttributes", errMalformedOptions)
+	}
+	if _, ok := attributes["AWSTraceHeader"]; !ok {
+		return "", fmt.Errorf("%w: only AWSTraceHeader is supported in messageSystemAttributes", errMalformedOptions)
+	}
+	traceHeader, err := requiredString(attributes, "AWSTraceHeader")
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", errMalformedOptions, err)
 	}
 	return traceHeader, nil
 }

@@ -408,17 +408,6 @@ func pubsubOptions(orderingKey string, attributes map[string]any) map[string]any
 	return map[string]any{"pubsub": section}
 }
 
-func sqsOptions(messageGroupID string, attributes map[string]any) map[string]any {
-	section := map[string]any{}
-	if messageGroupID != "" {
-		section["messageGroupId"] = messageGroupID
-	}
-	if attributes != nil {
-		section["attributes"] = attributes
-	}
-	return map[string]any{"sqs": section}
-}
-
 func mockRowsForEvents(events []event) *sqlmock.Rows {
 	rows := mockEventRows()
 	for _, evt := range events {
