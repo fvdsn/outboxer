@@ -144,6 +144,15 @@ func (r cloudPubSubPublishResult) Get(ctx context.Context) (string, error) {
 }
 
 func (a *app) sendPubsubEvents(ctx context.Context, events []event, addIDToDelete func(any)) error {
+	return a.sendPubsubEventsWithCallbacks(ctx, events, senderCallbacks{
+		addConfirmedID: addIDToDelete,
+		addPoisonID: func(id any, _ string) {
+			addIDToDelete(id)
+		},
+	})
+}
+
+func (a *app) sendPubsubEventsWithCallbacks(ctx context.Context, events []event, callbacks senderCallbacks) error {
 	unordered := []event{}
 	orderedByGroup := map[string][]event{}
 	groupOrder := []string{}
@@ -164,7 +173,7 @@ func (a *app) sendPubsubEvents(ctx context.Context, events []event, addIDToDelet
 	}
 
 	var joined error
-	if err := a.sendPubsubUnorderedEvents(ctx, unordered, addIDToDelete); err != nil {
+	if err := a.sendPubsubUnorderedEvents(ctx, unordered, callbacks); err != nil {
 		joined = errors.Join(joined, err)
 	}
 
@@ -175,7 +184,7 @@ func (a *app) sendPubsubEvents(ctx context.Context, events []event, addIDToDelet
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := a.sendPubsubOrderedGroup(ctx, groupEvents, addIDToDelete); err != nil {
+			if err := a.sendPubsubOrderedGroup(ctx, groupEvents, callbacks); err != nil {
 				errs <- err
 			}
 		}()
@@ -189,11 +198,11 @@ func (a *app) sendPubsubEvents(ctx context.Context, events []event, addIDToDelet
 	return joined
 }
 
-func (a *app) sendPubsubUnorderedEvents(ctx context.Context, events []event, addIDToDelete func(any)) error {
+func (a *app) sendPubsubUnorderedEvents(ctx context.Context, events []event, callbacks senderCallbacks) error {
 	pending := []pubsubPendingPublish{}
 	topics := map[string]struct{}{}
 	for _, evt := range events {
-		prepared, ok := a.preparePubsubEvent(evt, false, addIDToDelete)
+		prepared, ok := a.preparePubsubEvent(evt, false, callbacks)
 		if !ok {
 			continue
 		}
@@ -211,12 +220,12 @@ func (a *app) sendPubsubUnorderedEvents(ctx context.Context, events []event, add
 		messageID, err := a.awaitPubsubResult(ctx, pendingPublish.result)
 		switch {
 		case err == nil:
-			a.markPubsubDone(pendingPublish.prepared, messageID, addIDToDelete)
+			a.markPubsubDone(pendingPublish.prepared, messageID, callbacks)
 		case errors.Is(err, context.DeadlineExceeded):
 			joined = errors.Join(joined, err)
 			a.logPubsubFailure(ctx, pendingPublish.prepared, err)
 		case isPubSubPermanentBackendError(err):
-			done, isolateErr := a.sendPubsubIsolated(ctx, pendingPublish.prepared.evt, false, addIDToDelete)
+			done, isolateErr := a.sendPubsubIsolated(ctx, pendingPublish.prepared.evt, false, callbacks)
 			if !done {
 				joined = errors.Join(joined, err)
 			}
@@ -229,9 +238,9 @@ func (a *app) sendPubsubUnorderedEvents(ctx context.Context, events []event, add
 	return joined
 }
 
-func (a *app) sendPubsubOrderedGroup(ctx context.Context, events []event, addIDToDelete func(any)) error {
+func (a *app) sendPubsubOrderedGroup(ctx context.Context, events []event, callbacks senderCallbacks) error {
 	for _, evt := range events {
-		prepared, ok := a.preparePubsubEvent(evt, true, addIDToDelete)
+		prepared, ok := a.preparePubsubEvent(evt, true, callbacks)
 		if !ok {
 			continue
 		}
@@ -242,13 +251,13 @@ func (a *app) sendPubsubOrderedGroup(ctx context.Context, events []event, addIDT
 		messageID, err := a.awaitPubsubResult(ctx, result)
 		switch {
 		case err == nil:
-			a.markPubsubDone(prepared, messageID, addIDToDelete)
+			a.markPubsubDone(prepared, messageID, callbacks)
 		case errors.Is(err, context.DeadlineExceeded):
 			a.logPubsubFailure(ctx, prepared, err)
 			return errors.Join(errFatalAfterCommit, err)
 		case isPubSubPermanentBackendError(err):
 			a.pubsub.ResumePublish(prepared.message.Topic, prepared.message.OrderingKey)
-			done, isolateErr := a.sendPubsubIsolated(ctx, evt, true, addIDToDelete)
+			done, isolateErr := a.sendPubsubIsolated(ctx, evt, true, callbacks)
 			if isolateErr != nil {
 				return isolateErr
 			}
@@ -264,8 +273,8 @@ func (a *app) sendPubsubOrderedGroup(ctx context.Context, events []event, addIDT
 	return nil
 }
 
-func (a *app) sendPubsubIsolated(ctx context.Context, evt event, ordered bool, addIDToDelete func(any)) (bool, error) {
-	prepared, ok := a.preparePubsubEvent(evt, ordered, addIDToDelete)
+func (a *app) sendPubsubIsolated(ctx context.Context, evt event, ordered bool, callbacks senderCallbacks) (bool, error) {
+	prepared, ok := a.preparePubsubEvent(evt, ordered, callbacks)
 	if !ok {
 		return true, nil
 	}
@@ -278,13 +287,13 @@ func (a *app) sendPubsubIsolated(ctx context.Context, evt event, ordered bool, a
 	}
 	switch {
 	case err == nil:
-		a.markPubsubDone(prepared, messageID, addIDToDelete)
+		a.markPubsubDone(prepared, messageID, callbacks)
 		return true, nil
 	case errors.Is(err, context.DeadlineExceeded) && ordered:
 		a.logPubsubFailure(ctx, prepared, err)
 		return false, errors.Join(errFatalAfterCommit, err)
 	case isPubSubPermanentBackendError(err):
-		addIDToDelete(prepared.id)
+		callbacks.addPoisonID(prepared.id, err.Error())
 		a.logPubsubFailure(ctx, prepared, err)
 		return true, nil
 	default:
@@ -309,7 +318,7 @@ type pubsubPendingPublish struct {
 	result   pubsubPublishResult
 }
 
-func (a *app) preparePubsubEvent(evt event, ordered bool, addIDToDelete func(any)) (pubsubPreparedEvent, bool) {
+func (a *app) preparePubsubEvent(evt event, ordered bool, callbacks senderCallbacks) (pubsubPreparedEvent, bool) {
 	target := eventOptionalString(evt, a.cfg.EventTarget)
 	topicName := a.destinationForBackend(evt, backendPubSub)
 	orderingKey := eventOptionalString(evt, a.cfg.EventOrderingKey)
@@ -348,7 +357,7 @@ func (a *app) preparePubsubEvent(evt event, ordered bool, addIDToDelete func(any
 	}
 
 	if reason, poison := pubsubPoisonReason(prepared.message); poison {
-		addIDToDelete(id)
+		callbacks.addPoisonID(id, reason)
 		slog.Error("Failed to send event",
 			"event_id", id,
 			"event_destination", topicName,
@@ -371,8 +380,8 @@ func (a *app) preparePubsubEvent(evt event, ordered bool, addIDToDelete func(any
 	return prepared, true
 }
 
-func (a *app) markPubsubDone(prepared pubsubPreparedEvent, messageID string, addIDToDelete func(any)) {
-	addIDToDelete(prepared.id)
+func (a *app) markPubsubDone(prepared pubsubPreparedEvent, messageID string, callbacks senderCallbacks) {
+	callbacks.addConfirmedID(prepared.id)
 	slog.Debug("Event sent",
 		"event_id", prepared.id,
 		"event_timestamp", prepared.timestamp,

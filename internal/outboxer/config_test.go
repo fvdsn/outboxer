@@ -49,6 +49,9 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	if cfg.CollectBatchTarget != 5000 {
 		t.Fatalf("expected default batch collection target 5000, got %d", cfg.CollectBatchTarget)
 	}
+	if cfg.DLQTable != "" {
+		t.Fatalf("expected DLQ table to be disabled by default, got %q", cfg.DLQTable)
+	}
 }
 
 func TestLoadConfigVerifiesTLSByDefault(t *testing.T) {
@@ -141,6 +144,7 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	t.Setenv("POLL_INTERVAL_MS", "250")
 	t.Setenv("PORT", "9090")
 	t.Setenv("HEALTH_PORT", "")
+	t.Setenv("DLQ_TABLE", "dead_letters")
 	t.Setenv("PUBSUB_DESTINATIONS", "topic-a, topic-b ,,")
 	t.Setenv("SQS_DESTINATIONS", "queue-a,queue-b")
 
@@ -157,6 +161,9 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	}
 	if cfg.HealthPort != 9090 {
 		t.Fatalf("expected PORT fallback, got %d", cfg.HealthPort)
+	}
+	if cfg.DLQTable != "dead_letters" {
+		t.Fatalf("expected env DLQ table, got %q", cfg.DLQTable)
 	}
 	if !reflect.DeepEqual(cfg.PubSubDestinations, []string{"topic-a", "topic-b"}) {
 		t.Fatalf("unexpected Pub/Sub destinations: %#v", cfg.PubSubDestinations)
@@ -196,6 +203,7 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	t.Setenv("PG_SSL", "false")
 	t.Setenv("POLL_INTERVAL_MS", "250")
 	t.Setenv("WATCHDOG_INTERVAL_MS", "60000")
+	t.Setenv("DLQ_TABLE", "env_dead_letters")
 	t.Setenv("PUBSUB_DESTINATIONS", "env-topic")
 	t.Setenv("SQS_DESTINATIONS", "env-queue")
 
@@ -208,6 +216,7 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 		"--pg-ssl=true",
 		"--poll-interval-ms=500",
 		"--watchdog-interval-ms=30000",
+		"--dlq-table=flag_dead_letters",
 		"--pubsub-destinations=flag-topic-a, flag-topic-b",
 		"--sqs-destinations=flag-queue",
 	}, io.Discard)
@@ -238,6 +247,9 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	}
 	if cfg.WatchdogInterval != 30*time.Second {
 		t.Fatalf("expected flag watchdog interval, got %s", cfg.WatchdogInterval)
+	}
+	if cfg.DLQTable != "flag_dead_letters" {
+		t.Fatalf("expected flag DLQ table, got %q", cfg.DLQTable)
 	}
 	if !reflect.DeepEqual(cfg.PubSubDestinations, []string{"flag-topic-a", "flag-topic-b"}) {
 		t.Fatalf("expected flag Pub/Sub destinations, got %#v", cfg.PubSubDestinations)
@@ -281,6 +293,8 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"Env: WATCHDOG_INTERVAL_MS",
 		"--collect-batch-target",
 		"Env: COLLECT_BATCH_TARGET",
+		"--dlq-table",
+		"Env: DLQ_TABLE",
 		"--sqs-send-concurrency",
 		"Env: SQS_SEND_CONCURRENCY",
 		"--pubsub-destinations",
@@ -550,6 +564,19 @@ func TestValidateRequiresPositiveCollectBatchTarget(t *testing.T) {
 	cfg.CollectBatchTarget = 0
 	if err := cfg.validate(); err == nil {
 		t.Fatal("expected zero batch collection target to fail")
+	}
+}
+
+func TestValidateRejectsDLQTableMatchingEventTable(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLQTable = cfg.EventTable
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected DLQ table matching event table to fail")
+	}
+
+	cfg.DLQTable = "dead_letters"
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected distinct DLQ table to be valid, got %v", err)
 	}
 }
 

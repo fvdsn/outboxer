@@ -38,16 +38,21 @@ type batchResult struct {
 }
 
 type sender interface {
-	Send(ctx context.Context, events []event) (done []event, err error)
+	Send(ctx context.Context, events []event) (senderOutput, error)
 	Close() error
 }
 
+type senderOutput struct {
+	confirmed []event
+	poison    []poisonEvent
+}
+
 type appSender struct {
-	send  func(ctx context.Context, events []event) ([]event, error)
+	send  func(ctx context.Context, events []event) (senderOutput, error)
 	close func() error
 }
 
-func (s appSender) Send(ctx context.Context, events []event) ([]event, error) {
+func (s appSender) Send(ctx context.Context, events []event) (senderOutput, error) {
 	return s.send(ctx, events)
 }
 
@@ -59,8 +64,13 @@ func (s appSender) Close() error {
 }
 
 type senderResult struct {
-	done []event
-	err  error
+	output senderOutput
+	err    error
+}
+
+type senderCallbacks struct {
+	addConfirmedID func(any)
+	addPoisonID    func(any, string)
 }
 
 func startDeadlockDetector(interval time.Duration) {
@@ -198,8 +208,8 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			done, err := a.pubsubSender().Send(ctx, pubsubEvents)
-			results <- senderResult{done: done, err: err}
+			output, err := a.pubsubSender().Send(ctx, pubsubEvents)
+			results <- senderResult{output: output, err: err}
 		}()
 	}
 
@@ -207,8 +217,8 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			done, err := a.sqsSender().Send(ctx, sqsEvents)
-			results <- senderResult{done: done, err: err}
+			output, err := a.sqsSender().Send(ctx, sqsEvents)
+			results <- senderResult{output: output, err: err}
 		}()
 	}
 
@@ -216,15 +226,28 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	close(results)
 
 	deleteIDs := []any{}
+	poisonEvents := []poisonEvent{}
 	var senderErr error
 	for result := range results {
-		for _, evt := range result.done {
+		for _, evt := range result.output.confirmed {
 			deleteIDs = append(deleteIDs, eventValue(evt, a.cfg.EventID))
+		}
+		for _, poisoned := range result.output.poison {
+			poisonEvents = append(poisonEvents, poisoned)
+			deleteIDs = append(deleteIDs, eventValue(poisoned.evt, a.cfg.EventID))
 		}
 		if result.err != nil {
 			senderErr = errors.Join(senderErr, result.err)
 		}
 	}
+
+	if err := a.insertDeadLetters(ctx, tx, poisonEvents); err != nil {
+		if senderErr != nil {
+			return result, errors.Join(senderErr, fmtDBError(err))
+		}
+		return result, fmtDBError(err)
+	}
+	markProcessorProgress()
 
 	if err := a.deleteEvents(ctx, tx, deleteIDs); err != nil {
 		if senderErr != nil {
@@ -243,9 +266,9 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 
 func (a *app) pubsubSender() sender {
 	return appSender{
-		send: func(ctx context.Context, events []event) ([]event, error) {
-			return a.collectSenderDoneEvents(ctx, events, func(addDoneID func(any)) error {
-				return a.sendPubsubEvents(ctx, events, addDoneID)
+		send: func(ctx context.Context, events []event) (senderOutput, error) {
+			return a.collectSenderOutput(ctx, events, func(callbacks senderCallbacks) error {
+				return a.sendPubsubEventsWithCallbacks(ctx, events, callbacks)
 			})
 		},
 		close: func() error {
@@ -259,24 +282,24 @@ func (a *app) pubsubSender() sender {
 
 func (a *app) sqsSender() sender {
 	return appSender{
-		send: func(ctx context.Context, events []event) ([]event, error) {
-			return a.collectSenderDoneEvents(ctx, events, func(addDoneID func(any)) error {
-				return a.sendSQSEvents(ctx, events, addDoneID)
+		send: func(ctx context.Context, events []event) (senderOutput, error) {
+			return a.collectSenderOutput(ctx, events, func(callbacks senderCallbacks) error {
+				return a.sendSQSEventsWithCallbacks(ctx, events, callbacks)
 			})
 		},
 	}
 }
 
-func (a *app) collectSenderDoneEvents(ctx context.Context, events []event, send func(addDoneID func(any)) error) ([]event, error) {
+func (a *app) collectSenderOutput(ctx context.Context, events []event, send func(senderCallbacks) error) (senderOutput, error) {
 	eventsByID := map[string]event{}
 	for _, evt := range events {
 		eventsByID[eventIDKey(eventValue(evt, a.cfg.EventID))] = evt
 	}
 
 	seen := map[string]struct{}{}
-	done := []event{}
+	output := senderOutput{}
 	var doneMu sync.Mutex
-	addDoneID := func(id any) {
+	addConfirmedID := func(id any) {
 		markProcessorProgress()
 		key := eventIDKey(id)
 
@@ -294,14 +317,37 @@ func (a *app) collectSenderDoneEvents(ctx context.Context, events []event, send 
 			return
 		}
 		seen[key] = struct{}{}
-		done = append(done, evt)
+		output.confirmed = append(output.confirmed, evt)
+	}
+	addPoisonID := func(id any, reason string) {
+		markProcessorProgress()
+		key := eventIDKey(id)
+
+		doneMu.Lock()
+		defer doneMu.Unlock()
+		evt, ok := eventsByID[key]
+		if !ok {
+			a.logFailure(ctx, "Sender reported an ID outside the selected batch, ignoring it",
+				fmt.Sprintf("sender-outside-selection|%s", key),
+				"event_id", id,
+			)
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		output.poison = append(output.poison, poisonEvent{evt: evt, error: reason})
 	}
 
-	err := send(addDoneID)
+	err := send(senderCallbacks{addConfirmedID: addConfirmedID, addPoisonID: addPoisonID})
 	doneMu.Lock()
-	copiedDone := append([]event(nil), done...)
+	copiedOutput := senderOutput{
+		confirmed: append([]event(nil), output.confirmed...),
+		poison:    append([]poisonEvent(nil), output.poison...),
+	}
 	doneMu.Unlock()
-	return copiedDone, err
+	return copiedOutput, err
 }
 
 func fmtDBError(err error) error {

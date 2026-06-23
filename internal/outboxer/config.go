@@ -22,6 +22,7 @@ type appConfig struct {
 
 	CollectBatchTarget int
 	SQSSendConcurrency int
+	DLQTable           string
 
 	LogLevel  string
 	LogFormat string
@@ -90,6 +91,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 
 	addIntFlag(flags, &options, "Batch processing", &cfg.CollectBatchTarget, "collect-batch-target", cfg.CollectBatchTarget, "Approximate target rows selected per batch, spread across eligible routes.", "COLLECT_BATCH_TARGET")
 	addIntFlag(flags, &options, "Batch processing", &cfg.SQSSendConcurrency, "sqs-send-concurrency", cfg.SQSSendConcurrency, "Maximum concurrent SQS send requests.", "SQS_SEND_CONCURRENCY")
+	addStringFlag(flags, &options, "Batch processing", &cfg.DLQTable, "dlq-table", cfg.DLQTable, "Dead letter table for poison events. Empty disables DLQ.", "DLQ_TABLE")
 
 	var watchdogIntervalMS = int(cfg.WatchdogInterval / time.Millisecond)
 	var errorCooldownMS = int(cfg.ErrorCooldown / time.Millisecond)
@@ -184,6 +186,9 @@ func (cfg appConfig) validate() error {
 	if cfg.SQSEnabled && cfg.DefaultSQSQueueURL == "" && cfg.EventDestination == "" {
 		return fmt.Errorf("SQS needs a destination: set EVENT_DESTINATION or DEFAULT_SQS_QUEUE_URL")
 	}
+	if cfg.DLQTable != "" && cfg.DLQTable == cfg.EventTable {
+		return fmt.Errorf("DLQ_TABLE must not equal EVENT_TABLE")
+	}
 	if !cfg.PubSubEnabled && len(cfg.PubSubDestinations) > 0 {
 		return fmt.Errorf("PUBSUB_DESTINATIONS requires PUBSUB_ENABLED=true")
 	}
@@ -232,6 +237,7 @@ func loadConfigFromEnv() appConfig {
 
 		CollectBatchTarget: getenvInt("COLLECT_BATCH_TARGET", 5000),
 		SQSSendConcurrency: getenvInt("SQS_SEND_CONCURRENCY", 8),
+		DLQTable:           getenv("DLQ_TABLE", ""),
 
 		LogLevel:  getenv("LOG_LEVEL", "info"),
 		LogFormat: getenv("LOG_FORMAT", "text"),

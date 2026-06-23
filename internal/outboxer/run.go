@@ -74,6 +74,9 @@ func Run(ctx context.Context, args []string) error {
 	if err := a.checkDBWorks(ctx); err != nil {
 		return fmt.Errorf("database check failed: %w", err)
 	}
+	if err := a.checkDLQWorks(ctx); err != nil {
+		return fmt.Errorf("DLQ check failed: %w", err)
+	}
 
 	if cfg.HealthPort > 0 {
 		server, err := a.serveHTTPRequests()

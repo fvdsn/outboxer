@@ -178,6 +178,15 @@ func (p *awsSQSPublisher) SendBatch(ctx context.Context, queueURL string, entrie
 }
 
 func (a *app) sendSQSEvents(ctx context.Context, events []event, addIDToDelete func(any)) error {
+	return a.sendSQSEventsWithCallbacks(ctx, events, senderCallbacks{
+		addConfirmedID: addIDToDelete,
+		addPoisonID: func(id any, _ string) {
+			addIDToDelete(id)
+		},
+	})
+}
+
+func (a *app) sendSQSEventsWithCallbacks(ctx context.Context, events []event, callbacks senderCallbacks) error {
 	eventsByQueue := map[string][]event{}
 	for _, evt := range events {
 		queue := a.destinationForBackend(evt, backendSQS)
@@ -195,9 +204,9 @@ func (a *app) sendSQSEvents(ctx context.Context, events []event, addIDToDelete f
 			defer wg.Done()
 			var err error
 			if strings.HasSuffix(queue, ".fifo") {
-				err = a.sendSQSFIFOEvents(ctx, sem, queue, queueEvents, addIDToDelete)
+				err = a.sendSQSFIFOEvents(ctx, sem, queue, queueEvents, callbacks)
 			} else {
-				err = a.sendSQSStandardEvents(ctx, sem, queue, queueEvents, addIDToDelete)
+				err = a.sendSQSStandardEvents(ctx, sem, queue, queueEvents, callbacks)
 			}
 			if err != nil {
 				errs <- err
@@ -214,7 +223,7 @@ func (a *app) sendSQSEvents(ctx context.Context, events []event, addIDToDelete f
 	return joined
 }
 
-func (a *app) sendSQSStandardEvents(ctx context.Context, sem chan struct{}, queue string, queueEvents []event, addIDToDelete func(any)) error {
+func (a *app) sendSQSStandardEvents(ctx context.Context, sem chan struct{}, queue string, queueEvents []event, callbacks senderCallbacks) error {
 	chunks := chunkSQSStandardEvents(queueEvents, a.cfg)
 	errs := make(chan error, len(chunks))
 	var wg sync.WaitGroup
@@ -223,7 +232,7 @@ func (a *app) sendSQSStandardEvents(ctx context.Context, sem chan struct{}, queu
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := a.sendSQSBatchWithSemaphore(ctx, sem, queue, chunk, false, addIDToDelete); err != nil {
+			if _, err := a.sendSQSBatchWithSemaphore(ctx, sem, queue, chunk, false, callbacks); err != nil {
 				errs <- err
 			}
 		}()
@@ -260,7 +269,7 @@ func chunkSQSStandardEvents(events []event, cfg appConfig) [][]event {
 	return chunks
 }
 
-func (a *app) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue string, queueEvents []event, addIDToDelete func(any)) error {
+func (a *app) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue string, queueEvents []event, callbacks senderCallbacks) error {
 	groups := map[string][]event{}
 	groupOrder := []string{}
 	for _, evt := range queueEvents {
@@ -279,7 +288,7 @@ func (a *app) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue st
 		go func() {
 			defer wg.Done()
 			for _, evt := range groupEvents {
-				done, err := a.sendSQSBatchWithSemaphore(ctx, sem, queue, []event{evt}, true, addIDToDelete)
+				done, err := a.sendSQSBatchWithSemaphore(ctx, sem, queue, []event{evt}, true, callbacks)
 				if err != nil {
 					errs <- err
 					return
@@ -300,22 +309,27 @@ func (a *app) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue st
 	return joined
 }
 
-func (a *app) sendSQSBatchWithSemaphore(ctx context.Context, sem chan struct{}, queue string, events []event, isFIFO bool, addIDToDelete func(any)) (bool, error) {
+func (a *app) sendSQSBatchWithSemaphore(ctx context.Context, sem chan struct{}, queue string, events []event, isFIFO bool, callbacks senderCallbacks) (bool, error) {
 	select {
 	case sem <- struct{}{}:
 		defer func() { <-sem }()
 	case <-ctx.Done():
 		return false, ctx.Err()
 	}
-	return a.sendSQSBatch(ctx, queue, events, isFIFO, addIDToDelete)
+	return a.sendSQSBatch(ctx, queue, events, isFIFO, callbacks)
 }
 
 func (a *app) sendSQS10Events(ctx context.Context, queueURL string, events []event, addIDToDelete func(any)) error {
-	_, err := a.sendSQSBatch(ctx, queueURL, events, strings.HasSuffix(queueURL, ".fifo"), addIDToDelete)
+	_, err := a.sendSQSBatch(ctx, queueURL, events, strings.HasSuffix(queueURL, ".fifo"), senderCallbacks{
+		addConfirmedID: addIDToDelete,
+		addPoisonID: func(id any, _ string) {
+			addIDToDelete(id)
+		},
+	})
 	return err
 }
 
-func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event, isFIFO bool, addIDToDelete func(any)) (bool, error) {
+func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event, isFIFO bool, callbacks senderCallbacks) (bool, error) {
 	if len(events) == 0 {
 		return false, nil
 	}
@@ -323,7 +337,7 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 
 	if !validSQSQueueURL(queueURL) {
 		for _, evt := range events {
-			addIDToDelete(eventValue(evt, a.cfg.EventID))
+			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), "SQS queue URL is syntactically invalid")
 		}
 		a.logFailure(ctx, "Failed to send event batch",
 			fmt.Sprintf("sqs|%s|invalid-queue-url", queueURL),
@@ -356,7 +370,7 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 			)
 		}
 		if isSQSPoison(data, stringAttributes, isFIFO, orderingKey) {
-			addIDToDelete(id)
+			callbacks.addPoisonID(id, "Event is invalid for SQS")
 			a.logFailure(ctx, "Failed to send event",
 				fmt.Sprintf("sqs|%s|%s|local-poison", queueURL, orderingKey),
 				"event_id", id,
@@ -405,7 +419,7 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 	if err != nil {
 		if isSQSPermanentRequestError(err) {
 			if len(events) == 1 {
-				addIDToDelete(eventValue(events[0], a.cfg.EventID))
+				callbacks.addPoisonID(eventValue(events[0], a.cfg.EventID), err.Error())
 				a.logFailure(ctx, "Failed to send event",
 					fmt.Sprintf("sqs|%s|%s", queueURL, err.Error()),
 					"event_id", eventValue(events[0], a.cfg.EventID),
@@ -414,7 +428,7 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 				)
 				return true, nil
 			}
-			return a.sendSQSBatchIsolated(ctx, queueURL, events, isFIFO, addIDToDelete)
+			return a.sendSQSBatchIsolated(ctx, queueURL, events, isFIFO, callbacks)
 		}
 		a.logFailure(ctx, "Failed to send event batch",
 			fmt.Sprintf("sqs|%s|%s", queueURL, err.Error()),
@@ -428,7 +442,7 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 	anyDone := false
 	for _, entry := range response.Successful {
 		originalID := idsByEntryID[entry.ID]
-		addIDToDelete(originalID)
+		callbacks.addConfirmedID(originalID)
 		anyDone = true
 		slog.Debug("Event sent",
 			"event_id", entry.ID,
@@ -440,7 +454,7 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 
 	for _, entry := range response.Failed {
 		if entry.SenderFault {
-			addIDToDelete(idsByEntryID[entry.ID])
+			callbacks.addPoisonID(idsByEntryID[entry.ID], fmt.Sprintf("%s: %s", entry.Code, entry.Message))
 			anyDone = true
 		}
 		a.logFailure(ctx, "Failed to send event",
@@ -454,11 +468,11 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 	return anyDone, nil
 }
 
-func (a *app) sendSQSBatchIsolated(ctx context.Context, queueURL string, events []event, isFIFO bool, addIDToDelete func(any)) (bool, error) {
+func (a *app) sendSQSBatchIsolated(ctx context.Context, queueURL string, events []event, isFIFO bool, callbacks senderCallbacks) (bool, error) {
 	anyDone := false
 	var joined error
 	for _, evt := range events {
-		done, err := a.sendSQSBatch(ctx, queueURL, []event{evt}, isFIFO, addIDToDelete)
+		done, err := a.sendSQSBatch(ctx, queueURL, []event{evt}, isFIFO, callbacks)
 		if done {
 			anyDone = true
 		}
