@@ -217,6 +217,7 @@ func TestProcessOneBatchCommitsDoneBeforeNonFatalSenderError(t *testing.T) {
 	if result.selected != 2 {
 		t.Fatalf("expected two selected events, got %d", result.selected)
 	}
+	assertStatsSnapshot(t, a.stats.snapshotAndReset(), statsSnapshot{selected: 2, sent: 1, keptForRetry: 1, batchesProcessed: 1, senderErrors: 1})
 }
 
 func TestProcessOneBatchBeginFailureIsDatabaseError(t *testing.T) {
@@ -235,6 +236,7 @@ func TestProcessOneBatchBeginFailureIsDatabaseError(t *testing.T) {
 	if result.selected != 0 {
 		t.Fatalf("expected no selected events, got %d", result.selected)
 	}
+	assertStatsSnapshot(t, a.stats.snapshotAndReset(), statsSnapshot{batchErrors: 1})
 	if len(pubsub.messages) != 0 {
 		t.Fatalf("expected no sender calls after begin failure, got %#v", pubsub.messages)
 	}
@@ -496,6 +498,7 @@ func TestProcessOneBatchDeletesExpiredEventWithoutProviderCall(t *testing.T) {
 	if len(sqs.requests) != 1 || len(sqs.requests[0].entries) != 1 || sqs.requests[0].entries[0].ID != "fresh" {
 		t.Fatalf("expected only fresh event to be sent, got %#v", sqs.requests)
 	}
+	assertStatsSnapshot(t, a.stats.snapshotAndReset(), statsSnapshot{selected: 2, sent: 1, poison: 1, batchesProcessed: 1})
 }
 
 func TestExpiredEventBoundaryAndInvalidTimestamps(t *testing.T) {

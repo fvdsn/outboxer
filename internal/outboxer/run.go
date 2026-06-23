@@ -45,6 +45,7 @@ func Run(ctx context.Context, args []string) error {
 		db:            db,
 		shutdown:      cancel,
 		failureLogger: newFailureLogger(failureLogWindow),
+		stats:         &appStats{},
 	}
 
 	if cfg.PubSubEnabled {
@@ -85,6 +86,7 @@ func Run(ctx context.Context, args []string) error {
 		}
 		defer shutdownServer(server)
 	}
+	a.startStatsLogger(ctx)
 
 	a.processEvents(ctx)
 	slog.Info("Graceful shutdown")

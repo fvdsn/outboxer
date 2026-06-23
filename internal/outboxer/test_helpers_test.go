@@ -338,6 +338,7 @@ func testConfig() appConfig {
 		PublishTimeout:     30 * time.Second,
 		PublishResultGrace: 5 * time.Second,
 		MaxEventAge:        0,
+		StatsInterval:      10 * time.Second,
 	}
 }
 
@@ -367,7 +368,7 @@ func newMockProcessorApp(t *testing.T, cfg appConfig) (*app, sqlmock.Sqlmock, fu
 		}
 		_ = db.Close()
 	}
-	return &app{cfg: cfg, db: db, failureLogger: newFailureLogger(time.Minute)}, mock, cleanup
+	return &app{cfg: cfg, db: db, failureLogger: newFailureLogger(time.Minute), stats: &appStats{}}, mock, cleanup
 }
 
 func mockEventRows() *sqlmock.Rows {
@@ -463,6 +464,13 @@ func sortedDeletedIDs(deleted []any) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func assertStatsSnapshot(t *testing.T, got statsSnapshot, want statsSnapshot) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("unexpected stats snapshot:\ngot  %#v\nwant %#v", got, want)
+	}
 }
 
 func expectedHundredEventIDs() []string {

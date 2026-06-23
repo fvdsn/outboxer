@@ -416,4 +416,5 @@ func TestProcessOneBatchDeadLettersExpiredEvent(t *testing.T) {
 	if len(sqs.requests) != 0 {
 		t.Fatalf("expected expired event not to be sent to SQS, got %#v", sqs.requests)
 	}
+	assertStatsSnapshot(t, a.stats.snapshotAndReset(), statsSnapshot{selected: 1, dlq: 1, batchesProcessed: 1})
 }

@@ -35,6 +35,7 @@ func init() {
 
 type batchResult struct {
 	selected int
+	stats    batchStats
 }
 
 type sender interface {
@@ -131,6 +132,7 @@ func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		logBatchError(ctx, "Failed to start batch transaction", err)
+		a.stats.addBatchError()
 		return batchResult{}, fmtDBError(err)
 	}
 
@@ -141,18 +143,21 @@ func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 			if rollbackErr := tx.Rollback(); rollbackErr != nil {
 				logBatchError(ctx, "Failed to rollback batch transaction", rollbackErr)
 			}
+			a.stats.addBatchError()
 			return result, batchErr
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		logBatchError(ctx, "Failed to commit batch transaction", err)
+		a.stats.addBatchError()
 		if errors.Is(batchErr, errFatalAfterCommit) {
 			return result, errors.Join(batchErr, fmtDBError(err))
 		}
 		return result, fmtDBError(err)
 	}
 	markProcessorProgress()
+	a.stats.addCommittedBatch(result.stats)
 
 	return result, batchErr
 }
@@ -175,6 +180,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	}
 	markProcessorProgress()
 	result := batchResult{selected: len(events)}
+	result.stats.selected = len(events)
 	if len(events) > 0 {
 		slog.Info("Processing batch", "count", len(events))
 	}
@@ -235,17 +241,31 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	close(results)
 
 	var senderErr error
-	for result := range results {
-		for _, evt := range result.output.confirmed {
+	for senderResult := range results {
+		for _, evt := range senderResult.output.confirmed {
 			deleteIDs = append(deleteIDs, eventValue(evt, a.cfg.EventID))
+			result.stats.sent++
 		}
-		for _, poisoned := range result.output.poison {
+		for _, poisoned := range senderResult.output.poison {
 			poisonEvents = append(poisonEvents, poisoned)
 			deleteIDs = append(deleteIDs, eventValue(poisoned.evt, a.cfg.EventID))
 		}
-		if result.err != nil {
-			senderErr = errors.Join(senderErr, result.err)
+		if senderResult.err != nil {
+			senderErr = errors.Join(senderErr, senderResult.err)
 		}
+	}
+	result.stats.senderErrors = countJoinedErrors(senderErr)
+	if errors.Is(senderErr, errFatalAfterCommit) {
+		result.stats.fatalAfterCommitErrors = 1
+	}
+	if a.cfg.DLQTable == "" {
+		result.stats.poison = len(poisonEvents)
+	} else {
+		result.stats.dlq = len(poisonEvents)
+	}
+	result.stats.keptForRetry = result.stats.selected - result.stats.sent - result.stats.poison - result.stats.dlq
+	if result.stats.keptForRetry < 0 {
+		result.stats.keptForRetry = 0
 	}
 
 	if err := a.insertDeadLetters(ctx, tx, poisonEvents); err != nil {
@@ -269,6 +289,21 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	}
 
 	return result, nil
+}
+
+func countJoinedErrors(err error) int {
+	if err == nil {
+		return 0
+	}
+	type unwrapper interface{ Unwrap() []error }
+	if joined, ok := err.(unwrapper); ok {
+		count := 0
+		for _, item := range joined.Unwrap() {
+			count += countJoinedErrors(item)
+		}
+		return count
+	}
+	return 1
 }
 
 func (a *app) isExpiredEvent(evt event, now time.Time) bool {

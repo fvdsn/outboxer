@@ -58,6 +58,9 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	if cfg.MaxEventAge != 0 {
 		t.Fatalf("expected max event age to be disabled by default, got %s", cfg.MaxEventAge)
 	}
+	if cfg.StatsInterval != 10*time.Second {
+		t.Fatalf("expected default stats interval 10s, got %s", cfg.StatsInterval)
+	}
 }
 
 func TestLoadConfigVerifiesTLSByDefault(t *testing.T) {
@@ -153,6 +156,7 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	t.Setenv("HEALTH_PORT", "")
 	t.Setenv("DLQ_TABLE", "dead_letters")
 	t.Setenv("MAX_EVENT_AGE_MS", "60000")
+	t.Setenv("STATS_INTERVAL_MS", "15000")
 	t.Setenv("PUBSUB_DESTINATIONS", "topic-a, topic-b ,,")
 	t.Setenv("SQS_DESTINATIONS", "queue-a,queue-b")
 
@@ -178,6 +182,9 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	}
 	if cfg.MaxEventAge != time.Minute {
 		t.Fatalf("expected env max event age, got %s", cfg.MaxEventAge)
+	}
+	if cfg.StatsInterval != 15*time.Second {
+		t.Fatalf("expected env stats interval, got %s", cfg.StatsInterval)
 	}
 	if !reflect.DeepEqual(cfg.PubSubDestinations, []string{"topic-a", "topic-b"}) {
 		t.Fatalf("unexpected Pub/Sub destinations: %#v", cfg.PubSubDestinations)
@@ -220,6 +227,7 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	t.Setenv("WATCHDOG_INTERVAL_MS", "60000")
 	t.Setenv("DLQ_TABLE", "env_dead_letters")
 	t.Setenv("MAX_EVENT_AGE_MS", "60000")
+	t.Setenv("STATS_INTERVAL_MS", "15000")
 	t.Setenv("PUBSUB_DESTINATIONS", "env-topic")
 	t.Setenv("SQS_DESTINATIONS", "env-queue")
 
@@ -235,6 +243,7 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 		"--watchdog-interval-ms=30000",
 		"--dlq-table=flag_dead_letters",
 		"--max-event-age-ms=120000",
+		"--stats-interval-ms=30000",
 		"--pubsub-destinations=flag-topic-a, flag-topic-b",
 		"--sqs-destinations=flag-queue",
 	}, io.Discard)
@@ -274,6 +283,9 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	}
 	if cfg.MaxEventAge != 2*time.Minute {
 		t.Fatalf("expected flag max event age, got %s", cfg.MaxEventAge)
+	}
+	if cfg.StatsInterval != 30*time.Second {
+		t.Fatalf("expected flag stats interval, got %s", cfg.StatsInterval)
 	}
 	if !reflect.DeepEqual(cfg.PubSubDestinations, []string{"flag-topic-a", "flag-topic-b"}) {
 		t.Fatalf("expected flag Pub/Sub destinations, got %#v", cfg.PubSubDestinations)
@@ -323,6 +335,8 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"Env: DLQ_TABLE",
 		"--max-event-age-ms",
 		"Env: MAX_EVENT_AGE_MS",
+		"--stats-interval-ms",
+		"Env: STATS_INTERVAL_MS",
 		"--sqs-send-concurrency",
 		"Env: SQS_SEND_CONCURRENCY",
 		"--pubsub-destinations",
@@ -603,6 +617,19 @@ func TestValidateMaxEventAge(t *testing.T) {
 	cfg.EventTimestamp = "timestamp"
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("expected max event age with timestamp column to be valid, got %v", err)
+	}
+}
+
+func TestValidateStatsInterval(t *testing.T) {
+	cfg := testConfig()
+	cfg.StatsInterval = -time.Millisecond
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when stats interval is negative")
+	}
+
+	cfg.StatsInterval = 0
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected zero stats interval to disable stats, got %v", err)
 	}
 }
 

@@ -17,6 +17,7 @@ type app struct {
 	sqs    sqsPublisher
 
 	failureLogger *failureLogger
+	stats         *appStats
 
 	// shutdown cancels the root context, triggering a graceful shutdown of the
 	// processing loop. It is called from the HTTP handler and on HTTP server
