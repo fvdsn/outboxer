@@ -372,16 +372,16 @@ identifier lengths.
 | STATS-CFG-01 | `STATS_INTERVAL_MS` is unset. | Statistics logging is enabled every 10 seconds. |
 | STATS-CFG-02 | `STATS_INTERVAL_MS=0`. | Periodic statistics logging is disabled. |
 | STATS-CFG-03 | `STATS_INTERVAL_MS` is negative. | Validation fails. |
-| STATS-LOG-01 | Stats interval elapses after normal successful batches. | One structured `Statistics` log is emitted with interval and total counters. |
+| STATS-LOG-01 | Stats interval elapses after normal successful batches. | One structured `Statistics` log is emitted with interval counters. |
 | STATS-LOG-02 | No events are selected during an interval. | Statistics are still emitted; interval counters are zero. |
-| STATS-COUNT-01 | Batch selects 10 events and 8 are provider-confirmed. | `events_selected` increases by 10 and `events_confirmed` by 8. |
+| STATS-COUNT-01 | Batch selects 10 events and 8 are provider-accepted. | `events_selected` increases by 10 and `events_sent` by 8. |
 | STATS-COUNT-02 | Batch deletes 8 confirmed events and 2 poison events. | `events_deleted` increases by 10 and `events_poison` by 2. |
 | STATS-COUNT-03 | DLQ is enabled and 2 poison events are inserted. | `events_dlq` increases by 2. |
 | STATS-COUNT-04 | DLQ is disabled and 2 poison events are removed. | `events_poison` increases by 2 and `events_dlq` does not change. |
 | STATS-COUNT-05 | Batch fails before commit due to a database error. | `batch_errors` increases; counters for deleted/DLQ rows do not report uncommitted work as committed. |
-| STATS-COUNT-06 | Sender returns a non-fatal error. | `sender_errors` increases; confirmed/deleted counters still reflect committed `done` rows. |
+| STATS-COUNT-06 | Sender returns a non-fatal error. | `sender_errors` increases; sent/deleted counters still reflect committed `done` rows. |
 | STATS-COUNT-07 | Sender returns fatal-after-commit. | `fatal_after_commit_errors` increases before processing stops. |
-| STATS-COUNT-08 | Process restarts. | Total counters start from zero again; no persisted stats state is required. |
+| STATS-COUNT-08 | A stats log line is emitted. | Interval counters reset for the next stats interval. |
 | STATS-DB-01 | Remaining-event estimate is enabled/implemented. | It uses a cheap estimate such as PostgreSQL metadata, not `count(*)`. |
 | STATS-DB-02 | Estimate query fails or times out. | Statistics log is still emitted without `events_remaining_estimate` or with an explicit unavailable value; processing continues. |
 | STATS-BACKEND-01 | Pub/Sub and SQS both process events in the interval. | Statistics remain high-level; no backend-specific stats code owns log emission. |

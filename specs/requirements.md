@@ -774,25 +774,25 @@ Statistics output:
 - Stats are emitted as structured logs at `info` level with a stable message such
   as `Statistics`.
 - Field names must be stable enough for log-based alerts.
-- Counters are process-local. They reset on process restart.
-- Each log line must include interval counters and cumulative counters where the
-  distinction matters for alerting.
+- Counters are interval-local. They report work observed since the previous stats
+  log line and reset after each emission. No cumulative total counters are
+  emitted.
 - Statistics are high-level and backend-agnostic. Backend-specific code should
   only report generic sender outcomes through shared callbacks/counters; it must
   not own stats log formatting or stats emission.
 
 Required counters:
 
-- `events_selected`: selected rows in the interval and total.
-- `events_confirmed`: provider-confirmed events in the interval and total.
-- `events_deleted`: rows deleted from the outbox table in the interval and total.
-- `events_poison`: content-poison events removed in the interval and total.
-- `events_dlq`: poison events inserted into the DLQ in the interval and total.
-- `batches_processed`: committed batches in the interval and total.
-- `batch_errors`: database/transaction batch errors in the interval and total.
-- `sender_errors`: sender errors in the interval and total.
-- `fatal_after_commit_errors`: fatal-after-commit sender errors in the interval
-  and total.
+- `events_selected`: selected rows during the interval.
+- `events_sent`: provider-accepted events during the interval.
+- `events_deleted`: rows deleted from the outbox table during the interval.
+- `events_poison`: content-poison events removed during the interval.
+- `events_dlq`: poison events inserted into the DLQ during the interval.
+- `batches_processed`: committed batches during the interval.
+- `batch_errors`: database/transaction batch errors during the interval.
+- `sender_errors`: sender errors during the interval.
+- `fatal_after_commit_errors`: fatal-after-commit sender errors during the
+  interval.
 
 Backlog / remaining events:
 
@@ -823,15 +823,15 @@ Suggested stats log shape:
 ```text
 message="Statistics"
 stats_interval_ms=10000
-events_selected=5000 events_selected_total=100000
-events_confirmed=4980 events_confirmed_total=99500
-events_deleted=4990 events_deleted_total=99700
-events_poison=10 events_poison_total=200
-events_dlq=10 events_dlq_total=200
-batches_processed=12 batches_processed_total=240
-batch_errors=0 batch_errors_total=3
-sender_errors=2 sender_errors_total=30
-fatal_after_commit_errors=0 fatal_after_commit_errors_total=1
+events_selected=5000
+events_sent=4980
+events_deleted=4990
+events_poison=10
+events_dlq=10
+batches_processed=12
+batch_errors=0
+sender_errors=2
+fatal_after_commit_errors=0
 events_remaining_estimate=125000
 ```
 
