@@ -29,6 +29,7 @@ const (
 	sqsEventBatchSize   = 10
 	sqsEventMaxSizeByte = 1024 * 1024
 	sqsMaxAttributes    = 10
+	sqsMaxDelaySeconds  = 900
 
 	awsWebIdentityProviderGoogle = "google"
 )
@@ -44,11 +45,13 @@ type sqsPublisher interface {
 }
 
 type sqsBatchEntry struct {
-	ID              string
-	MessageBody     string
-	Attributes      map[string]string
-	MessageGroupID  string
-	DeduplicationID string
+	ID                 string
+	MessageBody        string
+	Attributes         map[string]string
+	MessageGroupID     string
+	DeduplicationID    string
+	DelaySeconds       *int32
+	AWSXRayTraceHeader string
 }
 
 type sqsBatchResponse struct {
@@ -142,11 +145,22 @@ func (p *awsSQSPublisher) SendBatch(ctx context.Context, queueURL string, entrie
 			MessageBody:       aws.String(entry.MessageBody),
 			MessageAttributes: convertAttributesToAWSSQS(entry.Attributes),
 		}
+		if entry.DelaySeconds != nil {
+			awsEntry.DelaySeconds = *entry.DelaySeconds
+		}
 		if entry.MessageGroupID != "" {
 			awsEntry.MessageGroupId = aws.String(entry.MessageGroupID)
 		}
 		if entry.DeduplicationID != "" {
 			awsEntry.MessageDeduplicationId = aws.String(entry.DeduplicationID)
+		}
+		if entry.AWSXRayTraceHeader != "" {
+			awsEntry.MessageSystemAttributes = map[string]sqstypes.MessageSystemAttributeValue{
+				"AWSTraceHeader": {
+					DataType:    aws.String("String"),
+					StringValue: aws.String(entry.AWSXRayTraceHeader),
+				},
+			}
 		}
 		awsEntries = append(awsEntries, awsEntry)
 	}
@@ -388,6 +402,39 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 			)
 			continue
 		}
+		deduplicationID, err := options.stringValue("messageDeduplicationId")
+		if err != nil {
+			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+			a.logFailure(ctx, "Failed to send event",
+				fmt.Sprintf("sqs|%s|messageDeduplicationId|malformed-options", queueURL),
+				"event_id", eventValue(evt, a.cfg.EventID),
+				"event_destination", queueURL,
+				"error", err.Error(),
+			)
+			continue
+		}
+		delaySeconds, err := sqsDelaySeconds(options)
+		if err != nil {
+			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+			a.logFailure(ctx, "Failed to send event",
+				fmt.Sprintf("sqs|%s|delaySeconds|malformed-options", queueURL),
+				"event_id", eventValue(evt, a.cfg.EventID),
+				"event_destination", queueURL,
+				"error", err.Error(),
+			)
+			continue
+		}
+		traceHeader, err := options.stringValue("awsTraceHeader")
+		if err != nil {
+			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+			a.logFailure(ctx, "Failed to send event",
+				fmt.Sprintf("sqs|%s|awsTraceHeader|malformed-options", queueURL),
+				"event_id", eventValue(evt, a.cfg.EventID),
+				"event_destination", queueURL,
+				"error", err.Error(),
+			)
+			continue
+		}
 		timestamp := eventValue(evt, a.cfg.EventTimestamp)
 		id := eventValue(evt, a.cfg.EventID)
 		eventID := fmt.Sprint(id)
@@ -403,7 +450,7 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 				"dropped_attributes", deletedAttributes,
 			)
 		}
-		if isSQSPoison(data, stringAttributes, isFIFO, orderingKey) {
+		if isSQSPoison(data, stringAttributes, isFIFO, orderingKey, deduplicationID, delaySeconds) {
 			callbacks.addPoisonID(id, "Event is invalid for SQS")
 			a.logFailure(ctx, "Failed to send event",
 				fmt.Sprintf("sqs|%s|%s|local-poison", queueURL, orderingKey),
@@ -426,9 +473,16 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 		)
 
 		entry := sqsBatchEntry{
-			ID:          entryID,
-			MessageBody: string(data),
-			Attributes:  stringAttributes,
+			ID:                 entryID,
+			MessageBody:        string(data),
+			Attributes:         stringAttributes,
+			AWSXRayTraceHeader: traceHeader,
+		}
+		if !isFIFO {
+			entry.DelaySeconds = delaySeconds
+		}
+		if orderingKey != "" {
+			entry.MessageGroupID = orderingKey
 		}
 		if isFIFO {
 			groupID := orderingKey
@@ -436,7 +490,11 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 				groupID = syntheticFIFOGroupID(eventID)
 			}
 			entry.MessageGroupID = groupID
-			entry.DeduplicationID = providerSafeID(eventID, sqsFIFOIDPattern)
+			if deduplicationID != "" {
+				entry.DeduplicationID = deduplicationID
+			} else {
+				entry.DeduplicationID = providerSafeID(eventID, sqsFIFOIDPattern)
+			}
 		}
 
 		entries = append(entries, entry)
@@ -550,7 +608,7 @@ func sanitizeStringAttributes(attributes map[string]any) (map[string]string, map
 	return kept, deleted
 }
 
-func isSQSPoison(body []byte, attributes map[string]string, isFIFO bool, orderingKey string) bool {
+func isSQSPoison(body []byte, attributes map[string]string, isFIFO bool, orderingKey string, deduplicationID string, delaySeconds *int32) bool {
 	if len(body) == 0 || !sqsAllowedUnicodeBytes(body) {
 		return true
 	}
@@ -561,6 +619,12 @@ func isSQSPoison(body []byte, attributes map[string]string, isFIFO bool, orderin
 		return true
 	}
 	if isFIFO && orderingKey != "" && !sqsFIFOIDPattern.MatchString(orderingKey) {
+		return true
+	}
+	if deduplicationID != "" && !sqsFIFOIDPattern.MatchString(deduplicationID) {
+		return true
+	}
+	if delaySeconds != nil && (*delaySeconds < 0 || *delaySeconds > sqsMaxDelaySeconds) {
 		return true
 	}
 	return false
@@ -585,6 +649,36 @@ func sqsEventMessageSize(evt event, cfg appConfig) int {
 	}
 	stringAttributes, _ := sanitizeStringAttributes(attributes)
 	return sqsMessageSize(eventBytes(evt, cfg.EventPayload), stringAttributes)
+}
+
+func sqsDelaySeconds(options backendOptions) (*int32, error) {
+	value, ok := options.values["delaySeconds"]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	var seconds int32
+	switch typed := value.(type) {
+	case int:
+		seconds = int32(typed)
+		if int(seconds) != typed {
+			return nil, fmt.Errorf("%w: delaySeconds must be a valid int32", errMalformedOptions)
+		}
+	case int32:
+		seconds = typed
+	case int64:
+		seconds = int32(typed)
+		if int64(seconds) != typed {
+			return nil, fmt.Errorf("%w: delaySeconds must be a valid int32", errMalformedOptions)
+		}
+	case float64:
+		seconds = int32(typed)
+		if float64(seconds) != typed {
+			return nil, fmt.Errorf("%w: delaySeconds must be an integer", errMalformedOptions)
+		}
+	default:
+		return nil, fmt.Errorf("%w: delaySeconds must be an integer", errMalformedOptions)
+	}
+	return &seconds, nil
 }
 
 func validSQSAttributes(attributes map[string]string) bool {

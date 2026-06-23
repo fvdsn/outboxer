@@ -264,29 +264,36 @@ func TestSQSLocalPrevalidationBoundaries(t *testing.T) {
 		}
 	}
 
-	if isSQSPoison([]byte("body"), nil, false, "") {
+	if isSQSPoison([]byte("body"), nil, false, "", "", nil) {
 		t.Fatal("expected ordinary SQS body to be valid")
 	}
-	if !isSQSPoison(nil, nil, false, "") {
+	if !isSQSPoison(nil, nil, false, "", "", nil) {
 		t.Fatal("expected empty SQS body to be poison")
 	}
-	if !isSQSPoison([]byte{0xff}, nil, false, "") {
+	if !isSQSPoison([]byte{0xff}, nil, false, "", "", nil) {
 		t.Fatal("expected invalid UTF-8 SQS body to be poison")
 	}
-	if !isSQSPoison([]byte("body"), map[string]string{"attr": string([]byte{0xff})}, false, "") {
+	if !isSQSPoison([]byte("body"), map[string]string{"attr": string([]byte{0xff})}, false, "", "", nil) {
 		t.Fatal("expected invalid UTF-8 SQS attribute value to be poison")
 	}
-	if isSQSPoison([]byte("body\t\n\r"), nil, false, "") {
+	if isSQSPoison([]byte("body\t\n\r"), nil, false, "", "", nil) {
 		t.Fatal("expected allowed SQS boundary characters to be valid")
 	}
-	if !isSQSPoison([]byte(strings.Repeat("x", sqsEventMaxSizeByte+1)), nil, false, "") {
+	if !isSQSPoison([]byte(strings.Repeat("x", sqsEventMaxSizeByte+1)), nil, false, "", "", nil) {
 		t.Fatal("expected oversized SQS message to be poison")
 	}
-	if !isSQSPoison([]byte("body"), nil, true, strings.Repeat("x", 129)) {
+	if !isSQSPoison([]byte("body"), nil, true, strings.Repeat("x", 129), "", nil) {
 		t.Fatal("expected overlong FIFO group id to be poison")
 	}
-	if !isSQSPoison([]byte("body"), nil, true, "bad\nkey") {
+	if !isSQSPoison([]byte("body"), nil, true, "bad\nkey", "", nil) {
 		t.Fatal("expected invalid FIFO group id to be poison")
+	}
+	if !isSQSPoison([]byte("body"), nil, true, "", strings.Repeat("x", 129), nil) {
+		t.Fatal("expected overlong deduplication id to be poison")
+	}
+	invalidDelay := int32(901)
+	if !isSQSPoison([]byte("body"), nil, false, "", "", &invalidDelay) {
+		t.Fatal("expected invalid delay to be poison")
 	}
 }
 
@@ -793,12 +800,11 @@ func TestSendSQSEventsFIFOTimeoutStopsSameGroup(t *testing.T) {
 	}
 }
 
-func TestSendSQS10EventsStandardQueueOmitsFIFOFields(t *testing.T) {
+func TestSendSQS10EventsStandardQueueSendsFairQueueGroup(t *testing.T) {
 	cfg := testConfig()
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a := &app{cfg: cfg, sqs: sqs}
 
-	// A standard queue must not get a group id even when an ordering key is set.
 	events := []event{
 		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": combinedOrderingOptions("group-a")}},
 	}
@@ -808,11 +814,101 @@ func TestSendSQS10EventsStandardQueueOmitsFIFOFields(t *testing.T) {
 	}
 
 	entry := sqs.requests[0].entries[0]
-	if entry.MessageGroupID != "" {
-		t.Fatalf("expected no message group id on standard queue, got %q", entry.MessageGroupID)
+	if entry.MessageGroupID != "group-a" {
+		t.Fatalf("expected fair queue message group id, got %q", entry.MessageGroupID)
 	}
 	if entry.DeduplicationID != "" {
 		t.Fatalf("expected no dedup id on standard queue, got %q", entry.DeduplicationID)
+	}
+}
+
+func TestSendSQS10EventsFIFOUsesExplicitDeduplicationID(t *testing.T) {
+	cfg := testConfig()
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": map[string]any{"sqs": map[string]any{"messageGroupId": "group-a", "messageDeduplicationId": "custom-dedup"}}}},
+	}
+
+	if err := a.sendSQS10Events(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQS10Events returned error: %v", err)
+	}
+
+	entry := sqs.requests[0].entries[0]
+	if entry.DeduplicationID != "custom-dedup" {
+		t.Fatalf("expected explicit deduplication id, got %q", entry.DeduplicationID)
+	}
+}
+
+func TestSendSQS10EventsSendsDelayAndTraceHeader(t *testing.T) {
+	cfg := testConfig()
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": map[string]any{"sqs": map[string]any{"delaySeconds": 30, "awsTraceHeader": "Root=1-67891233-abcdef012345678912345678"}}}},
+	}
+
+	if err := a.sendSQS10Events(context.Background(), "queue-a", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQS10Events returned error: %v", err)
+	}
+
+	entry := sqs.requests[0].entries[0]
+	if entry.DelaySeconds == nil || *entry.DelaySeconds != 30 {
+		t.Fatalf("expected delay seconds 30, got %#v", entry.DelaySeconds)
+	}
+	if entry.AWSXRayTraceHeader != "Root=1-67891233-abcdef012345678912345678" {
+		t.Fatalf("unexpected trace header: %q", entry.AWSXRayTraceHeader)
+	}
+}
+
+func TestSendSQS10EventsOmitsDelayForFIFO(t *testing.T) {
+	cfg := testConfig()
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+
+	events := []event{
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": map[string]any{"sqs": map[string]any{"messageGroupId": "group-a", "delaySeconds": 30}}}},
+	}
+
+	if err := a.sendSQS10Events(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQS10Events returned error: %v", err)
+	}
+
+	if sqs.requests[0].entries[0].DelaySeconds != nil {
+		t.Fatalf("expected FIFO delay seconds to be omitted, got %#v", sqs.requests[0].entries[0].DelaySeconds)
+	}
+}
+
+func TestSendSQS10EventsDropsInvalidProviderOptionsAsPoison(t *testing.T) {
+	tests := []struct {
+		name    string
+		options map[string]any
+	}{
+		{name: "dedup", options: map[string]any{"sqs": map[string]any{"messageGroupId": "group-a", "messageDeduplicationId": "bad\ndedup"}}},
+		{name: "delay", options: map[string]any{"sqs": map[string]any{"delaySeconds": 901}}},
+		{name: "delay type", options: map[string]any{"sqs": map[string]any{"delaySeconds": "30"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			sqs := &fakeSQSPublisher{autoReply: true}
+			a := &app{cfg: cfg, sqs: sqs}
+			var deleted []any
+
+			events := []event{{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": tt.options}}}
+			if err := a.sendSQS10Events(context.Background(), "queue-a.fifo", events, func(id any) { deleted = append(deleted, id) }); err != nil {
+				t.Fatalf("sendSQS10Events returned error: %v", err)
+			}
+			if !reflect.DeepEqual(deleted, []any{"event-1"}) {
+				t.Fatalf("expected invalid option to be deleted as poison, got %#v", deleted)
+			}
+			if len(sqs.requests) != 0 {
+				t.Fatalf("expected no provider calls for invalid options, got %#v", sqs.requests)
+			}
+		})
 	}
 }
 

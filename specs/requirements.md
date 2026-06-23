@@ -78,6 +78,9 @@ SQS options:
 {
   "sqs": {
     "messageGroupId": "user-123",
+    "messageDeduplicationId": "event-123",
+    "delaySeconds": 30,
+    "awsTraceHeader": "Root=1-67891233-abcdef012345678912345678",
     "attributes": {
       "source": "users"
     }
@@ -91,13 +94,15 @@ Supported keys for the first options implementation:
 | --- | --- | --- |
 | Pub/Sub | `pubsub.orderingKey` | Pub/Sub ordering key. Empty string is treated as absent. |
 | Pub/Sub | `pubsub.attributes` | Pub/Sub message attributes. |
-| SQS | `sqs.messageGroupId` | SQS FIFO `MessageGroupId`. Empty string is treated as absent. |
+| SQS | `sqs.messageGroupId` | SQS `MessageGroupId`. FIFO queues use it for ordering; standard queues use it for fair queues. Empty string is treated as absent. |
+| SQS | `sqs.messageDeduplicationId` | SQS FIFO `MessageDeduplicationId`. Empty string is treated as absent. When absent, Outboxer derives it from the event id. |
+| SQS | `sqs.delaySeconds` | SQS per-message delay in seconds for standard queues. Must be an integer from 0 to 900. Not sent for FIFO queues. |
+| SQS | `sqs.awsTraceHeader` | SQS `AWSTraceHeader` message system attribute. Empty string is treated as absent. |
 | SQS | `sqs.attributes` | SQS message attributes. |
 
-SQS `MessageDeduplicationId`, explicit Pub/Sub/SQS idempotency keys, delays, and
-other provider-specific settings are intentionally out of scope for this first
-options step. They remain derived from existing data or provider defaults until a
-later spec extends the supported key table.
+Full typed SQS message attributes (`BinaryValue`, list values, and custom
+`DataType`) are intentionally out of scope for this step. `sqs.attributes` stays
+the simple string map form for now.
 
 ### Options validation
 
@@ -107,8 +112,11 @@ Options validation runs after route resolution and only for the selected backend
   equivalent to an empty options object for that backend.
 - A present `options` value or selected backend section that is not a JSON object
   is malformed options and is content poison.
-- `pubsub.orderingKey` and `sqs.messageGroupId` must be strings when present;
-  non-string values are content poison.
+- `pubsub.orderingKey`, `sqs.messageGroupId`, `sqs.messageDeduplicationId`, and
+  `sqs.awsTraceHeader` must be strings when present; non-string values are
+  content poison.
+- `sqs.delaySeconds` must be an integer number when present; non-integer values
+  are content poison.
 - `pubsub.attributes` and `sqs.attributes` must be JSON objects when present;
   non-object values are content poison.
 - Attribute object values keep the existing compatibility behavior: string
@@ -536,9 +544,14 @@ Classify as local SQS poison:
   with `AWS.` or `Amazon.` in any casing, must not start/end with `.`, and must
   not contain consecutive periods.
 - P6 if a provided `options.sqs.messageGroupId` cannot be used as a
-  `MessageGroupId` because it exceeds 128 characters or contains characters
-  outside the SQS FIFO ID character set: alphanumeric plus
+  `MessageGroupId`, or a provided `options.sqs.messageDeduplicationId` cannot be
+  used as a `MessageDeduplicationId`, because it exceeds 128 characters or
+  contains characters outside the SQS FIFO ID character set: alphanumeric plus
   ``!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~``.
+- P6 if `options.sqs.delaySeconds` is outside SQS's documented 0-900 second
+  range.
+- P5 if `options.sqs.awsTraceHeader` is set but is empty or cannot be represented
+  as the supported SQS `AWSTraceHeader` system attribute.
 - P7 if the queue URL is syntactically invalid. A syntactically valid but missing
   queue is R4, not poison.
 
@@ -546,16 +559,14 @@ Do not classify these locally as poison:
 
 - A standard-queue batch exceeding 10 entries or 1 MiB. Split the batch; only an
   individual oversized message can be P3.
-- Raw event IDs that are too long or contain characters invalid for
+- Raw event IDs that are too long or contain characters invalid for derived
   `MessageDeduplicationId` or batch entry `Id`. Those are Outboxer-generated
   transport identifiers, not event semantics: derive stable provider-safe values
   from the event ID, using the raw ID only when already valid and a
   **collision-resistant** digest otherwise (e.g. a full SHA-256 hex, 64 chars ≤
-  128). Collision-resistance is mandatory for `MessageDeduplicationId`: a
-  collision means SQS treats two distinct events as duplicates within its
-  5-minute dedup window and silently drops one — a S0 violation. (For batch entry
-  `Id` a collision is only a within-request error, not loss, but use the same
-  derivation.)
+  128). When the user explicitly provides `options.sqs.messageDeduplicationId`,
+  validate and send it as-is; Outboxer must not silently rewrite user-provided
+  provider options.
 - FIFO events with no `options.sqs.messageGroupId`. They have no cross-event
   ordering contract, but SQS requires a `MessageGroupId`, so derive a stable
   provider-safe synthetic group from the event ID.
@@ -806,7 +817,9 @@ Sender errors are classified outside the `done` set:
   no in-process recreation — [S5, S1]
 - Group by queue, detect FIFO by `.fifo` — [S1]
 - Standard queues: chunk 10 with `SendMessageBatch`; chunks may run concurrently
-  under the global semaphore — [S1, S3, provider: SQS per-entry results]
+  under the global semaphore. If `options.sqs.messageGroupId` is set, send it on
+  standard queues as the SQS fair-queue tenant/group hint, but do not serialize or
+  order standard sends by it. — [S1, S3, provider: SQS per-entry results]
 - FIFO queues: group by `options.sqs.messageGroupId` and send
   **single-message** requests sequentially within each group. Different groups
   may run concurrently under the global semaphore. Do not batch multiple messages
@@ -818,9 +831,11 @@ Sender errors are classified outside the `done` set:
 - FIFO events with no `options.sqs.messageGroupId` still need an SQS
   `MessageGroupId`. They do not have an ordering contract with each other, so
   assign a stable synthetic group derived from the event id (not a random value).
-  FIFO `MessageDeduplicationId` and `SendMessageBatch` entry `Id` are stable
-  provider-safe values derived from the event id, using the raw event id only
-  when it already satisfies provider limits. — [S0, S2]
+  FIFO `MessageDeduplicationId` defaults to a stable provider-safe value derived
+  from the event id, using the raw event id only when it already satisfies
+  provider limits. `options.sqs.messageDeduplicationId` overrides that derived
+  value and is sent as-is after validation. `SendMessageBatch` entry `Id` remains
+  Outboxer-generated from the event id. — [S0, S2]
 - One global `SQS_SEND_CONCURRENCY` semaphore across all SQS sends — [S3]
 - Standard batch sender-faults and single-message permanent client errors
   matching P3–P7 → removed (`done`); transient failures → kept — [S11, S0]

@@ -129,6 +129,13 @@ matter.
 | OPT-14 | Options contain unknown keys. | Unknown keys are ignored and do not make the event poison. |
 | OPT-15 | Event row still has legacy `ordering_key` and `attributes` columns. | They are ignored; only `options` supplies backend metadata. |
 | OPT-16 | `destination` column is present alongside options. | `destination` remains the only per-event destination source; options do not override it. |
+| OPT-17 | `options.sqs.messageGroupId` is set for a standard queue. | SQS sender passes it as `MessageGroupId` without changing standard queue batching or ordering behavior. |
+| OPT-18 | `options.sqs.messageDeduplicationId` is set for a FIFO queue. | SQS sender uses it instead of the event-id-derived deduplication ID. |
+| OPT-19 | `options.sqs.messageDeduplicationId` is invalid. | Event is content-poison P6; no provider call is made. |
+| OPT-20 | `options.sqs.delaySeconds` is an integer from 0 to 900 on a standard queue. | SQS sender passes it as `DelaySeconds`. |
+| OPT-21 | `options.sqs.delaySeconds` is set on a FIFO queue. | SQS sender does not send per-message delay for FIFO queues. |
+| OPT-22 | `options.sqs.delaySeconds` is non-integer or outside 0-900. | Event is content-poison P6; no provider call is made. |
+| OPT-23 | `options.sqs.awsTraceHeader` is set. | SQS sender sends it as the `AWSTraceHeader` message system attribute. |
 
 ## Batch orchestration
 
