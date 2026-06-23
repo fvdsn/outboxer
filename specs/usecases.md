@@ -375,8 +375,8 @@ identifier lengths.
 | STATS-LOG-01 | Stats interval elapses after normal successful batches. | One structured `Statistics` log is emitted with interval counters. |
 | STATS-LOG-02 | No events are selected during an interval. | Statistics are still emitted; interval counters are zero. |
 | STATS-COUNT-01 | Batch selects 10 events and 8 are provider-accepted. | `events_selected` increases by 10 and `events_sent` by 8. |
-| STATS-COUNT-02 | Batch sends 8 events and removes 2 poison events. | `events_sent` increases by 8 and `events_poison` by 2. |
-| STATS-COUNT-03 | DLQ is enabled and 2 poison events are inserted. | `events_poison` and `events_dlq` both increase by 2; `events_dlq` is a subset of `events_poison`. |
+| STATS-COUNT-02 | Batch sends 8 events and removes 2 poison events while DLQ is disabled. | `events_sent` increases by 8 and `events_poison` by 2. |
+| STATS-COUNT-03 | DLQ is enabled and 2 poison events are inserted. | `events_dlq` increases by 2 and `events_poison` does not change. |
 | STATS-COUNT-04 | DLQ is disabled and 2 poison events are removed. | `events_poison` increases by 2 and `events_dlq` does not change. |
 | STATS-COUNT-05 | Batch fails before commit due to a database error. | `batch_errors` increases; DLQ counters do not report uncommitted work as committed. |
 | STATS-COUNT-06 | Sender returns a non-fatal error. | `sender_errors` increases; `events_sent` still reflects provider-accepted events. |
