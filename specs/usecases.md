@@ -378,10 +378,11 @@ identifier lengths.
 | STATS-COUNT-02 | Batch sends 8 events and removes 2 poison events while DLQ is disabled. | `events_sent` increases by 8 and `events_poison` by 2. |
 | STATS-COUNT-03 | DLQ is enabled and 2 poison events are inserted. | `events_dlq` increases by 2 and `events_poison` does not change. |
 | STATS-COUNT-04 | DLQ is disabled and 2 poison events are removed. | `events_poison` increases by 2 and `events_dlq` does not change. |
-| STATS-COUNT-05 | Batch fails before commit due to a database error. | `batch_errors` increases; DLQ counters do not report uncommitted work as committed. |
-| STATS-COUNT-06 | Sender returns a non-fatal error. | `sender_errors` increases; `events_sent` still reflects provider-accepted events. |
-| STATS-COUNT-07 | Sender returns fatal-after-commit. | `fatal_after_commit_errors` increases before processing stops. |
-| STATS-COUNT-08 | A stats log line is emitted. | Interval counters reset for the next stats interval. |
+| STATS-COUNT-05 | Sender returns retryable failures for 3 selected events. | `events_kept_for_retry` increases by 3. |
+| STATS-COUNT-06 | Batch fails before commit due to a database error. | `batch_errors` increases; DLQ counters do not report uncommitted work as committed. |
+| STATS-COUNT-07 | Sender returns a non-fatal error. | `sender_errors` increases; `events_sent` still reflects provider-accepted events. |
+| STATS-COUNT-08 | Sender returns fatal-after-commit. | `fatal_after_commit_errors` increases before processing stops. |
+| STATS-COUNT-09 | A stats log line is emitted. | Interval counters reset for the next stats interval. |
 | STATS-DB-01 | Remaining-event estimate is enabled/implemented. | It uses a cheap estimate such as PostgreSQL metadata, not `count(*)`. |
 | STATS-DB-02 | Estimate query fails or times out. | Statistics log is still emitted without `events_remaining_estimate` or with an explicit unavailable value; processing continues. |
 | STATS-BACKEND-01 | Pub/Sub and SQS both process events in the interval. | Statistics remain high-level; no backend-specific stats code owns log emission. |

@@ -790,6 +790,9 @@ Required counters:
   `DLQ_TABLE` is disabled.
 - `events_dlq`: content-poison events inserted into the DLQ during the interval.
   `events_poison` and `events_dlq` are mutually exclusive counters.
+- `events_kept_for_retry`: selected events that were not sent, not poison, and
+  not DLQed because their failure/outcome is retryable, unknown, or otherwise
+  intentionally kept in the outbox table for a future batch.
 - `batches_processed`: committed batches during the interval.
 - `batch_errors`: database/transaction batch errors during the interval.
 - `sender_errors`: sender errors during the interval.
@@ -829,6 +832,7 @@ events_selected=5000
 events_sent=4980
 events_poison=0
 events_dlq=10
+events_kept_for_retry=10
 batches_processed=12
 batch_errors=0
 sender_errors=2
