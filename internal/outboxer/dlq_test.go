@@ -2,6 +2,7 @@ package outboxer
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,57 @@ const insertDLQSQL = `INSERT INTO "dead_letters" ("event") VALUES ($1::jsonb)`
 type dlqPayloadMatcher struct {
 	t     *testing.T
 	check func(map[string]any) bool
+}
+
+type dlqMetadataRow struct {
+	name            string
+	typeName        string
+	notNull         bool
+	defaultExpr     string
+	identity        string
+	generated       string
+	canInsertColumn bool
+}
+
+func (r dlqMetadataRow) toMetadata() dlqColumnMetadata {
+	return dlqColumnMetadata{
+		name:            r.name,
+		typeName:        r.typeName,
+		notNull:         r.notNull,
+		defaultExpr:     sqlNullString(r.defaultExpr),
+		identity:        r.identity,
+		generated:       r.generated,
+		canInsertColumn: r.canInsertColumn,
+	}
+}
+
+func dlqMetadataRows(rows ...dlqMetadataRow) *sqlmock.Rows {
+	sqlRows := sqlmock.NewRows([]string{
+		"relkind",
+		"can_insert_table",
+		"attname",
+		"typname",
+		"attnotnull",
+		"default_expr",
+		"attidentity",
+		"attgenerated",
+		"can_insert_column",
+	})
+	for _, row := range rows {
+		sqlRows.AddRow("r", true, row.name, row.typeName, row.notNull, nullableStringValue(row.defaultExpr), row.identity, row.generated, row.canInsertColumn)
+	}
+	return sqlRows
+}
+
+func sqlNullString(value string) sql.NullString {
+	return sql.NullString{String: value, Valid: value != ""}
+}
+
+func nullableStringValue(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func (m dlqPayloadMatcher) Match(value driver.Value) bool {
@@ -47,11 +99,123 @@ func TestCheckDLQWorksValidatesConfiguredTable(t *testing.T) {
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
 
-	mock.ExpectQuery(`SELECT "id", "event"::jsonb FROM "dead_letters" LIMIT 1`).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "event"}))
+	mock.ExpectQuery(dlqMetadataSQL).
+		WithArgs(`"dead_letters"`).
+		WillReturnRows(dlqMetadataRows(
+			dlqMetadataRow{name: "id", typeName: "int8", notNull: true, defaultExpr: "nextval('dead_letters_id_seq'::regclass)", canInsertColumn: true},
+			dlqMetadataRow{name: "event", typeName: "jsonb", notNull: true, canInsertColumn: true},
+		))
 
 	if err := a.checkDLQWorks(context.Background()); err != nil {
 		t.Fatalf("checkDLQWorks returned error: %v", err)
+	}
+}
+
+func TestValidateDLQTableMetadataRejectsUninsertableTableShapes(t *testing.T) {
+	validID := dlqMetadataRow{name: "id", typeName: "int8", notNull: true, defaultExpr: "nextval('dead_letters_id_seq'::regclass)", canInsertColumn: true}
+	validEvent := dlqMetadataRow{name: "event", typeName: "jsonb", notNull: true, canInsertColumn: true}
+
+	tests := []struct {
+		name     string
+		metadata dlqTableMetadata
+		want     string
+	}{
+		{
+			name:     "missing table",
+			metadata: dlqTableMetadata{},
+			want:     "does not exist",
+		},
+		{
+			name: "view",
+			metadata: dlqTableMetadata{relkind: "v", canInsertTable: true, columns: []dlqColumnMetadata{
+				validID.toMetadata(), validEvent.toMetadata(),
+			}},
+			want: "ordinary or partitioned table",
+		},
+		{
+			name: "missing table insert privilege",
+			metadata: dlqTableMetadata{relkind: "r", canInsertTable: false, columns: []dlqColumnMetadata{
+				validID.toMetadata(), validEvent.toMetadata(),
+			}},
+			want: "missing INSERT privilege",
+		},
+		{
+			name: "missing id",
+			metadata: dlqTableMetadata{relkind: "r", canInsertTable: true, columns: []dlqColumnMetadata{
+				validEvent.toMetadata(),
+			}},
+			want: "missing required column: id",
+		},
+		{
+			name: "id cannot be omitted",
+			metadata: dlqTableMetadata{relkind: "r", canInsertTable: true, columns: []dlqColumnMetadata{
+				{name: "id", typeName: "int8", notNull: true, canInsertColumn: true},
+				validEvent.toMetadata(),
+			}},
+			want: "column id must be nullable",
+		},
+		{
+			name: "missing event",
+			metadata: dlqTableMetadata{relkind: "r", canInsertTable: true, columns: []dlqColumnMetadata{
+				validID.toMetadata(),
+			}},
+			want: "missing required column: event",
+		},
+		{
+			name: "event generated",
+			metadata: dlqTableMetadata{relkind: "r", canInsertTable: true, columns: []dlqColumnMetadata{
+				validID.toMetadata(),
+				{name: "event", typeName: "jsonb", notNull: true, generated: "s", canInsertColumn: true},
+			}},
+			want: "event must accept inserted values",
+		},
+		{
+			name: "event wrong type",
+			metadata: dlqTableMetadata{relkind: "r", canInsertTable: true, columns: []dlqColumnMetadata{
+				validID.toMetadata(),
+				{name: "event", typeName: "text", notNull: true, canInsertColumn: true},
+			}},
+			want: "must be json or jsonb",
+		},
+		{
+			name: "event missing column insert privilege",
+			metadata: dlqTableMetadata{relkind: "r", canInsertTable: true, columns: []dlqColumnMetadata{
+				validID.toMetadata(),
+				{name: "event", typeName: "jsonb", notNull: true, canInsertColumn: false},
+			}},
+			want: "column event",
+		},
+		{
+			name: "extra required column",
+			metadata: dlqTableMetadata{relkind: "r", canInsertTable: true, columns: []dlqColumnMetadata{
+				validID.toMetadata(), validEvent.toMetadata(),
+				{name: "tenant", typeName: "text", notNull: true, canInsertColumn: true},
+			}},
+			want: "required columns without defaults",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateDLQTableMetadata("dead_letters", tt.metadata)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestValidateDLQTableMetadataAllowsInsertableExtraColumns(t *testing.T) {
+	metadata := dlqTableMetadata{relkind: "r", canInsertTable: true, columns: []dlqColumnMetadata{
+		{name: "id", typeName: "int8", notNull: true, identity: "d", canInsertColumn: true},
+		{name: "event", typeName: "json", notNull: true, canInsertColumn: true},
+		{name: "nullable_note", typeName: "text", canInsertColumn: true},
+		{name: "defaulted_note", typeName: "text", notNull: true, defaultExpr: sqlNullString("'note'::text"), canInsertColumn: true},
+		{name: "generated_note", typeName: "text", notNull: true, generated: "s", canInsertColumn: false},
+	}}
+
+	if err := validateDLQTableMetadata("dead_letters", metadata); err != nil {
+		t.Fatalf("expected metadata to be valid, got %v", err)
 	}
 }
 
