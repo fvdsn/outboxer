@@ -133,8 +133,8 @@ func TestProcessEventsStopsAfterFatalAfterCommit(t *testing.T) {
 	a.pubsub = &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}}
 
 	rows := mockEventRows().
-		AddRow("event-1", "pubsub", "topic-1", "one", "key-a", nil).
-		AddRow("event-2", "pubsub", "topic-1", "two", "key-a", nil)
+		AddRow("event-1", "pubsub", "topic-1", "one", mockDBValue(combinedOrderingOptions("key-a"))).
+		AddRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions("key-a")))
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -163,8 +163,8 @@ func TestProcessEventsDoesNotCooldownAfterNonFatalSenderError(t *testing.T) {
 	a.pubsub = &fakePubSubPublisher{errs: []error{nil, expectedErr}}
 
 	firstRows := mockEventRows().
-		AddRow("event-1", "pubsub", "topic-1", "one", nil, nil).
-		AddRow("event-2", "pubsub", "topic-1", "two", nil, nil)
+		AddRow("event-1", "pubsub", "topic-1", "one", nil).
+		AddRow("event-2", "pubsub", "topic-1", "two", nil)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(firstRows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -200,8 +200,8 @@ func TestProcessOneBatchCommitsDoneBeforeNonFatalSenderError(t *testing.T) {
 	a.pubsub = &fakePubSubPublisher{errs: []error{nil, expectedErr}}
 
 	rows := mockEventRows().
-		AddRow("event-1", "pubsub", "topic-1", "one", nil, nil).
-		AddRow("event-2", "pubsub", "topic-1", "two", nil, nil)
+		AddRow("event-1", "pubsub", "topic-1", "one", nil).
+		AddRow("event-2", "pubsub", "topic-1", "two", nil)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -416,8 +416,8 @@ func TestProcessOneBatchCommitsHealthyRouteWhenAnotherRouteFails(t *testing.T) {
 
 	query, _ := a.selectEventsQuery()
 	rows := mockEventRows().
-		AddRow("pubsub-ok", "pubsub", "topic-a", "ok", nil, nil).
-		AddRow("sqs-fail", "sqs", "queue-broken", "retry", nil, nil)
+		AddRow("pubsub-ok", "pubsub", "topic-a", "ok", nil).
+		AddRow("sqs-fail", "sqs", "queue-broken", "retry", nil)
 	mock.ExpectBegin()
 	mock.ExpectQuery(query).WithArgs(cfg.CollectBatchTarget).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("pubsub-ok").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -450,8 +450,8 @@ func TestProcessOneBatchDeletesContentPoisonAndConfirmedSendTogether(t *testing.
 	a.sqs = sqs
 
 	rows := mockEventRows().
-		AddRow("poison", "sqs", "queue-a", "", nil, nil).
-		AddRow("confirmed", "sqs", "queue-a", "payload", nil, nil)
+		AddRow("poison", "sqs", "queue-a", "", nil).
+		AddRow("confirmed", "sqs", "queue-a", "payload", nil)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteTwoSQL).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
@@ -477,8 +477,8 @@ func TestProcessOneBatchCommitsDoneBeforeFatalAfterCommit(t *testing.T) {
 	a.pubsub = &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}}
 
 	rows := mockEventRows().
-		AddRow("event-1", "pubsub", "topic-1", "one", "key-a", nil).
-		AddRow("event-2", "pubsub", "topic-1", "two", "key-a", nil)
+		AddRow("event-1", "pubsub", "topic-1", "one", mockDBValue(combinedOrderingOptions("key-a"))).
+		AddRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions("key-a")))
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -502,8 +502,8 @@ func TestProcessOneBatchPreservesFatalAfterCommitOnCommitFailure(t *testing.T) {
 	a.pubsub = &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}}
 
 	rows := mockEventRows().
-		AddRow("event-1", "pubsub", "topic-1", "one", "key-a", nil).
-		AddRow("event-2", "pubsub", "topic-1", "two", "key-a", nil)
+		AddRow("event-1", "pubsub", "topic-1", "one", mockDBValue(combinedOrderingOptions("key-a"))).
+		AddRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions("key-a")))
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -527,8 +527,8 @@ func TestProcessOneBatchPreservesFatalAfterCommitOnDeleteFailure(t *testing.T) {
 	a.pubsub = &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}}
 
 	rows := mockEventRows().
-		AddRow("event-1", "pubsub", "topic-1", "one", "key-a", nil).
-		AddRow("event-2", "pubsub", "topic-1", "two", "key-a", nil)
+		AddRow("event-1", "pubsub", "topic-1", "one", mockDBValue(combinedOrderingOptions("key-a"))).
+		AddRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions("key-a")))
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnError(expectedErr)
@@ -551,7 +551,7 @@ func TestProcessOneBatchRollsBackOnDeleteFailure(t *testing.T) {
 	defer cleanup()
 	a.pubsub = &fakePubSubPublisher{}
 
-	rows := mockEventRows().AddRow("event-1", "pubsub", "topic-1", "one", nil, nil)
+	rows := mockEventRows().AddRow("event-1", "pubsub", "topic-1", "one", nil)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnError(expectedErr)
@@ -599,7 +599,7 @@ func TestProcessOneBatchCommitFailureIsDatabaseError(t *testing.T) {
 	defer cleanup()
 	a.pubsub = &fakePubSubPublisher{}
 
-	rows := mockEventRows().AddRow("event-1", "pubsub", "topic-1", "one", nil, nil)
+	rows := mockEventRows().AddRow("event-1", "pubsub", "topic-1", "one", nil)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -624,8 +624,8 @@ func TestProcessOneBatchRoutingFailuresOnlyCommitWithoutSendOrDelete(t *testing.
 	a.sqs = sqs
 
 	rows := mockEventRows().
-		AddRow("event-1", "kafka", "topic-1", "one", nil, nil).
-		AddRow("event-2", "", "topic-2", "two", nil, nil)
+		AddRow("event-1", "kafka", "topic-1", "one", nil).
+		AddRow("event-2", "", "topic-2", "two", nil)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectCommit()
@@ -658,7 +658,7 @@ func TestProcessOneBatchDeduplicatesDoneIDs(t *testing.T) {
 	defer cleanup()
 	a.sqs = sqs
 
-	rows := mockEventRows().AddRow("event-1", "sqs", "queue-a", "one", nil, nil)
+	rows := mockEventRows().AddRow("event-1", "sqs", "queue-a", "one", nil)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -683,7 +683,7 @@ func TestProcessOneBatchIgnoresDoneIDOutsideSelectedBatch(t *testing.T) {
 	defer cleanup()
 	a.sqs = sqs
 
-	rows := mockEventRows().AddRow("event-1", "sqs", "queue-a", "one", nil, nil)
+	rows := mockEventRows().AddRow("event-1", "sqs", "queue-a", "one", nil)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectCommit()
@@ -713,8 +713,8 @@ func TestProcessOneBatchRunsEnabledBackendsConcurrently(t *testing.T) {
 	a.sqs = sqs
 
 	rows := mockEventRows().
-		AddRow("event-1", "pubsub", "topic-1", "one", nil, nil).
-		AddRow("event-2", "sqs", "queue-a", "two", nil, nil)
+		AddRow("event-1", "pubsub", "topic-1", "one", nil).
+		AddRow("event-2", "sqs", "queue-a", "two", nil)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteTwoSQL).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
@@ -974,8 +974,7 @@ func TestPostgresIntegrationProcessesAndDeletesEvents(t *testing.T) {
 			payload text NOT NULL,
 			target text,
 			destination text,
-			ordering_key text,
-			attributes jsonb
+			options jsonb
 		)
 	`, ident(table)))
 	if err != nil {
@@ -986,10 +985,10 @@ func TestPostgresIntegrationProcessesAndDeletesEvents(t *testing.T) {
 	}()
 
 	_, err = db.ExecContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (id, timestamp, payload, target, destination, ordering_key, attributes)
+		INSERT INTO %s (id, timestamp, payload, target, destination, options)
 		VALUES
-			('pubsub-1', now(), 'hello pubsub', 'pubsub', 'topic-a', null, '{"trace":"abc"}'),
-			('sqs-1', now(), 'hello sqs', 'sqs', 'queue-a', null, '{"trace":"def"}')
+			('pubsub-1', now(), 'hello pubsub', 'pubsub', 'topic-a', '{"pubsub":{"attributes":{"trace":"abc"}}}'),
+			('sqs-1', now(), 'hello sqs', 'sqs', 'queue-a', '{"sqs":{"attributes":{"trace":"def"}}}')
 	`, ident(table)))
 	if err != nil {
 		t.Fatalf("insert events: %v", err)
@@ -1062,8 +1061,7 @@ func TestPostgresIntegrationRouteSelectionAcrossAllRoutes(t *testing.T) {
 			payload text NOT NULL,
 			target text,
 			destination text,
-			ordering_key text,
-			attributes jsonb
+			options jsonb
 		)
 	`, ident(table)))
 	if err != nil {
@@ -1156,8 +1154,7 @@ func TestPostgresIntegrationRouteGroupsExplicitAndDefaultDestinationTogether(t *
 			payload text NOT NULL,
 			target text,
 			destination text,
-			ordering_key text,
-			attributes jsonb
+			options jsonb
 		)
 	`, ident(table)))
 	if err != nil {

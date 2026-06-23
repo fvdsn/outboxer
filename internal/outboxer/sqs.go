@@ -273,7 +273,10 @@ func (a *app) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue st
 	groups := map[string][]event{}
 	groupOrder := []string{}
 	for _, evt := range queueEvents {
-		groupID := sqsMessageGroupID(evt, a.cfg)
+		groupID, err := a.sqsMessageGroupID(ctx, evt, queue, callbacks)
+		if err != nil {
+			continue
+		}
 		if _, ok := groups[groupID]; !ok {
 			groupOrder = append(groupOrder, groupID)
 		}
@@ -352,8 +355,39 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 	idsByEntryID := map[string]any{}
 
 	for _, evt := range events {
-		orderingKey := eventOptionalString(evt, a.cfg.EventOrderingKey)
-		attributes := eventAttributes(evt, a.cfg.EventAttributes)
+		options, err := eventSQSOptions(evt, a.cfg)
+		if err != nil {
+			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+			a.logFailure(ctx, "Failed to send event",
+				fmt.Sprintf("sqs|%s|malformed-options", queueURL),
+				"event_id", eventValue(evt, a.cfg.EventID),
+				"event_destination", queueURL,
+				"error", err.Error(),
+			)
+			continue
+		}
+		orderingKey, err := options.stringValue("messageGroupId")
+		if err != nil {
+			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+			a.logFailure(ctx, "Failed to send event",
+				fmt.Sprintf("sqs|%s|messageGroupId|malformed-options", queueURL),
+				"event_id", eventValue(evt, a.cfg.EventID),
+				"event_destination", queueURL,
+				"error", err.Error(),
+			)
+			continue
+		}
+		attributes, err := options.attributesValue("attributes")
+		if err != nil {
+			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+			a.logFailure(ctx, "Failed to send event",
+				fmt.Sprintf("sqs|%s|attributes|malformed-options", queueURL),
+				"event_id", eventValue(evt, a.cfg.EventID),
+				"event_destination", queueURL,
+				"error", err.Error(),
+			)
+			continue
+		}
 		timestamp := eventValue(evt, a.cfg.EventTimestamp)
 		id := eventValue(evt, a.cfg.EventID)
 		eventID := fmt.Sprint(id)
@@ -541,7 +575,15 @@ func sqsMessageSize(body []byte, attributes map[string]string) int {
 }
 
 func sqsEventMessageSize(evt event, cfg appConfig) int {
-	stringAttributes, _ := sanitizeStringAttributes(eventAttributes(evt, cfg.EventAttributes))
+	options, err := eventSQSOptions(evt, cfg)
+	if err != nil {
+		return len(eventBytes(evt, cfg.EventPayload))
+	}
+	attributes, err := options.attributesValue("attributes")
+	if err != nil {
+		return len(eventBytes(evt, cfg.EventPayload))
+	}
+	stringAttributes, _ := sanitizeStringAttributes(attributes)
 	return sqsMessageSize(eventBytes(evt, cfg.EventPayload), stringAttributes)
 }
 
@@ -592,13 +634,34 @@ func sqsAllowedUnicodeBytes(value []byte) bool {
 	return true
 }
 
-func sqsMessageGroupID(evt event, cfg appConfig) string {
-	eventID := fmt.Sprint(eventValue(evt, cfg.EventID))
-	orderingKey := eventOptionalString(evt, cfg.EventOrderingKey)
-	if orderingKey != "" {
-		return orderingKey
+func (a *app) sqsMessageGroupID(ctx context.Context, evt event, queueURL string, callbacks senderCallbacks) (string, error) {
+	eventID := fmt.Sprint(eventValue(evt, a.cfg.EventID))
+	options, err := eventSQSOptions(evt, a.cfg)
+	if err != nil {
+		callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+		a.logFailure(ctx, "Failed to send event",
+			fmt.Sprintf("sqs|%s|malformed-options", queueURL),
+			"event_id", eventValue(evt, a.cfg.EventID),
+			"event_destination", queueURL,
+			"error", err.Error(),
+		)
+		return "", err
 	}
-	return syntheticFIFOGroupID(eventID)
+	orderingKey, err := options.stringValue("messageGroupId")
+	if err != nil {
+		callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+		a.logFailure(ctx, "Failed to send event",
+			fmt.Sprintf("sqs|%s|messageGroupId|malformed-options", queueURL),
+			"event_id", eventValue(evt, a.cfg.EventID),
+			"event_destination", queueURL,
+			"error", err.Error(),
+		)
+		return "", err
+	}
+	if orderingKey != "" {
+		return orderingKey, nil
+	}
+	return syntheticFIFOGroupID(eventID), nil
 }
 
 func syntheticFIFOGroupID(eventID string) string {

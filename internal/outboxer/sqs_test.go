@@ -303,7 +303,7 @@ func TestSendSQS10EventsHandlesStandardPartialResponses(t *testing.T) {
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "attributes": []byte(`{"ok":"1","bad":true}`)}},
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": []byte(`{"sqs":{"attributes":{"ok":"1","bad":true}}}`)}},
 		{columns: map[string]any{"id": "event-2", "destination": "queue-a", "payload": "two"}},
 		{columns: map[string]any{"id": "event-3", "destination": "queue-a", "payload": "three"}},
 	}
@@ -574,9 +574,9 @@ func TestSendSQSEventsFIFOStopsGroupAfterRetryableFailure(t *testing.T) {
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "ordering_key": "group-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-a"}},
-		{columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}},
+		{columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "options": combinedOrderingOptions("group-a")}},
 	}
 
 	err := a.sendSQSEvents(context.Background(), events, func(id any) {
@@ -613,9 +613,9 @@ func TestSendSQSEventsFIFOOneGroupAllSuccessUsesSingleMessageRequests(t *testing
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "ordering_key": "group-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-a"}},
-		{columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}},
+		{columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "options": combinedOrderingOptions("group-a")}},
 	}
 
 	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
@@ -648,8 +648,8 @@ func TestSendSQSEventsFIFOProcessesDifferentGroups(t *testing.T) {
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "ordering_key": "group-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-b"}},
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-b")}},
 	}
 
 	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
@@ -684,9 +684,9 @@ func TestSendSQSEventsFIFOProcessesWholeSelectedGroup(t *testing.T) {
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "ordering_key": "group-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-a"}},
-		{columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}},
+		{columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "options": combinedOrderingOptions("group-a")}},
 	}
 
 	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
@@ -714,8 +714,8 @@ func TestSendSQSEventsFIFODifferentGroupCanSucceedWhenOneFails(t *testing.T) {
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "ordering_key": "group-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-b"}},
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-b")}},
 	}
 
 	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
@@ -740,8 +740,8 @@ func TestSendSQSEventsFIFOContinuesAfterContentPoison(t *testing.T) {
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "", "ordering_key": "group-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "", "options": combinedOrderingOptions("group-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}},
 	}
 
 	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
@@ -769,8 +769,8 @@ func TestSendSQSEventsFIFOTimeoutStopsSameGroup(t *testing.T) {
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "ordering_key": "group-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}},
 	}
 
 	err := a.sendSQSEvents(context.Background(), events, func(id any) {
@@ -800,7 +800,7 @@ func TestSendSQS10EventsStandardQueueOmitsFIFOFields(t *testing.T) {
 
 	// A standard queue must not get a group id even when an ordering key is set.
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": combinedOrderingOptions("group-a")}},
 	}
 
 	if err := a.sendSQS10Events(context.Background(), "queue-a", events, func(any) {}); err != nil {
@@ -848,7 +848,7 @@ func TestSendSQS10EventsFIFODerivesSafeDedupID(t *testing.T) {
 	rawID := strings.Repeat("x", 129)
 
 	events := []event{
-		{columns: map[string]any{"id": rawID, "destination": "queue-a.fifo", "payload": "one", "ordering_key": "group-a"}},
+		{columns: map[string]any{"id": rawID, "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
 	}
 
 	if err := a.sendSQS10Events(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {

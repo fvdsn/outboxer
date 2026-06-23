@@ -18,7 +18,7 @@ import (
 )
 
 func TestLoadConfigUsesDefaults(t *testing.T) {
-	unsetEnv(t, "EVENT_PAYLOAD", "EVENT_DESTINATION", "PG_HOST", "PG_USER", "HEALTH_PORT", "PORT", "POLL_INTERVAL_MS", "WATCHDOG_INTERVAL_MS")
+	unsetEnv(t, "EVENT_PAYLOAD", "EVENT_DESTINATION", "EVENT_OPTIONS", "PG_HOST", "PG_USER", "HEALTH_PORT", "PORT", "POLL_INTERVAL_MS", "WATCHDOG_INTERVAL_MS")
 
 	cfg, err := loadConfig(nil, io.Discard)
 	if err != nil {
@@ -36,6 +36,9 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	}
 	if cfg.EventDestination != "destination" {
 		t.Fatalf("expected default event destination column, got %q", cfg.EventDestination)
+	}
+	if cfg.EventOptions != "options" {
+		t.Fatalf("expected default event options column, got %q", cfg.EventOptions)
 	}
 	if cfg.HealthPort != 0 {
 		t.Fatalf("expected default healthcheck port 0, got %d", cfg.HealthPort)
@@ -141,6 +144,7 @@ func TestOpenDBUsesSingleConnection(t *testing.T) {
 
 func TestLoadConfigUsesEnv(t *testing.T) {
 	t.Setenv("PG_HOST", "db")
+	t.Setenv("EVENT_OPTIONS", "event_options")
 	t.Setenv("POLL_INTERVAL_MS", "250")
 	t.Setenv("PORT", "9090")
 	t.Setenv("HEALTH_PORT", "")
@@ -158,6 +162,9 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	}
 	if cfg.PollInterval != 250*time.Millisecond {
 		t.Fatalf("expected env poll interval, got %s", cfg.PollInterval)
+	}
+	if cfg.EventOptions != "event_options" {
+		t.Fatalf("expected env event options column, got %q", cfg.EventOptions)
 	}
 	if cfg.HealthPort != 9090 {
 		t.Fatalf("expected PORT fallback, got %d", cfg.HealthPort)
@@ -197,6 +204,7 @@ func TestLoadConfigHealthPortPrecedence(t *testing.T) {
 func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	t.Setenv("EVENT_PAYLOAD", "env_payload")
 	t.Setenv("EVENT_DESTINATION", "env_destination")
+	t.Setenv("EVENT_OPTIONS", "env_options")
 	t.Setenv("PG_HOST", "env-db")
 	t.Setenv("PG_PORT", "5433")
 	t.Setenv("PG_CONNECT_TIMEOUT_MS", "1000")
@@ -210,6 +218,7 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	cfg, err := loadConfig([]string{
 		"--event-payload=flag_payload",
 		"--event-destination=flag_destination",
+		"--event-options=flag_options",
 		"--pg-host=flag-db",
 		"--pg-port=6543",
 		"--pg-connect-timeout-ms=2000",
@@ -229,6 +238,9 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	}
 	if cfg.EventDestination != "flag_destination" {
 		t.Fatalf("expected flag event destination column, got %q", cfg.EventDestination)
+	}
+	if cfg.EventOptions != "flag_options" {
+		t.Fatalf("expected flag event options column, got %q", cfg.EventOptions)
 	}
 	if cfg.PGHost != "flag-db" {
 		t.Fatalf("expected flag pg host, got %q", cfg.PGHost)
@@ -281,6 +293,8 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"Env: EVENT_PAYLOAD",
 		"--event-destination",
 		"Env: EVENT_DESTINATION",
+		"--event-options",
+		"Env: EVENT_OPTIONS",
 		"--health-port",
 		"Env: HEALTH_PORT, PORT",
 		"--pg-host",

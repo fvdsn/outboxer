@@ -181,8 +181,7 @@ func createPerfEventsTable(t *testing.T, ctx context.Context, db *sql.DB, table 
 			payload text NOT NULL,
 			target text,
 			destination text,
-			ordering_key text,
-			attributes jsonb
+			options jsonb
 		)
 	`, ident(table)))
 	if err != nil {
@@ -376,9 +375,13 @@ func insertOrderedPerfEvents(t *testing.T, ctx context.Context, db *sql.DB, tabl
 	}
 
 	_, err = db.ExecContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (id, timestamp, payload, destination, ordering_key)
+		INSERT INTO %s (id, timestamp, payload, destination, options)
 		SELECT 'event-' || lpad(destinations.route::text, 3, '0') || '-o-' || lpad(keys.key_index::text, 3, '0') || '-' || lpad(gs::text, 7, '0'),
-			now(), 'payload', destinations.destination, 'key-' || lpad(keys.key_index::text, 3, '0')
+			now(), 'payload', destinations.destination,
+			jsonb_build_object(
+				'pubsub', jsonb_build_object('orderingKey', 'key-' || lpad(keys.key_index::text, 3, '0')),
+				'sqs', jsonb_build_object('messageGroupId', 'key-' || lpad(keys.key_index::text, 3, '0'))
+			)
 		FROM %s AS destinations
 		JOIN %s AS keys ON keys.destination_index = destinations.destination_index
 		JOIN LATERAL generate_series(1, keys.event_count) AS gs ON true
@@ -481,8 +484,7 @@ func startOutboxer(t *testing.T, ctx context.Context, binary string, table strin
 	env := map[string]string{
 		"EVENT_TABLE":               table,
 		"EVENT_DESTINATION":         "destination",
-		"EVENT_ORDERING_KEY":        "ordering_key",
-		"EVENT_ATTRIBUTES":          "attributes",
+		"EVENT_OPTIONS":             "options",
 		"EVENT_PAYLOAD":             "payload",
 		"EVENT_ID":                  "id",
 		"EVENT_TIMESTAMP":           "timestamp",

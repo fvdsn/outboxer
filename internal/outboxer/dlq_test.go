@@ -271,8 +271,8 @@ func TestProcessOneBatchDeadLettersContentPoisonAndDeletesConfirmedSendTogether(
 	a.sqs = sqs
 
 	rows := mockEventRows().
-		AddRow("poison", "sqs", "queue-a", "", nil, nil).
-		AddRow("confirmed", "sqs", "queue-a", "payload", nil, nil)
+		AddRow("poison", "sqs", "queue-a", "", nil).
+		AddRow("confirmed", "sqs", "queue-a", "payload", nil)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(insertDLQSQL).WithArgs(dlqPayloadMatcher{t: t, check: func(payload map[string]any) bool {
@@ -320,7 +320,7 @@ func TestProcessOneBatchDeadLettersPubSubLocalPoison(t *testing.T) {
 	defer cleanup()
 	a.pubsub = pubsub
 
-	rows := mockEventRows().AddRow("poison", "pubsub", "bad/topic", "payload", nil, nil)
+	rows := mockEventRows().AddRow("poison", "pubsub", "bad/topic", "payload", nil)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(insertDLQSQL).WithArgs(dlqPayloadMatcher{t: t, check: func(payload map[string]any) bool {
@@ -360,7 +360,7 @@ func TestProcessOneBatchRollsBackWhenDeadLetterInsertFails(t *testing.T) {
 	defer cleanup()
 	a.sqs = sqs
 
-	rows := mockEventRows().AddRow("poison", "sqs", "queue-a", "", nil, nil)
+	rows := mockEventRows().AddRow("poison", "sqs", "queue-a", "", nil)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(insertDLQSQL).WithArgs(sqlmock.AnyArg()).WillReturnError(expectedErr)

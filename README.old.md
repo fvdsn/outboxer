@@ -49,8 +49,7 @@ CREATE TABLE events (
     payload text NOT NULL,
     target text,
     destination text,
-    ordering_key text,
-    attributes jsonb
+    options jsonb
 );
 ```
 
@@ -65,8 +64,7 @@ startup and a missing one stops the process with a clear error.
 | `target` | both backends enabled | Backend selector: `pubsub` or `sqs`. See [Backends](#backends). |
 | `destination` | a backend is enabled without a default destination | Pub/Sub topic name or SQS queue URL. Optional when `DEFAULT_PUBSUB_TOPIC` / `DEFAULT_SQS_QUEUE_URL` covers it. |
 | `timestamp` | never | Used only for latency logging. |
-| `ordering_key` | never | Enables ordered / FIFO delivery. |
-| `attributes` | never | JSON object of string message attributes. |
+| `options` | never | Backend-specific JSON options such as ordering keys and attributes. |
 
 A minimal single-backend table can therefore be just `id` and `payload`, with a
 default destination configured.
@@ -74,47 +72,47 @@ default destination configured.
 ### Pub/Sub Example
 
 ```sql
-INSERT INTO events (id, timestamp, payload, target, destination, ordering_key, attributes)
+INSERT INTO events (id, timestamp, payload, target, destination, options)
 VALUES (
     'event-1',
     now(),
     '{"type":"user.created","id":"123"}',
     'pubsub',
     'user-events',
-    'user-123',
-    '{"source":"users"}'
+    '{"pubsub":{"orderingKey":"user-123","attributes":{"source":"users"}}}'
 );
 ```
 
 ### SQS Example
 
 ```sql
-INSERT INTO events (id, timestamp, payload, target, destination, attributes)
+INSERT INTO events (id, timestamp, payload, target, destination, options)
 VALUES (
     'event-2',
     now(),
     '{"type":"invoice.created","id":"456"}',
     'sqs',
     'https://sqs.eu-west-1.amazonaws.com/123456789012/invoices',
-    '{"source":"billing"}'
+    '{"sqs":{"attributes":{"source":"billing"}}}'
 );
 ```
 
-Attributes must be strings. Non-string attributes are dropped and logged.
+Attributes under `options.pubsub.attributes` and `options.sqs.attributes` must be
+strings. Non-string attribute values are dropped and logged.
 
 ### SQS FIFO Queues
 
 Outboxer detects FIFO queues from the `.fifo` suffix on the queue URL, so
 standard and FIFO queues are handled correctly without extra configuration:
 
-- **FIFO queues** receive a `MessageGroupId` (the event's `ordering_key`, or a
-  random group when it has none) and a `MessageDeduplicationId` set to the event
-  `id`. Using the event id for deduplication means re-sends after a crash are
+- **FIFO queues** receive a `MessageGroupId` from
+  `options.sqs.messageGroupId`, or a stable synthetic group from the event `id`
+  when it has none. `MessageDeduplicationId` is also derived from the event `id`.
+  Using the event id for deduplication means re-sends after a crash are
   deduplicated by SQS, so content-based deduplication is not required on the
   queue.
 - **Standard queues** never receive a `MessageGroupId` or
-  `MessageDeduplicationId`. An `ordering_key` on a standard-queue event is
-  ignored by SQS.
+  `MessageDeduplicationId`.
 
 ## Configuration
 
@@ -155,8 +153,7 @@ outboxer --help
 | `--event-payload` | `EVENT_PAYLOAD` | `payload` | Required. | Event payload column. |
 | `--event-target` | `EVENT_TARGET` | `target` | Required when both backends are enabled. | Backend selector column. Values `pubsub` or `sqs`. |
 | `--event-destination` | `EVENT_DESTINATION` | `destination` | Required when an enabled backend has no default destination. | Pub/Sub topic name or SQS queue URL column. |
-| `--event-ordering-key` | `EVENT_ORDERING_KEY` | `ordering_key` | Optional. | Ordering key / FIFO message group column. |
-| `--event-attributes` | `EVENT_ATTRIBUTES` | `attributes` | Optional. | JSON attributes column. |
+| `--event-options` | `EVENT_OPTIONS` | `options` | Optional. | Backend-specific JSON options column. Empty disables options. |
 
 ### Batch processing
 

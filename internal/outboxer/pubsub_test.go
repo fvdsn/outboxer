@@ -255,9 +255,9 @@ func TestSendPubsubEventUsesDefaultTopicAndSanitizesAttributes(t *testing.T) {
 	var deleted []any
 
 	evt := event{columns: map[string]any{
-		"id":         "event-1",
-		"payload":    "payload",
-		"attributes": []byte(`{"keep":"yes","drop":42}`),
+		"id":      "event-1",
+		"payload": "payload",
+		"options": []byte(`{"pubsub":{"attributes":{"keep":"yes","drop":42}}}`),
 	}}
 
 	err := a.sendPubsubEvent(context.Background(), evt, func(id any) {
@@ -442,9 +442,9 @@ func TestSendPubsubEventsOrderedKeySuccessIsSequential(t *testing.T) {
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "ordering_key": "key-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "ordering_key": "key-a"}},
-		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "options": combinedOrderingOptions("key-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "options": combinedOrderingOptions("key-a")}},
+		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "options": combinedOrderingOptions("key-a")}},
 	}
 
 	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
@@ -475,16 +475,16 @@ func TestSendPubsubEventsOrderedKeyPreservesOrderAcrossBatches(t *testing.T) {
 	a := &app{cfg: cfg, pubsub: pubsub}
 
 	firstBatch := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "ordering_key": "key-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "ordering_key": "key-a"}},
-		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "options": combinedOrderingOptions("key-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "options": combinedOrderingOptions("key-a")}},
+		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "options": combinedOrderingOptions("key-a")}},
 	}
 	if err := a.sendPubsubEvents(context.Background(), firstBatch, func(any) {}); err != nil {
 		t.Fatalf("first sendPubsubEvents returned error: %v", err)
 	}
 
 	secondBatch := []event{
-		{columns: map[string]any{"id": "event-4", "destination": "topic-1", "payload": "four", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-4", "destination": "topic-1", "payload": "four", "options": combinedOrderingOptions("key-a")}},
 	}
 	if err := a.sendPubsubEvents(context.Background(), secondBatch, func(any) {}); err != nil {
 		t.Fatalf("second sendPubsubEvents returned error: %v", err)
@@ -508,8 +508,8 @@ func TestSendPubsubEventsOrderedKeysProgressConcurrently(t *testing.T) {
 	a := &app{cfg: cfg, pubsub: pubsub}
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "ordering_key": "key-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "ordering_key": "key-b"}},
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "options": combinedOrderingOptions("key-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "options": combinedOrderingOptions("key-b")}},
 	}
 
 	done := make(chan error, 1)
@@ -545,7 +545,7 @@ func TestSendPubsubEventsMixedOrderedAndUnorderedSuccess(t *testing.T) {
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "ordered-1", "destination": "topic-1", "payload": "ordered", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "ordered-1", "destination": "topic-1", "payload": "ordered", "options": combinedOrderingOptions("key-a")}},
 		{columns: map[string]any{"id": "unordered-1", "destination": "topic-1", "payload": "unordered"}},
 	}
 
@@ -684,7 +684,7 @@ func TestSendPubsubEventsDropsLocalPoisonWithoutProviderCall(t *testing.T) {
 	events := []event{
 		{columns: map[string]any{"id": "empty", "destination": "topic-1", "payload": ""}},
 		{columns: map[string]any{"id": "large", "destination": "topic-1", "payload": strings.Repeat("x", pubsubMaxMessageDataBytes+1)}},
-		{columns: map[string]any{"id": "attrs", "destination": "topic-1", "payload": "body", "attributes": tooManyAttributes}},
+		{columns: map[string]any{"id": "attrs", "destination": "topic-1", "payload": "body", "options": pubsubOptions("", tooManyAttributes)}},
 		{columns: map[string]any{"id": "topic", "destination": "1-bad-topic", "payload": "body"}},
 	}
 
@@ -769,8 +769,8 @@ func TestSendPubsubEventsOrderedRetryableFailureResumesAndStopsKey(t *testing.T)
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "ordering_key": "key-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "options": combinedOrderingOptions("key-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "options": combinedOrderingOptions("key-a")}},
 	}
 
 	err := a.sendPubsubEvents(context.Background(), events, func(id any) {
@@ -798,9 +798,9 @@ func TestSendPubsubEventsOrderedFailureAfterSuccessKeepsRemainder(t *testing.T) 
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "ordering_key": "key-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "ordering_key": "key-a"}},
-		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "options": combinedOrderingOptions("key-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "options": combinedOrderingOptions("key-a")}},
+		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "options": combinedOrderingOptions("key-a")}},
 	}
 
 	err := a.sendPubsubEvents(context.Background(), events, func(id any) {
@@ -828,8 +828,8 @@ func TestSendPubsubEventsOrderedIsolationStopsAtFirstNonDone(t *testing.T) {
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "ordering_key": "key-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "options": combinedOrderingOptions("key-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "options": combinedOrderingOptions("key-a")}},
 	}
 
 	err := a.sendPubsubEvents(context.Background(), events, func(id any) {
@@ -859,8 +859,8 @@ func TestSendPubsubEventsOrderedUnknownResultIsFatalAfterCommit(t *testing.T) {
 	a := &app{cfg: cfg, pubsub: blockingPubSubPublisher{}}
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "ordering_key": "key-a"}},
-		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "ordering_key": "key-a"}},
+		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "options": combinedOrderingOptions("key-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "options": combinedOrderingOptions("key-a")}},
 	}
 
 	err := a.sendPubsubEvents(context.Background(), events, func(any) {})

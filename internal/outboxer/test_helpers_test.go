@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql/driver"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -323,8 +324,7 @@ func testConfig() appConfig {
 		EventPayload:     "payload",
 		EventTarget:      "target",
 		EventDestination: "destination",
-		EventOrderingKey: "ordering_key",
-		EventAttributes:  "attributes",
+		EventOptions:     "options",
 
 		CollectBatchTarget: 5000,
 		SQSSendConcurrency: 8,
@@ -370,7 +370,7 @@ func newMockProcessorApp(t *testing.T, cfg appConfig) (*app, sqlmock.Sqlmock, fu
 }
 
 func mockEventRows() *sqlmock.Rows {
-	return sqlmock.NewRows([]string{"id", "target", "destination", "payload", "ordering_key", "attributes"})
+	return sqlmock.NewRows([]string{"id", "target", "destination", "payload", "options"})
 }
 
 func testEvent(id, target, destination, payload, orderingKey string) event {
@@ -385,9 +385,38 @@ func testEvent(id, target, destination, payload, orderingKey string) event {
 		columns["destination"] = destination
 	}
 	if orderingKey != "" {
-		columns["ordering_key"] = orderingKey
+		columns["options"] = combinedOrderingOptions(orderingKey)
 	}
 	return event{columns: columns}
+}
+
+func combinedOrderingOptions(key string) map[string]any {
+	return map[string]any{
+		"pubsub": map[string]any{"orderingKey": key},
+		"sqs":    map[string]any{"messageGroupId": key},
+	}
+}
+
+func pubsubOptions(orderingKey string, attributes map[string]any) map[string]any {
+	section := map[string]any{}
+	if orderingKey != "" {
+		section["orderingKey"] = orderingKey
+	}
+	if attributes != nil {
+		section["attributes"] = attributes
+	}
+	return map[string]any{"pubsub": section}
+}
+
+func sqsOptions(messageGroupID string, attributes map[string]any) map[string]any {
+	section := map[string]any{}
+	if messageGroupID != "" {
+		section["messageGroupId"] = messageGroupID
+	}
+	if attributes != nil {
+		section["attributes"] = attributes
+	}
+	return map[string]any{"sqs": section}
 }
 
 func mockRowsForEvents(events []event) *sqlmock.Rows {
@@ -398,11 +427,23 @@ func mockRowsForEvents(events []event) *sqlmock.Rows {
 			eventValue(evt, "target"),
 			eventValue(evt, "destination"),
 			eventValue(evt, "payload"),
-			eventValue(evt, "ordering_key"),
-			eventValue(evt, "attributes"),
+			mockDBValue(eventValue(evt, "options")),
 		)
 	}
 	return rows
+}
+
+func mockDBValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return nil
+		}
+		return encoded
+	default:
+		return value
+	}
 }
 
 func deleteEventsSQL(count int) string {

@@ -17,8 +17,7 @@ type appConfig struct {
 	EventPayload     string
 	EventTarget      string
 	EventDestination string
-	EventOrderingKey string
-	EventAttributes  string
+	EventOptions     string
 
 	CollectBatchTarget int
 	SQSSendConcurrency int
@@ -86,8 +85,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	addStringFlag(flags, &options, "Event table", &cfg.EventPayload, "event-payload", cfg.EventPayload, "Event payload column.", "EVENT_PAYLOAD")
 	addStringFlag(flags, &options, "Event table", &cfg.EventTarget, "event-target", cfg.EventTarget, "Backend selector column. Values pubsub or sqs.", "EVENT_TARGET")
 	addStringFlag(flags, &options, "Event table", &cfg.EventDestination, "event-destination", cfg.EventDestination, "Pub/Sub topic name or SQS queue URL column.", "EVENT_DESTINATION")
-	addStringFlag(flags, &options, "Event table", &cfg.EventOrderingKey, "event-ordering-key", cfg.EventOrderingKey, "Ordering key / FIFO message group column.", "EVENT_ORDERING_KEY")
-	addStringFlag(flags, &options, "Event table", &cfg.EventAttributes, "event-attributes", cfg.EventAttributes, "JSON attributes column.", "EVENT_ATTRIBUTES")
+	addStringFlag(flags, &options, "Event table", &cfg.EventOptions, "event-options", cfg.EventOptions, "Backend-specific JSON options column. Empty disables options.", "EVENT_OPTIONS")
 
 	addIntFlag(flags, &options, "Batch processing", &cfg.CollectBatchTarget, "collect-batch-target", cfg.CollectBatchTarget, "Approximate target rows selected per batch, spread across eligible routes.", "COLLECT_BATCH_TARGET")
 	addIntFlag(flags, &options, "Batch processing", &cfg.SQSSendConcurrency, "sqs-send-concurrency", cfg.SQSSendConcurrency, "Maximum concurrent SQS send requests.", "SQS_SEND_CONCURRENCY")
@@ -232,8 +230,7 @@ func loadConfigFromEnv() appConfig {
 		EventPayload:     getenv("EVENT_PAYLOAD", "payload"),
 		EventTarget:      getenv("EVENT_TARGET", "target"),
 		EventDestination: getenv("EVENT_DESTINATION", "destination"),
-		EventOrderingKey: getenv("EVENT_ORDERING_KEY", "ordering_key"),
-		EventAttributes:  getenv("EVENT_ATTRIBUTES", "attributes"),
+		EventOptions:     getenv("EVENT_OPTIONS", "options"),
 
 		CollectBatchTarget: getenvInt("COLLECT_BATCH_TARGET", 5000),
 		SQSSendConcurrency: getenvInt("SQS_SEND_CONCURRENCY", 8),

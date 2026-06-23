@@ -158,7 +158,28 @@ func (a *app) sendPubsubEventsWithCallbacks(ctx context.Context, events []event,
 	groupOrder := []string{}
 
 	for _, evt := range events {
-		orderingKey := eventOptionalString(evt, a.cfg.EventOrderingKey)
+		options, err := eventPubSubOptions(evt, a.cfg)
+		if err != nil {
+			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+			a.logFailure(ctx, "Failed to send event",
+				fmt.Sprintf("pubsub|%s|malformed-options", a.destinationForBackend(evt, backendPubSub)),
+				"event_id", eventValue(evt, a.cfg.EventID),
+				"event_destination", a.destinationForBackend(evt, backendPubSub),
+				"error", err.Error(),
+			)
+			continue
+		}
+		orderingKey, err := options.stringValue("orderingKey")
+		if err != nil {
+			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+			a.logFailure(ctx, "Failed to send event",
+				fmt.Sprintf("pubsub|%s|orderingKey|malformed-options", a.destinationForBackend(evt, backendPubSub)),
+				"event_id", eventValue(evt, a.cfg.EventID),
+				"event_destination", a.destinationForBackend(evt, backendPubSub),
+				"error", err.Error(),
+			)
+			continue
+		}
 		if orderingKey == "" {
 			unordered = append(unordered, evt)
 			continue
@@ -202,7 +223,7 @@ func (a *app) sendPubsubUnorderedEvents(ctx context.Context, events []event, cal
 	pending := []pubsubPendingPublish{}
 	topics := map[string]struct{}{}
 	for _, evt := range events {
-		prepared, ok := a.preparePubsubEvent(evt, false, callbacks)
+		prepared, ok := a.preparePubsubEvent(ctx, evt, false, callbacks)
 		if !ok {
 			continue
 		}
@@ -240,7 +261,7 @@ func (a *app) sendPubsubUnorderedEvents(ctx context.Context, events []event, cal
 
 func (a *app) sendPubsubOrderedGroup(ctx context.Context, events []event, callbacks senderCallbacks) error {
 	for _, evt := range events {
-		prepared, ok := a.preparePubsubEvent(evt, true, callbacks)
+		prepared, ok := a.preparePubsubEvent(ctx, evt, true, callbacks)
 		if !ok {
 			continue
 		}
@@ -274,7 +295,7 @@ func (a *app) sendPubsubOrderedGroup(ctx context.Context, events []event, callba
 }
 
 func (a *app) sendPubsubIsolated(ctx context.Context, evt event, ordered bool, callbacks senderCallbacks) (bool, error) {
-	prepared, ok := a.preparePubsubEvent(evt, ordered, callbacks)
+	prepared, ok := a.preparePubsubEvent(ctx, evt, ordered, callbacks)
 	if !ok {
 		return true, nil
 	}
@@ -318,14 +339,45 @@ type pubsubPendingPublish struct {
 	result   pubsubPublishResult
 }
 
-func (a *app) preparePubsubEvent(evt event, ordered bool, callbacks senderCallbacks) (pubsubPreparedEvent, bool) {
+func (a *app) preparePubsubEvent(ctx context.Context, evt event, ordered bool, callbacks senderCallbacks) (pubsubPreparedEvent, bool) {
 	target := eventOptionalString(evt, a.cfg.EventTarget)
 	topicName := a.destinationForBackend(evt, backendPubSub)
-	orderingKey := eventOptionalString(evt, a.cfg.EventOrderingKey)
+	options, err := eventPubSubOptions(evt, a.cfg)
+	if err != nil {
+		callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+		a.logFailure(ctx, "Failed to send event",
+			fmt.Sprintf("pubsub|%s|malformed-options", topicName),
+			"event_id", eventValue(evt, a.cfg.EventID),
+			"event_destination", topicName,
+			"error", err.Error(),
+		)
+		return pubsubPreparedEvent{}, false
+	}
+	orderingKey, err := options.stringValue("orderingKey")
+	if err != nil {
+		callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+		a.logFailure(ctx, "Failed to send event",
+			fmt.Sprintf("pubsub|%s|orderingKey|malformed-options", topicName),
+			"event_id", eventValue(evt, a.cfg.EventID),
+			"event_destination", topicName,
+			"error", err.Error(),
+		)
+		return pubsubPreparedEvent{}, false
+	}
 	if !ordered {
 		orderingKey = ""
 	}
-	attributes := eventAttributes(evt, a.cfg.EventAttributes)
+	attributes, err := options.attributesValue("attributes")
+	if err != nil {
+		callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+		a.logFailure(ctx, "Failed to send event",
+			fmt.Sprintf("pubsub|%s|attributes|malformed-options", topicName),
+			"event_id", eventValue(evt, a.cfg.EventID),
+			"event_destination", topicName,
+			"error", err.Error(),
+		)
+		return pubsubPreparedEvent{}, false
+	}
 	timestamp := eventValue(evt, a.cfg.EventTimestamp)
 	id := eventValue(evt, a.cfg.EventID)
 	data := eventBytes(evt, a.cfg.EventPayload)

@@ -212,8 +212,7 @@ func TestLocalEmulatorE2ETwoOutboxersPreserveOrderedPubSub(t *testing.T) {
 		"WATCHDOG_INTERVAL_MS":      "60000",
 		"EVENT_TARGET":              "target",
 		"EVENT_DESTINATION":         "destination",
-		"EVENT_ORDERING_KEY":        "ordering_key",
-		"EVENT_ATTRIBUTES":          "attributes",
+		"EVENT_OPTIONS":             "options",
 		"EVENT_PAYLOAD":             "payload",
 		"EVENT_ID":                  "id",
 		"EVENT_TIMESTAMP":           "timestamp",
@@ -669,8 +668,7 @@ func createEventsTable(t *testing.T, ctx context.Context, db *sql.DB, table stri
 			payload text NOT NULL,
 			target text,
 			destination text,
-			ordering_key text,
-			attributes jsonb
+			options jsonb
 		)
 	`, ident(table)))
 	if err != nil {
@@ -694,14 +692,51 @@ func createDLQTable(t *testing.T, ctx context.Context, db *sql.DB, table string)
 func insertEvents(t *testing.T, ctx context.Context, db *sql.DB, table string, events []eventRow) {
 	t.Helper()
 	for _, evt := range events {
+		options := eventOptionsJSON(evt)
 		_, err := db.ExecContext(ctx, fmt.Sprintf(`
-			INSERT INTO %s (id, timestamp, payload, target, destination, ordering_key, attributes)
-			VALUES ($1, now(), $2, $3, $4, $5, $6::jsonb)
-		`, ident(table)), evt.id, evt.payload, evt.target, evt.destination, nullableString(evt.orderingKey), evt.attributes)
+			INSERT INTO %s (id, timestamp, payload, target, destination, options)
+			VALUES ($1, now(), $2, $3, $4, $5::jsonb)
+		`, ident(table)), evt.id, evt.payload, evt.target, evt.destination, options)
 		if err != nil {
 			t.Fatalf("insert event %s: %v", evt.id, err)
 		}
 	}
+}
+
+func eventOptionsJSON(evt eventRow) string {
+	backend := evt.target
+	if backend == "" {
+		backend = eventTargetForDefaultOptions(evt)
+	}
+	section := map[string]any{}
+	if evt.orderingKey != "" {
+		if backend == "sqs" {
+			section["messageGroupId"] = evt.orderingKey
+		} else {
+			section["orderingKey"] = evt.orderingKey
+		}
+	}
+	if evt.attributes != "" && evt.attributes != "null" {
+		var attributes map[string]any
+		if err := json.Unmarshal([]byte(evt.attributes), &attributes); err == nil {
+			section["attributes"] = attributes
+		}
+	}
+	if len(section) == 0 || backend == "" {
+		return "{}"
+	}
+	payload, err := json.Marshal(map[string]any{backend: section})
+	if err != nil {
+		return "{}"
+	}
+	return string(payload)
+}
+
+func eventTargetForDefaultOptions(evt eventRow) string {
+	if strings.Contains(evt.id, "sqs") || strings.Contains(evt.destination, "sqs") || strings.Contains(evt.destination, "elasticmq") {
+		return "sqs"
+	}
+	return "pubsub"
 }
 
 func readDLQEvents(t *testing.T, ctx context.Context, db *sql.DB, table string, want int) []map[string]any {

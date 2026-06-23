@@ -68,9 +68,15 @@ Example:
   "original_event": {
     "id": 123,
     "payload": "{\"type\":\"user.created\"}",
-    "ordering_key": "user-123",
-    "attributes": {
-      "source": "users"
+    "target": "sqs",
+    "destination": "https://sqs.eu-west-1.amazonaws.com/123456789012/events",
+    "options": {
+      "sqs": {
+        "messageGroupId": "user-123",
+        "attributes": {
+          "source": "users"
+        }
+      }
     }
   }
 }
@@ -86,8 +92,8 @@ permanently unsendable content poison:
 
 - P3: payload too large.
 - P4: empty or invalid payload.
-- P5: malformed or over-limit attributes.
-- P6: invalid ordering key / message group.
+- P5: malformed or over-limit attributes/options.
+- P6: invalid ordering key / message group from backend options.
 - P7: syntactically invalid destination.
 
 Routing failures are not poison and must not go to the DLQ:
