@@ -177,6 +177,8 @@ matter.
 | AGE-10 | Row is unroutable and older than max age. | It is not selected and therefore not age-checked by that process. |
 | AGE-11 | Expired event also has malformed backend options. | P8 age-poison takes precedence; no provider call is made. |
 | AGE-12 | `MAX_EVENT_AGE_MS > 0` and table has multiple destinations. | Expired selected events are removed independently of destination; destination fairness still controls which rows are selected. |
+| AGE-13 | Timestamp column is `timestamptz` with a non-UTC offset. | Age is computed from the absolute instant, equivalent to converting it to UTC first. |
+| AGE-14 | Timestamp column is `timestamp without time zone`. | Outboxer interprets the timestamp as UTC for max-age purposes; database session timezone and worker local timezone do not affect the result. |
 
 ## Realistic happy-path batches
 

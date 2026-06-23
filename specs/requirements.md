@@ -484,12 +484,19 @@ value, not by per-event options:
   the age calculation.
 - If `MAX_EVENT_AGE_MS > 0`, `EVENT_TIMESTAMP` must be configured and present in
   the event table.
+- The timestamp value must represent an absolute instant. The recommended
+  PostgreSQL type is `timestamptz`. Outboxer compares the event timestamp to the
+  worker process clock after converting both to UTC instants.
+- If producers use `timestamp without time zone`, they must store UTC values and
+  Outboxer must interpret those values as UTC for max-age purposes. Deployments
+  must not rely on the database session timezone or worker local timezone for age
+  semantics.
 
 Evaluation rules:
 
 - Age is evaluated after collection selects and locks rows, before provider send
   preparation for the selected backend.
-- An event is age-poison when `now - event_timestamp > MAX_EVENT_AGE_MS`.
+- An event is age-poison when `now_utc - event_timestamp_utc > MAX_EVENT_AGE_MS`.
 - Age-poison events are included in `done` as poison. With `DLQ_TABLE` enabled,
   they are inserted into the DLQ and deleted from the outbox table in the same
   transaction. With DLQ disabled, they are deleted after classification like other
@@ -502,7 +509,10 @@ Evaluation rules:
   sendable and use the existing `nil` latency behavior.
 - Future timestamps are not age-poison.
 - Age calculation uses the process clock at classification time. A small amount
-  of clock skew between database and worker is an operator concern.
+  of clock skew between database and worker is an operator concern. Operators who
+  require database-clock semantics should ensure producers populate timestamps
+  from the same trusted time source, for example PostgreSQL `now()` into a
+  `timestamptz` column.
 
 Age-poison is classified as **P8 — event expired by Outboxer max-age policy**.
 It is poison because the current Outboxer instance's policy says the unchanged
