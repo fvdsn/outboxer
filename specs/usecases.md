@@ -55,6 +55,10 @@ These are cross-cutting assertions that many scenarios should verify.
 | CFG-12 | `SQS_DESTINATIONS` is set while SQS is disabled. | Validation fails. |
 | CFG-13 | `EVENT_OPTIONS` is unset. | Options column defaults to `options`. |
 | CFG-14 | `EVENT_OPTIONS` is empty. | Backend-specific options are disabled; every event behaves as if options were `{}`. |
+| CFG-15 | `MAX_EVENT_AGE_MS` is unset or `0`. | Age-based poison is disabled. |
+| CFG-16 | `MAX_EVENT_AGE_MS` is negative. | Validation fails. |
+| CFG-17 | `MAX_EVENT_AGE_MS > 0` and `EVENT_TIMESTAMP` is empty. | Validation fails. |
+| CFG-18 | `MAX_EVENT_AGE_MS > 0` and the timestamp column is missing from the event table. | Startup database validation fails. |
 
 Watchdog bound cases:
 
@@ -156,6 +160,23 @@ matter.
 | BATCH-12 | Collection selects a valid route whose provider fast-fails and another valid route that succeeds. | Successful route events are deleted at commit; failed route events remain. The failed route may slow the batch until bounded sender operations return, but it does not prevent selection of the other route. |
 | BATCH-13 | Sender returns `done` and fatal-after-commit error, then delete fails. | Delete/transaction error is logged, but processing still stops; it must not loop in the same process after an unknown ordered outcome. |
 | BATCH-14 | Sender returns `done` and fatal-after-commit error, delete succeeds, then commit fails. | Commit error is logged, restart may duplicate provider-accepted events, and processing still stops; it must not continue behind the unknown ordered outcome. |
+
+## Max Event Age
+
+| ID | Scenario | Expected |
+| --- | --- | --- |
+| AGE-01 | `MAX_EVENT_AGE_MS=0` and event timestamp is old. | Event is processed normally; age policy is disabled. |
+| AGE-02 | `MAX_EVENT_AGE_MS > 0` and `now - timestamp > MAX_EVENT_AGE_MS`. | Event is classified P8 poison, not sent, and included in `done`. |
+| AGE-03 | Expired event with DLQ enabled. | Event is inserted into DLQ and deleted from outbox in the same transaction. |
+| AGE-04 | Expired event with DLQ disabled. | Event is deleted after classification; no DLQ insert occurs. |
+| AGE-05 | Event timestamp is exactly at max age boundary. | Event is not expired unless age is strictly greater than max age. |
+| AGE-06 | Event timestamp is `NULL`, missing, or unparsable. | Event is not age-poison and may be sent normally. |
+| AGE-07 | Event timestamp is in the future. | Event is not age-poison. |
+| AGE-08 | Batch contains one expired event and one valid event for the same Pub/Sub ordering key. | Expired first event is marked done as poison; later valid event may be sent without violating order. |
+| AGE-09 | Batch contains one expired event and one valid SQS FIFO event for the same message group. | Expired first event is marked done as poison; later valid event may be sent. |
+| AGE-10 | Row is unroutable and older than max age. | It is not selected and therefore not age-checked by that process. |
+| AGE-11 | Expired event also has malformed backend options. | P8 age-poison takes precedence; no provider call is made. |
+| AGE-12 | `MAX_EVENT_AGE_MS > 0` and table has multiple destinations. | Expired selected events are removed independently of destination; destination fairness still controls which rows are selected. |
 
 ## Realistic happy-path batches
 
@@ -349,6 +370,7 @@ These may be added as tests once metrics exist.
 - Oldest event age by destination/target.
 - Count of routing failures by classification R7/R10/R11/R12.
 - Count of content-poison removals by P3-P7.
+- Count of max-age removals by P8.
 - Count of retryable provider failures by R1-R6/R9.
 - Count of suppressed logs by failure signature.
 - Publish latency by backend and destination.

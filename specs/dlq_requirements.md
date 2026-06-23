@@ -98,6 +98,7 @@ permanently unsendable content poison:
 - P5: malformed or over-limit attributes/options.
 - P6: invalid ordering key / message group from backend options.
 - P7: syntactically invalid destination.
+- P8: event expired by max-age policy.
 
 Routing failures are not poison and must not go to the DLQ:
 

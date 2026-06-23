@@ -47,6 +47,7 @@ transactional guarantees.
 | DLQ-POISON-08 | SQS queue URL is syntactically invalid. | Event is inserted into DLQ and deleted from the outbox table; no provider call is made. |
 | DLQ-POISON-09 | SQS batch returns `SenderFault=true` for one entry. | That event is inserted into DLQ; successful entries are deleted normally; retryable failed entries remain. |
 | DLQ-POISON-10 | Selected backend options section is malformed. | Event is inserted into DLQ and deleted from the outbox table; no provider call is made. |
+| DLQ-POISON-11 | Selected event is older than `MAX_EVENT_AGE_MS`. | Event is inserted into DLQ and deleted from the outbox table; no provider call is made. |
 
 ## Not Dead-Lettered
 

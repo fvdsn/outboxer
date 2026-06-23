@@ -32,7 +32,8 @@ Column semantics:
 - `id` is required and remains the source of event order, deletion, log identity,
   and provider-safe idempotency values such as SQS FIFO deduplication IDs.
 - `payload` is required and is sent as Pub/Sub message data or SQS message body.
-- `timestamp` is optional and used only for latency logging.
+- `timestamp` is optional and used for latency logging. It is also used for the
+  instance-level max event age feature when that feature is enabled.
 - `target` is optional when exactly one backend is enabled and required when both
   Pub/Sub and SQS are enabled.
 - `destination` remains a generic routing column. It is the Pub/Sub topic when
@@ -470,6 +471,45 @@ be sent as-is. If the rule is ambiguous, implementation-dependent, or affected b
 destination configuration, publish normally and use single-event isolation before
 removing the event as poison.
 
+### Max event age
+
+Outboxer can optionally classify old selected events as content poison before
+they reach a backend. This is controlled by one instance-level configuration
+value, not by per-event options:
+
+- `MAX_EVENT_AGE_MS` / `--max-event-age-ms`: maximum age in milliseconds for a
+  selected event. The default is `0`, which disables age-based poisoning.
+- `MAX_EVENT_AGE_MS` must be non-negative.
+- The configured `EVENT_TIMESTAMP` column is the event creation timestamp used for
+  the age calculation.
+- If `MAX_EVENT_AGE_MS > 0`, `EVENT_TIMESTAMP` must be configured and present in
+  the event table.
+
+Evaluation rules:
+
+- Age is evaluated after collection selects and locks rows, before provider send
+  preparation for the selected backend.
+- An event is age-poison when `now - event_timestamp > MAX_EVENT_AGE_MS`.
+- Age-poison events are included in `done` as poison. With `DLQ_TABLE` enabled,
+  they are inserted into the DLQ and deleted from the outbox table in the same
+  transaction. With DLQ disabled, they are deleted after classification like other
+  content poison.
+- Age-poison events must not be sent to Pub/Sub or SQS.
+- Age-poison takes precedence over backend-specific local prevalidation and
+  provider calls. It does not change routing-failure behavior: rows that are not
+  selected because they are unroutable are not age-checked by that process.
+- Missing, `NULL`, or unparsable timestamps are not age-poison. They remain
+  sendable and use the existing `nil` latency behavior.
+- Future timestamps are not age-poison.
+- Age calculation uses the process clock at classification time. A small amount
+  of clock skew between database and worker is an operator concern.
+
+Age-poison is classified as **P8 — event expired by Outboxer max-age policy**.
+It is poison because the current Outboxer instance's policy says the unchanged
+event must no longer be delivered. Operators that want old events to remain
+sendable must disable or increase `MAX_EVENT_AGE_MS` for that instance before it
+selects those events.
+
 Validation runs after Outboxer's existing string-attribute sanitization. Current
 compatibility behavior is kept for attribute values inside `options`: non-string
 attribute values are dropped and logged rather than making the event poison. Once
@@ -646,6 +686,8 @@ isolation identifies the specific event:
   `options.pubsub.orderingKey` / `options.sqs.messageGroupId`).
 - **P7 — syntactically invalid destination** (bad topic name / queue URL format;
   distinct from "not found").
+- **P8 — event expired by max-age policy** (`MAX_EVENT_AGE_MS` is enabled and the
+  selected event timestamp is older than the configured age).
 
 ### Retryable (keep, retry later), by resolution condition
 
@@ -899,6 +941,8 @@ this spec says so explicitly.
     destinations.
   - `PUBLISH_RESULT_GRACE_MS` (default: `5000`), the extra wait after the
     provider publish timeout for async client results.
+  - `MAX_EVENT_AGE_MS` (default: `0`), the instance-level maximum selected event
+    age. `0` disables age-based poisoning.
 
 `PUBLISH_TIMEOUT_MS` keeps its current default of `30000`. It must be positive
 whenever any backend is enabled. For Pub/Sub, ordered sends need a bounded
