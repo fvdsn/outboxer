@@ -123,9 +123,9 @@ matter.
 | OPT-08 | `options.sqs.messageGroupId` is a string for a FIFO queue. | SQS sender uses it as the `MessageGroupId`. |
 | OPT-09 | `options.sqs.messageGroupId` is non-string. | Event is content-poison P6; no provider call is made. |
 | OPT-10 | `options.pubsub.attributes` is an object with string values. | Pub/Sub message attributes are set from that object. |
-| OPT-11 | `options.sqs.attributes` is an object with string values. | SQS message attributes are set from that object. |
+| OPT-11 | `options.sqs.attributes` is an object of native AWS `MessageAttributeValue` JSON objects. | SQS message attributes are set from that object, including `DataType`, `StringValue`, and base64 `BinaryValue`. |
 | OPT-12 | Backend attributes option is non-object. | Event is content-poison P5; no provider call is made. |
-| OPT-13 | Backend attributes object contains non-string values. | Non-string values are dropped and logged; string values are still sent and validated. |
+| OPT-13 | Pub/Sub attributes object contains non-string values. | Non-string values are dropped and logged; string values are still sent and validated. |
 | OPT-14 | Options contain unknown keys. | Unknown keys are ignored and do not make the event poison. |
 | OPT-15 | Event row still has legacy `ordering_key` and `attributes` columns. | They are ignored; only `options` supplies backend metadata. |
 | OPT-16 | `destination` column is present alongside options. | `destination` remains the only per-event destination source; options do not override it. |
@@ -136,6 +136,8 @@ matter.
 | OPT-21 | `options.sqs.delaySeconds` is set on a FIFO queue. | SQS sender does not send per-message delay for FIFO queues. |
 | OPT-22 | `options.sqs.delaySeconds` is non-integer or outside 0-900. | Event is content-poison P6; no provider call is made. |
 | OPT-23 | `options.sqs.messageSystemAttributes.AWSTraceHeader` is set. | SQS sender sends it as the `AWSTraceHeader` message system attribute. |
+| OPT-24 | `options.sqs.attributes` contains shorthand string values. | Event is content-poison P5; SQS shorthand attributes are not supported. |
+| OPT-25 | `options.sqs.attributes` contains `StringListValues` or `BinaryListValues`. | Event is content-poison P5; list values are reserved by SQS and not sent. |
 
 ## Batch orchestration
 
@@ -283,7 +285,7 @@ identifier lengths.
 | SQS-PRE-04 | Body is empty. | P4; no provider call. |
 | SQS-PRE-05 | Body contains unsupported Unicode. | P4; no provider call. |
 | SQS-PRE-06 | Body contains allowed boundary characters. | Accepted for publish. |
-| SQS-PRE-07 | More than 10 sanitized string attributes. | P5; no provider call. |
+| SQS-PRE-07 | More than 10 native SQS message attributes. | P5; no provider call. |
 | SQS-PRE-08 | Attribute name is invalid: empty, starts with `AWS.`/`Amazon.`, starts/ends with `.`, has `..`, or contains invalid chars. | P5; no provider call. |
 | SQS-PRE-09 | Attribute name or type exceeds 256 chars. | P5; no provider call. |
 | SQS-PRE-10 | Attribute value contains unsupported Unicode. | P4 or P5 as implemented, but must be local poison and not provider retry. |

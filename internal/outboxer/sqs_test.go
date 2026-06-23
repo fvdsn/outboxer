@@ -12,6 +12,10 @@ import (
 	"time"
 )
 
+func sqsStringAttribute(value string) sqsMessageAttribute {
+	return sqsMessageAttribute{DataType: "String", StringValue: value, HasStringValue: true}
+}
+
 func TestSendSQSEventsUsesDefaultQueueURL(t *testing.T) {
 	cfg := testConfig()
 	cfg.PubSubEnabled = false
@@ -235,28 +239,31 @@ func TestSendSQS10EventsRespectsPublishTimeout(t *testing.T) {
 }
 
 func TestSQSLocalPrevalidationBoundaries(t *testing.T) {
-	attrs := map[string]string{}
+	attrs := map[string]sqsMessageAttribute{}
 	for i := 0; i < sqsMaxAttributes; i++ {
-		attrs[fmt.Sprintf("attr%d", i)] = "value"
+		attrs[fmt.Sprintf("attr%d", i)] = sqsStringAttribute("value")
 	}
 	if !validSQSAttributes(attrs) {
 		t.Fatal("expected exactly max SQS attributes to be valid")
 	}
-	attrs["overflow"] = "value"
+	attrs["overflow"] = sqsStringAttribute("value")
 	if validSQSAttributes(attrs) {
 		t.Fatal("expected too many SQS attributes to be invalid")
 	}
 
-	invalidAttrs := []map[string]string{
-		{"": "value"},
-		{".bad": "value"},
-		{"bad.": "value"},
-		{"bad..name": "value"},
-		{"AWS.trace": "value"},
-		{"Amazon.trace": "value"},
-		{"bad name": "value"},
-		{strings.Repeat("k", 257): "value"},
-		{"empty": ""},
+	invalidAttrs := []map[string]sqsMessageAttribute{
+		{"": sqsStringAttribute("value")},
+		{".bad": sqsStringAttribute("value")},
+		{"bad.": sqsStringAttribute("value")},
+		{"bad..name": sqsStringAttribute("value")},
+		{"AWS.trace": sqsStringAttribute("value")},
+		{"Amazon.trace": sqsStringAttribute("value")},
+		{"bad name": sqsStringAttribute("value")},
+		{strings.Repeat("k", 257): sqsStringAttribute("value")},
+		{"empty": sqsStringAttribute("")},
+		{"missingType": {HasStringValue: true, StringValue: "value"}},
+		{"binaryWithString": {DataType: "Binary", HasStringValue: true, StringValue: "value"}},
+		{"stringWithBinary": {DataType: "String", HasBinaryValue: true, BinaryValue: []byte("value")}},
 	}
 	for _, attr := range invalidAttrs {
 		if validSQSAttributes(attr) {
@@ -273,7 +280,7 @@ func TestSQSLocalPrevalidationBoundaries(t *testing.T) {
 	if !isSQSPoison([]byte{0xff}, nil, false, "", "", nil) {
 		t.Fatal("expected invalid UTF-8 SQS body to be poison")
 	}
-	if !isSQSPoison([]byte("body"), map[string]string{"attr": string([]byte{0xff})}, false, "", "", nil) {
+	if !isSQSPoison([]byte("body"), map[string]sqsMessageAttribute{"attr": sqsStringAttribute(string([]byte{0xff}))}, false, "", "", nil) {
 		t.Fatal("expected invalid UTF-8 SQS attribute value to be poison")
 	}
 	if isSQSPoison([]byte("body\t\n\r"), nil, false, "", "", nil) {
@@ -310,7 +317,7 @@ func TestSendSQS10EventsHandlesStandardPartialResponses(t *testing.T) {
 	var deleted []any
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": []byte(`{"sqs":{"attributes":{"ok":"1","bad":true}}}`)}},
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": []byte(`{"sqs":{"attributes":{"ok":{"DataType":"String","StringValue":"1"}}}}`)}},
 		{columns: map[string]any{"id": "event-2", "destination": "queue-a", "payload": "two"}},
 		{columns: map[string]any{"id": "event-3", "destination": "queue-a", "payload": "three"}},
 	}
@@ -328,8 +335,76 @@ func TestSendSQS10EventsHandlesStandardPartialResponses(t *testing.T) {
 	if len(sqs.requests) != 1 {
 		t.Fatalf("expected one SQS request, got %d", len(sqs.requests))
 	}
-	if !reflect.DeepEqual(sqs.requests[0].entries[0].Attributes, map[string]string{"ok": "1"}) {
+	if !reflect.DeepEqual(sqs.requests[0].entries[0].Attributes, map[string]sqsMessageAttribute{"ok": sqsStringAttribute("1")}) {
 		t.Fatalf("unexpected sanitized attributes: %#v", sqs.requests[0].entries[0].Attributes)
+	}
+}
+
+func TestSendSQS10EventsSendsNativeTypedAttributes(t *testing.T) {
+	cfg := testConfig()
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a := &app{cfg: cfg, sqs: sqs}
+	events := []event{{columns: map[string]any{
+		"id":          "event-1",
+		"destination": "queue-a",
+		"payload":     "one",
+		"options": []byte(`{"sqs":{"attributes":{
+			"tenant":{"DataType":"String.customer","StringValue":"acme"},
+			"attempt":{"DataType":"Number.int","StringValue":"3"},
+			"signature":{"DataType":"Binary.sig","BinaryValue":"SGVsbG8="}
+		}}}`),
+	}}}
+
+	if err := a.sendSQS10Events(context.Background(), "queue-a", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQS10Events returned error: %v", err)
+	}
+
+	attributes := sqs.requests[0].entries[0].Attributes
+	if attributes["tenant"].DataType != "String.customer" || attributes["tenant"].StringValue != "acme" || !attributes["tenant"].HasStringValue {
+		t.Fatalf("unexpected string attribute: %#v", attributes["tenant"])
+	}
+	if attributes["attempt"].DataType != "Number.int" || attributes["attempt"].StringValue != "3" || !attributes["attempt"].HasStringValue {
+		t.Fatalf("unexpected number attribute: %#v", attributes["attempt"])
+	}
+	if attributes["signature"].DataType != "Binary.sig" || string(attributes["signature"].BinaryValue) != "Hello" || !attributes["signature"].HasBinaryValue {
+		t.Fatalf("unexpected binary attribute: %#v", attributes["signature"])
+	}
+}
+
+func TestSendSQS10EventsRejectsInvalidNativeAttributes(t *testing.T) {
+	tests := []struct {
+		name      string
+		attribute string
+	}{
+		{name: "shorthand", attribute: `"value"`},
+		{name: "missing type", attribute: `{"StringValue":"value"}`},
+		{name: "binary base64", attribute: `{"DataType":"Binary","BinaryValue":"%%%"}`},
+		{name: "list", attribute: `{"DataType":"String","StringListValues":["a"]}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			sqs := &fakeSQSPublisher{autoReply: true}
+			a := &app{cfg: cfg, sqs: sqs}
+			var deleted []any
+			events := []event{{columns: map[string]any{
+				"id":          "event-1",
+				"destination": "queue-a",
+				"payload":     "one",
+				"options":     []byte(fmt.Sprintf(`{"sqs":{"attributes":{"bad":%s}}}`, tt.attribute)),
+			}}}
+
+			if err := a.sendSQS10Events(context.Background(), "queue-a", events, func(id any) { deleted = append(deleted, id) }); err != nil {
+				t.Fatalf("sendSQS10Events returned error: %v", err)
+			}
+			if !reflect.DeepEqual(deleted, []any{"event-1"}) {
+				t.Fatalf("expected invalid attributes to be poison, got %#v", deleted)
+			}
+			if len(sqs.requests) != 0 {
+				t.Fatalf("expected no provider calls for invalid attributes, got %#v", sqs.requests)
+			}
+		})
 	}
 }
 

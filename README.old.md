@@ -93,12 +93,13 @@ VALUES (
     '{"type":"invoice.created","id":"456"}',
     'sqs',
     'https://sqs.eu-west-1.amazonaws.com/123456789012/invoices',
-    '{"sqs":{"attributes":{"source":"billing"}}}'
+    '{"sqs":{"attributes":{"source":{"DataType":"String","StringValue":"billing"}}}}'
 );
 ```
 
-Attributes under `options.pubsub.attributes` and `options.sqs.attributes` must be
-strings. Non-string attribute values are dropped and logged.
+Pub/Sub attributes under `options.pubsub.attributes` must be strings; non-string
+values are dropped and logged. SQS attributes under `options.sqs.attributes` use
+AWS's native `MessageAttributeValue` JSON shape.
 
 ### SQS FIFO Queues
 

@@ -3,6 +3,7 @@ package outboxer
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -47,7 +48,7 @@ type sqsPublisher interface {
 type sqsBatchEntry struct {
 	ID                 string
 	MessageBody        string
-	Attributes         map[string]string
+	Attributes         map[string]sqsMessageAttribute
 	MessageGroupID     string
 	DeduplicationID    string
 	DelaySeconds       *int32
@@ -391,7 +392,7 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 			)
 			continue
 		}
-		attributes, err := options.attributesValue("attributes")
+		attributes, err := sqsAttributes(options)
 		if err != nil {
 			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
 			a.logFailure(ctx, "Failed to send event",
@@ -441,16 +442,7 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 		entryID := providerSafeID(eventID, sqsBatchEntryIDPattern)
 		data := eventBytes(evt, a.cfg.EventPayload)
 		latency := eventLatency(timestamp)
-		stringAttributes, deletedAttributes := sanitizeStringAttributes(attributes)
-
-		if len(deletedAttributes) != 0 {
-			slog.Error("Some attributes were dropped",
-				"event_id", id,
-				"event_destination", queueURL,
-				"dropped_attributes", deletedAttributes,
-			)
-		}
-		if isSQSPoison(data, stringAttributes, isFIFO, orderingKey, deduplicationID, delaySeconds) {
+		if isSQSPoison(data, attributes, isFIFO, orderingKey, deduplicationID, delaySeconds) {
 			callbacks.addPoisonID(id, "Event is invalid for SQS")
 			a.logFailure(ctx, "Failed to send event",
 				fmt.Sprintf("sqs|%s|%s|local-poison", queueURL, orderingKey),
@@ -475,7 +467,7 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 		entry := sqsBatchEntry{
 			ID:                 entryID,
 			MessageBody:        string(data),
-			Attributes:         stringAttributes,
+			Attributes:         attributes,
 			AWSXRayTraceHeader: traceHeader,
 		}
 		if !isFIFO {
@@ -575,17 +567,39 @@ func (a *app) sendSQSBatchIsolated(ctx context.Context, queueURL string, events 
 	return anyDone, joined
 }
 
-func convertAttributesToAWSSQS(attributes map[string]string) map[string]sqstypes.MessageAttributeValue {
+type sqsMessageAttribute struct {
+	DataType         string
+	StringValue      string
+	BinaryValue      []byte
+	StringListValues []string
+	BinaryListValues [][]byte
+	HasStringValue   bool
+	HasBinaryValue   bool
+	HasStringList    bool
+	HasBinaryList    bool
+}
+
+func convertAttributesToAWSSQS(attributes map[string]sqsMessageAttribute) map[string]sqstypes.MessageAttributeValue {
 	if attributes == nil {
 		return nil
 	}
 
 	converted := map[string]sqstypes.MessageAttributeValue{}
 	for key, value := range attributes {
-		converted[key] = sqstypes.MessageAttributeValue{
-			DataType:    aws.String("String"),
-			StringValue: aws.String(value),
+		attribute := sqstypes.MessageAttributeValue{DataType: aws.String(value.DataType)}
+		if value.HasStringValue {
+			attribute.StringValue = aws.String(value.StringValue)
 		}
+		if value.HasBinaryValue {
+			attribute.BinaryValue = value.BinaryValue
+		}
+		if value.HasStringList {
+			attribute.StringListValues = value.StringListValues
+		}
+		if value.HasBinaryList {
+			attribute.BinaryListValues = value.BinaryListValues
+		}
+		converted[key] = attribute
 	}
 	return converted
 }
@@ -608,7 +622,7 @@ func sanitizeStringAttributes(attributes map[string]any) (map[string]string, map
 	return kept, deleted
 }
 
-func isSQSPoison(body []byte, attributes map[string]string, isFIFO bool, orderingKey string, deduplicationID string, delaySeconds *int32) bool {
+func isSQSPoison(body []byte, attributes map[string]sqsMessageAttribute, isFIFO bool, orderingKey string, deduplicationID string, delaySeconds *int32) bool {
 	if len(body) == 0 || !sqsAllowedUnicodeBytes(body) {
 		return true
 	}
@@ -630,10 +644,22 @@ func isSQSPoison(body []byte, attributes map[string]string, isFIFO bool, orderin
 	return false
 }
 
-func sqsMessageSize(body []byte, attributes map[string]string) int {
+func sqsMessageSize(body []byte, attributes map[string]sqsMessageAttribute) int {
 	size := len(body)
 	for key, value := range attributes {
-		size += len(key) + len("String") + len(value)
+		size += len(key) + len(value.DataType)
+		if value.HasStringValue {
+			size += len(value.StringValue)
+		}
+		if value.HasBinaryValue {
+			size += len(value.BinaryValue)
+		}
+		for _, item := range value.StringListValues {
+			size += len(item)
+		}
+		for _, item := range value.BinaryListValues {
+			size += len(item)
+		}
 	}
 	return size
 }
@@ -643,12 +669,97 @@ func sqsEventMessageSize(evt event, cfg appConfig) int {
 	if err != nil {
 		return len(eventBytes(evt, cfg.EventPayload))
 	}
-	attributes, err := options.attributesValue("attributes")
+	attributes, err := sqsAttributes(options)
 	if err != nil {
 		return len(eventBytes(evt, cfg.EventPayload))
 	}
-	stringAttributes, _ := sanitizeStringAttributes(attributes)
-	return sqsMessageSize(eventBytes(evt, cfg.EventPayload), stringAttributes)
+	return sqsMessageSize(eventBytes(evt, cfg.EventPayload), attributes)
+}
+
+func sqsAttributes(options backendOptions) (map[string]sqsMessageAttribute, error) {
+	value, ok := options.values["attributes"]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	attributes, ok := normalizeObject(value)
+	if !ok {
+		return nil, fmt.Errorf("%w: attributes must be an object", errMalformedOptions)
+	}
+	converted := map[string]sqsMessageAttribute{}
+	for name, raw := range attributes {
+		attr, err := sqsMessageAttributeValue(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%w: attribute %s: %v", errMalformedOptions, name, err)
+		}
+		converted[name] = attr
+	}
+	return converted, nil
+}
+
+func sqsMessageAttributeValue(value any) (sqsMessageAttribute, error) {
+	object, ok := normalizeObject(value)
+	if !ok {
+		return sqsMessageAttribute{}, fmt.Errorf("must be a MessageAttributeValue object")
+	}
+	dataType, err := requiredString(object, "DataType")
+	if err != nil {
+		return sqsMessageAttribute{}, err
+	}
+	attribute := sqsMessageAttribute{DataType: dataType}
+	if stringValue, ok, err := optionalString(object, "StringValue"); err != nil {
+		return sqsMessageAttribute{}, err
+	} else if ok {
+		attribute.StringValue = stringValue
+		attribute.HasStringValue = true
+	}
+	if binaryValue, ok, err := optionalBase64(object, "BinaryValue"); err != nil {
+		return sqsMessageAttribute{}, err
+	} else if ok {
+		attribute.BinaryValue = binaryValue
+		attribute.HasBinaryValue = true
+	}
+	if _, ok := object["StringListValues"]; ok {
+		return sqsMessageAttribute{}, fmt.Errorf("StringListValues is reserved by SQS and not supported")
+	}
+	if _, ok := object["BinaryListValues"]; ok {
+		return sqsMessageAttribute{}, fmt.Errorf("BinaryListValues is reserved by SQS and not supported")
+	}
+	return attribute, nil
+}
+
+func requiredString(object map[string]any, key string) (string, error) {
+	value, ok, err := optionalString(object, key)
+	if err != nil {
+		return "", err
+	}
+	if !ok || value == "" {
+		return "", fmt.Errorf("%s is required", key)
+	}
+	return value, nil
+}
+
+func optionalString(object map[string]any, key string) (string, bool, error) {
+	value, ok := object[key]
+	if !ok || value == nil {
+		return "", false, nil
+	}
+	stringValue, ok := value.(string)
+	if !ok {
+		return "", false, fmt.Errorf("%s must be a string", key)
+	}
+	return stringValue, true, nil
+}
+
+func optionalBase64(object map[string]any, key string) ([]byte, bool, error) {
+	value, ok, err := optionalString(object, key)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, true, fmt.Errorf("%s must be base64: %w", key, err)
+	}
+	return decoded, true, nil
 }
 
 func sqsDelaySeconds(options backendOptions) (*int32, error) {
@@ -700,12 +811,12 @@ func sqsAWSTraceHeader(options backendOptions) (string, error) {
 	return traceHeader, nil
 }
 
-func validSQSAttributes(attributes map[string]string) bool {
+func validSQSAttributes(attributes map[string]sqsMessageAttribute) bool {
 	if len(attributes) > sqsMaxAttributes {
 		return false
 	}
-	for key, value := range attributes {
-		if key == "" || value == "" {
+	for key, attribute := range attributes {
+		if key == "" || attribute.DataType == "" {
 			return false
 		}
 		if !sqsAttributeNameRe.MatchString(key) {
@@ -718,11 +829,37 @@ func validSQSAttributes(attributes map[string]string) bool {
 		if strings.HasPrefix(key, ".") || strings.HasSuffix(key, ".") || strings.Contains(key, "..") {
 			return false
 		}
-		if !sqsAllowedUnicodeBytes([]byte(value)) {
+		if !validSQSAttributeDataType(attribute.DataType) {
+			return false
+		}
+		if attribute.HasStringList || attribute.HasBinaryList {
+			return false
+		}
+		if strings.HasPrefix(attribute.DataType, "Binary") {
+			if !attribute.HasBinaryValue || attribute.HasStringValue {
+				return false
+			}
+		} else {
+			if !attribute.HasStringValue || attribute.HasBinaryValue {
+				return false
+			}
+			if attribute.StringValue == "" {
+				return false
+			}
+			if !sqsAllowedUnicodeBytes([]byte(attribute.StringValue)) {
+				return false
+			}
+		}
+		if attribute.HasBinaryValue && len(attribute.BinaryValue) == 0 {
 			return false
 		}
 	}
 	return true
+}
+
+func validSQSAttributeDataType(dataType string) bool {
+	base, _, _ := strings.Cut(dataType, ".")
+	return base == "String" || base == "Number" || base == "Binary"
 }
 
 func sqsAllowedUnicodeBytes(value []byte) bool {

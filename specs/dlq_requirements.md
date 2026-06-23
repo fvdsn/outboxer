@@ -74,7 +74,10 @@ Example:
       "sqs": {
         "messageGroupId": "user-123",
         "attributes": {
-          "source": "users"
+          "source": {
+            "DataType": "String",
+            "StringValue": "users"
+          }
         }
       }
     }

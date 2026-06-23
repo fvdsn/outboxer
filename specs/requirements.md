@@ -84,7 +84,18 @@ SQS options:
       "AWSTraceHeader": "Root=1-67891233-abcdef012345678912345678"
     },
     "attributes": {
-      "source": "users"
+      "source": {
+        "DataType": "String",
+        "StringValue": "users"
+      },
+      "attempt": {
+        "DataType": "Number",
+        "StringValue": "3"
+      },
+      "signature": {
+        "DataType": "Binary",
+        "BinaryValue": "SGVsbG8="
+      }
     }
   }
 }
@@ -100,11 +111,11 @@ Supported keys for the first options implementation:
 | SQS | `sqs.messageDeduplicationId` | SQS FIFO `MessageDeduplicationId`. Empty string is treated as absent. When absent, Outboxer derives it from the event id. |
 | SQS | `sqs.delaySeconds` | SQS per-message delay in seconds for standard queues. Must be an integer from 0 to 900. Not sent for FIFO queues. |
 | SQS | `sqs.messageSystemAttributes.AWSTraceHeader` | SQS `AWSTraceHeader` message system attribute. Empty string is treated as absent. |
-| SQS | `sqs.attributes` | SQS message attributes. |
+| SQS | `sqs.attributes` | SQS `MessageAttributes`, using the native AWS JSON protocol shape. Binary values are base64-encoded strings. |
 
-Full typed SQS message attributes (`BinaryValue`, list values, and custom
-`DataType`) are intentionally out of scope for this step. `sqs.attributes` stays
-the simple string map form for now.
+SQS `StringListValues` and `BinaryListValues` are exposed in AWS's shape but are
+documented as not implemented / reserved by SQS. Outboxer rejects them when
+present instead of sending provider-unsupported fields.
 
 ### Options validation
 
@@ -119,11 +130,11 @@ Options validation runs after route resolution and only for the selected backend
   non-string values are content poison.
 - `sqs.delaySeconds` must be an integer number when present; non-integer values
   are content poison.
-- `pubsub.attributes` and `sqs.attributes` must be JSON objects when present;
-  non-object values are content poison.
-- Attribute object values keep the existing compatibility behavior: string
-  values are used, non-string values are dropped and logged. The resulting string
-  attributes are then validated against provider limits.
+- `pubsub.attributes` and `sqs.attributes` must be JSON objects when present.
+  Pub/Sub attribute values keep the existing compatibility behavior: string
+  values are used, non-string values are dropped and logged. SQS attribute values
+  must be native AWS `MessageAttributeValue` objects with `DataType` and either
+  `StringValue` or base64 `BinaryValue` as appropriate.
 - Unknown option keys are ignored and must not make an event poison.
 
 Malformed options are deterministic event-content errors: retrying the unchanged
@@ -540,11 +551,12 @@ Classify as local SQS poison:
 - P4 if the body is empty, or if the body/string attribute values contain
   characters outside SQS's allowed Unicode set: tab, line feed, carriage return,
   `#x20`–`#xD7FF`, `#xE000`–`#xFFFD`, or `#x10000`–`#x10FFFF`.
-- P5 if sanitized string attributes exceed 10 entries, contain empty/null
-  name/type/value components, have an invalid name, or exceed name/type limits.
-  Valid names contain only letters, digits, `_`, `-`, and `.`, must not start
-  with `AWS.` or `Amazon.` in any casing, must not start/end with `.`, and must
-  not contain consecutive periods.
+- P5 if native SQS message attributes exceed 10 entries, contain empty/null
+  name/type/value components, have an invalid name, use an unsupported data type,
+  contain reserved list values, or exceed name/type limits. Valid names contain
+  only letters, digits, `_`, `-`, and `.`, must not start with `AWS.` or
+  `Amazon.` in any casing, must not start/end with `.`, and must not contain
+  consecutive periods.
 - P6 if a provided `options.sqs.messageGroupId` cannot be used as a
   `MessageGroupId`, or a provided `options.sqs.messageDeduplicationId` cannot be
   used as a `MessageDeduplicationId`, because it exceeds 128 characters or
