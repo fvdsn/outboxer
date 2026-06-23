@@ -135,7 +135,7 @@ matter.
 | OPT-20 | `options.sqs.delaySeconds` is an integer from 0 to 900 on a standard queue. | SQS sender passes it as `DelaySeconds`. |
 | OPT-21 | `options.sqs.delaySeconds` is set on a FIFO queue. | SQS sender does not send per-message delay for FIFO queues. |
 | OPT-22 | `options.sqs.delaySeconds` is non-integer or outside 0-900. | Event is content-poison P6; no provider call is made. |
-| OPT-23 | `options.sqs.awsTraceHeader` is set. | SQS sender sends it as the `AWSTraceHeader` message system attribute. |
+| OPT-23 | `options.sqs.messageSystemAttributes.AWSTraceHeader` is set. | SQS sender sends it as the `AWSTraceHeader` message system attribute. |
 
 ## Batch orchestration
 

@@ -80,7 +80,9 @@ SQS options:
     "messageGroupId": "user-123",
     "messageDeduplicationId": "event-123",
     "delaySeconds": 30,
-    "awsTraceHeader": "Root=1-67891233-abcdef012345678912345678",
+    "messageSystemAttributes": {
+      "AWSTraceHeader": "Root=1-67891233-abcdef012345678912345678"
+    },
     "attributes": {
       "source": "users"
     }
@@ -97,7 +99,7 @@ Supported keys for the first options implementation:
 | SQS | `sqs.messageGroupId` | SQS `MessageGroupId`. FIFO queues use it for ordering; standard queues use it for fair queues. Empty string is treated as absent. |
 | SQS | `sqs.messageDeduplicationId` | SQS FIFO `MessageDeduplicationId`. Empty string is treated as absent. When absent, Outboxer derives it from the event id. |
 | SQS | `sqs.delaySeconds` | SQS per-message delay in seconds for standard queues. Must be an integer from 0 to 900. Not sent for FIFO queues. |
-| SQS | `sqs.awsTraceHeader` | SQS `AWSTraceHeader` message system attribute. Empty string is treated as absent. |
+| SQS | `sqs.messageSystemAttributes.AWSTraceHeader` | SQS `AWSTraceHeader` message system attribute. Empty string is treated as absent. |
 | SQS | `sqs.attributes` | SQS message attributes. |
 
 Full typed SQS message attributes (`BinaryValue`, list values, and custom
@@ -113,8 +115,8 @@ Options validation runs after route resolution and only for the selected backend
 - A present `options` value or selected backend section that is not a JSON object
   is malformed options and is content poison.
 - `pubsub.orderingKey`, `sqs.messageGroupId`, `sqs.messageDeduplicationId`, and
-  `sqs.awsTraceHeader` must be strings when present; non-string values are
-  content poison.
+  `sqs.messageSystemAttributes.AWSTraceHeader` must be strings when present;
+  non-string values are content poison.
 - `sqs.delaySeconds` must be an integer number when present; non-integer values
   are content poison.
 - `pubsub.attributes` and `sqs.attributes` must be JSON objects when present;
@@ -550,8 +552,9 @@ Classify as local SQS poison:
   ``!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~``.
 - P6 if `options.sqs.delaySeconds` is outside SQS's documented 0-900 second
   range.
-- P5 if `options.sqs.awsTraceHeader` is set but is empty or cannot be represented
-  as the supported SQS `AWSTraceHeader` system attribute.
+- P5 if `options.sqs.messageSystemAttributes.AWSTraceHeader` is set but is empty
+  or cannot be represented as the supported SQS `AWSTraceHeader` system
+  attribute.
 - P7 if the queue URL is syntactically invalid. A syntactically valid but missing
   queue is R4, not poison.
 

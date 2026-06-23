@@ -424,11 +424,11 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 			)
 			continue
 		}
-		traceHeader, err := options.stringValue("awsTraceHeader")
+		traceHeader, err := sqsAWSTraceHeader(options)
 		if err != nil {
 			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
 			a.logFailure(ctx, "Failed to send event",
-				fmt.Sprintf("sqs|%s|awsTraceHeader|malformed-options", queueURL),
+				fmt.Sprintf("sqs|%s|messageSystemAttributes|malformed-options", queueURL),
 				"event_id", eventValue(evt, a.cfg.EventID),
 				"event_destination", queueURL,
 				"error", err.Error(),
@@ -679,6 +679,25 @@ func sqsDelaySeconds(options backendOptions) (*int32, error) {
 		return nil, fmt.Errorf("%w: delaySeconds must be an integer", errMalformedOptions)
 	}
 	return &seconds, nil
+}
+
+func sqsAWSTraceHeader(options backendOptions) (string, error) {
+	attributes, err := options.attributesValue("messageSystemAttributes")
+	if err != nil {
+		return "", err
+	}
+	if attributes == nil {
+		return "", nil
+	}
+	value, ok := attributes["AWSTraceHeader"]
+	if !ok || value == nil {
+		return "", nil
+	}
+	traceHeader, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("%w: AWSTraceHeader must be a string", errMalformedOptions)
+	}
+	return traceHeader, nil
 }
 
 func validSQSAttributes(attributes map[string]string) bool {

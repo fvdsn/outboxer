@@ -847,7 +847,7 @@ func TestSendSQS10EventsSendsDelayAndTraceHeader(t *testing.T) {
 	a := &app{cfg: cfg, sqs: sqs}
 
 	events := []event{
-		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": map[string]any{"sqs": map[string]any{"delaySeconds": 30, "awsTraceHeader": "Root=1-67891233-abcdef012345678912345678"}}}},
+		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": map[string]any{"sqs": map[string]any{"delaySeconds": 30, "messageSystemAttributes": map[string]any{"AWSTraceHeader": "Root=1-67891233-abcdef012345678912345678"}}}}},
 	}
 
 	if err := a.sendSQS10Events(context.Background(), "queue-a", events, func(any) {}); err != nil {
