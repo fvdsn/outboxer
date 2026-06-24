@@ -1049,7 +1049,7 @@ func TestPostgresIntegrationProcessesAndDeletesEvents(t *testing.T) {
 		INSERT INTO %s (id, timestamp, payload, target, destination, options)
 		VALUES
 			('pubsub-1', now(), 'hello pubsub', 'pubsub', 'topic-a', '{"pubsub":{"attributes":{"trace":"abc"}}}'),
-			('sqs-1', now(), 'hello sqs', 'sqs', 'queue-a', '{"sqs":{"attributes":{"trace":"def"}}}')
+			('sqs-1', now(), 'hello sqs', 'sqs', 'queue-a', '{"sqs":{"attributes":{"trace":{"DataType":"String","StringValue":"def"}}}}')
 	`, ident(table)))
 	if err != nil {
 		t.Fatalf("insert events: %v", err)
