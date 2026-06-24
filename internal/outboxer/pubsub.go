@@ -385,7 +385,7 @@ func (a *app) preparePubsubEvent(ctx context.Context, evt event, ordered bool, c
 
 	stringAttributes, deletedAttributes := sanitizeStringAttributes(attributes)
 	if len(deletedAttributes) != 0 {
-		slog.Error("Some attributes were dropped",
+		slog.Warn("Some attributes were dropped",
 			"event_id", id,
 			"event_destination", topicName,
 			"dropped_attributes", deletedAttributes,
