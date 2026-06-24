@@ -31,8 +31,8 @@ ghcr.io/fvdsn/outboxer:latest
 In PostgreSQL, you need to create a table with at least an `id` column and a
 `payload` column. The `id` determines event ordering and idempotency. The
 `payload` is passed as-is to the event backend. The table and column names are
-configurable in Outboxer. Other columns can be configured for more advanced
-scenarios.
+configurable in Outboxer. Other columns enable routing and backend-specific
+options for more advanced scenarios — see [`docs/events.md`](docs/events.md).
 
 ```sql
 CREATE TABLE events (
@@ -111,6 +111,27 @@ from a single PostgreSQL connection.
    - Transactional delete after confirmed publish
    - Configurable table and column names
    - Dynamic routing with `target` and `destination`
+   - Backend-specific event options (ordering keys, attributes, FIFO groups)
    - Optional destination ownership with `PUBSUB_DESTINATIONS` and `SQS_DESTINATIONS`
    - Safe multi-instance deployments when split by backend or destination
+   - PostgreSQL dead letter queue for poison events
+   - Age-based poison handling with `MAX_EVENT_AGE_MS`
+   - Periodic operational statistics logging
    - Graceful shutdown, health endpoint, timeouts, and watchdog
+
+## Dead Letter Queue
+
+Events that are permanently unsendable (oversized payloads, malformed options,
+expired events, and similar content poison) can be routed to a PostgreSQL dead
+letter table instead of being deleted. Set `DLQ_TABLE` to enable it. Routing
+failures and retryable provider errors are never dead-lettered — they stay in
+the outbox table for a later retry. See [`docs/dlq.md`](docs/dlq.md).
+
+## Documentation
+
+ - [Events](docs/events.md) — table schema, routing, and backend-specific options
+ - [Configuration](docs/configuration.md) — full environment variable and flag reference
+ - [Logging](docs/logs.md) — log catalog, levels, and the periodic statistics fields
+ - [Dead Letter Queue](docs/dlq.md) — poison handling and the DLQ table
+ - [Authentication](docs/auth.md) — credentials and cross-cloud workload identity
+ - [Deployment](docs/deployment.md) — Cloud Run, GKE, ECS Fargate, and EKS examples
