@@ -59,6 +59,7 @@ These are cross-cutting assertions that many scenarios should verify.
 | CFG-16 | `MAX_EVENT_AGE_MS` is negative. | Validation fails. |
 | CFG-17 | `MAX_EVENT_AGE_MS > 0` and `EVENT_TIMESTAMP` is empty. | Validation fails. |
 | CFG-18 | `MAX_EVENT_AGE_MS > 0` and the timestamp column is missing from the event table. | Startup database validation fails. |
+| CFG-19 | `WATCHDOG_INTERVAL_MS` is zero or negative. | Relay validation fails before the watchdog starts. |
 
 Watchdog bound cases:
 

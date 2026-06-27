@@ -594,6 +594,16 @@ func TestValidateAWSWebIdentity(t *testing.T) {
 
 func TestValidateWatchdogMustExceedPollInterval(t *testing.T) {
 	cfg := testConfig()
+	cfg.WatchdogInterval = 0
+	if err := cfg.validate(configValidationRelay); err == nil {
+		t.Fatal("expected error when watchdog interval is zero")
+	}
+
+	cfg.WatchdogInterval = -time.Second
+	if err := cfg.validate(configValidationRelay); err == nil {
+		t.Fatal("expected error when watchdog interval is negative")
+	}
+
 	cfg.PollInterval = time.Minute
 	cfg.WatchdogInterval = 5 * time.Minute
 	if err := cfg.validate(configValidationRelay); err == nil {

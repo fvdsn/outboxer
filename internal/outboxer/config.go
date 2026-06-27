@@ -338,6 +338,9 @@ func (cfg appConfig) validateRuntime() error {
 	if cfg.SQSEnabled && cfg.SQSSendConcurrency <= 0 {
 		return fmt.Errorf("SQS send concurrency (%d) must be positive: set SQS_SEND_CONCURRENCY", cfg.SQSSendConcurrency)
 	}
+	if cfg.WatchdogInterval <= 0 {
+		return fmt.Errorf("watchdog interval (%s) must be positive: set WATCHDOG_INTERVAL_MS", cfg.WatchdogInterval)
+	}
 	if cfg.PollInterval > 0 && cfg.WatchdogInterval < 10*cfg.PollInterval {
 		return fmt.Errorf("watchdog interval (%s) must be at least 10x the poll interval (%s) to avoid false deadlocks: increase WATCHDOG_INTERVAL_MS or decrease POLL_INTERVAL_MS", cfg.WatchdogInterval, cfg.PollInterval)
 	}
