@@ -31,6 +31,9 @@ are `debug`.
 | `Event sent` | A publish is confirmed by the backend. | `event_id`, `event_published_id`, `event_destination`, `publish_latency` |
 | `Watchdog heartbeat` | Each watchdog tick while healthy. | — |
 | `Healthcheck request answered` | A health request returns `200`. | — |
+| `Notification wake-ups enabled` | Logged once at startup when `POLL_INTERVAL_MS > 0`. | `channel` |
+| `Failed to start notification listener, polling instead` | The listener could not be started this idle cycle; it falls back to a plain sweep. | `error` |
+| `Notification wait failed, polling next cycle` | The listener connection failed mid-wait; the next idle cycle tries again. | `error` |
 
 `event_latency` is the time between the event `timestamp` column and when
 Outboxer picked it up (only meaningful when `EVENT_TIMESTAMP` is configured).

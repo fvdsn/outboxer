@@ -59,6 +59,32 @@ func TestEstimateRemainingEventsSkipsUnavailableEstimate(t *testing.T) {
 	}
 }
 
+func TestMaybeRefreshRemainingEstimateCachesAndThrottles(t *testing.T) {
+	cfg := testConfig() // StatsInterval is 10s
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT reltuples FROM pg_catalog.pg_class WHERE oid = to_regclass($1)").
+		WithArgs(`"events"`).
+		WillReturnRows(sqlmock.NewRows([]string{"reltuples"}).AddRow(1234.0))
+
+	var last time.Time
+	a.maybeRefreshRemainingEstimate(context.Background(), &last)
+	if remaining, ok := a.stats.loadRemaining(); !ok || remaining != 1234 {
+		t.Fatalf("loadRemaining = %d, %t; want 1234, true", remaining, ok)
+	}
+
+	// A second call within the stats interval must not query again: only one
+	// query is expected, and the cached value must be preserved.
+	a.maybeRefreshRemainingEstimate(context.Background(), &last)
+	if remaining, ok := a.stats.loadRemaining(); !ok || remaining != 1234 {
+		t.Fatalf("expected cached estimate to be preserved, got %d, %t", remaining, ok)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected database interactions: %v", err)
+	}
+}
+
 func TestStartStatsLoggerDisabled(_ *testing.T) {
 	a := &app{cfg: testConfig(), stats: &appStats{}}
 	a.cfg.StatsInterval = 0

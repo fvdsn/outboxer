@@ -65,10 +65,20 @@ func (a *app) checkDLQWorks(ctx context.Context) error {
 	return validateDLQTableMetadata(a.cfg.DLQTable, metadata)
 }
 
+// rowQuerier is satisfied by both *sql.DB and *sql.Tx, so metadata can be loaded
+// either on the live relay connection or inside an uncommitted init transaction.
+type rowQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 func (a *app) loadDLQTableMetadata(ctx context.Context) (dlqTableMetadata, error) {
+	return loadDLQTableMetadata(ctx, a.db, a.cfg.DLQTable)
+}
+
+func loadDLQTableMetadata(ctx context.Context, q rowQuerier, dlqTable string) (dlqTableMetadata, error) {
 	// Pass the sanitized table name to to_regclass so quoted/mixed-case names are
 	// resolved the same way as the INSERT statement built with ident().
-	rows, err := a.db.QueryContext(ctx, dlqMetadataSQL, ident(a.cfg.DLQTable))
+	rows, err := q.QueryContext(ctx, dlqMetadataSQL, ident(dlqTable))
 	if err != nil {
 		return dlqTableMetadata{}, err
 	}

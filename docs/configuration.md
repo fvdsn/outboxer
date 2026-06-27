@@ -51,11 +51,12 @@ options.
 | `--dlq-table` | `DLQ_TABLE` | empty | Dead letter table for poison events. Empty disables the DLQ. See [Dead Letter Queue](dlq.md). |
 | `--max-event-age-ms` | `MAX_EVENT_AGE_MS` | `0` | Maximum selected event age in milliseconds. `0` disables age-based poison. Requires `EVENT_TIMESTAMP`. |
 | `--error-cooldown-ms` | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors in milliseconds. |
-| `--poll-interval-ms` | `POLL_INTERVAL_MS` | `0` | Sleep after an empty batch in milliseconds. The default keeps polling immediately. |
+| `--poll-interval-ms` | `POLL_INTERVAL_MS` | `0` | Idle wait after an empty batch in milliseconds. The default keeps polling immediately. When `> 0`, the wait is interrupted by a `LISTEN`/`NOTIFY` wake-up if the optional trigger is installed. See [Notifications](notifications.md). |
 | `--watchdog-interval-ms` | `WATCHDOG_INTERVAL_MS` | `600000` | Watchdog interval in milliseconds. Must be at least 10x `POLL_INTERVAL_MS` when polling is enabled. |
 | `--publish-timeout-ms` | `PUBLISH_TIMEOUT_MS` | `30000` | Timeout for a single publish call in milliseconds. Must be positive. |
 | `--publish-result-grace-ms` | `PUBLISH_RESULT_GRACE_MS` | `5000` | Extra wait after provider publish timeout for async Pub/Sub publish results. |
 | `--stats-interval-ms` | `STATS_INTERVAL_MS` | `10000` | Periodic statistics logging interval in milliseconds. `0` disables statistics. See [Statistics](#statistics). |
+| `--notify-channel` | `NOTIFY_CHANNEL` | `outboxer_events` | PostgreSQL `LISTEN` channel for the optional new-event notification trigger. Only used when `POLL_INTERVAL_MS > 0`. See [Notifications](notifications.md). |
 
 ## HTTP / health
 
@@ -105,6 +106,18 @@ hostname by default (`PG_SSL_REJECT_UNAUTHORIZED=true`):
   store is used.
 - The certificate must be valid for `PG_HOST`.
 - To skip verification (not recommended), set `PG_SSL_REJECT_UNAUTHORIZED=false`.
+
+### Provisioning (init command)
+
+These settings are used only by `outboxer init` (see
+[Provisioning](provisioning.md)). They are ignored by the relay.
+
+| CLI flag | Env var | Default | Description |
+| --- | --- | --- | --- |
+| `--apply` | — | off | Execute the generated SQL against the database instead of printing it to stdout. |
+| `--pg-init-user` | `PG_INIT_USER` | empty | Provisioning role to connect as for `--apply`. When set, `init` also creates and grants to the run role; when empty, `init` connects as `PG_USER` and only creates schema objects. |
+| `--pg-init-password` | `PG_INIT_PASSWORD` | empty | Password for the provisioning role. |
+| `--pg-producer-roles` | `PG_PRODUCER_ROLES` | empty | Comma-separated existing roles granted `SELECT, INSERT` on the event table. Grant-only; `init` never creates them. |
 
 ## Google Pub/Sub
 

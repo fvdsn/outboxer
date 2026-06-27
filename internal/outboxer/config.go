@@ -22,6 +22,7 @@ type appConfig struct {
 	CollectBatchTarget int
 	SQSSendConcurrency int
 	DLQTable           string
+	NotifyChannel      string
 
 	LogLevel  string
 	LogFormat string
@@ -55,6 +56,14 @@ type appConfig struct {
 	PGConnectTimeout        time.Duration
 	PGQueryTimeout          time.Duration
 
+	// Provisioning-only settings, used by the init command. PGInitUser/Password
+	// are the connection identity for `init --apply`; their presence enables
+	// run-role management. PGProducerRoles are existing roles granted SELECT,
+	// INSERT on the event table.
+	PGInitUser      string
+	PGInitPassword  string
+	PGProducerRoles []string
+
 	AWSRegion                  string
 	AWSRoleARN                 string
 	AWSRoleSessionName         string
@@ -81,17 +90,71 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 		printUsage(output, options)
 	}
 
-	addStringFlag(flags, &options, "Event table", &cfg.EventTable, "event-table", cfg.EventTable, "Outbox table name.", "EVENT_TABLE")
-	addStringFlag(flags, &options, "Event table", &cfg.EventID, "event-id", cfg.EventID, "Event id column.", "EVENT_ID")
-	addStringFlag(flags, &options, "Event table", &cfg.EventTimestamp, "event-timestamp", cfg.EventTimestamp, "Event timestamp column.", "EVENT_TIMESTAMP")
-	addStringFlag(flags, &options, "Event table", &cfg.EventPayload, "event-payload", cfg.EventPayload, "Event payload column.", "EVENT_PAYLOAD")
-	addStringFlag(flags, &options, "Event table", &cfg.EventTarget, "event-target", cfg.EventTarget, "Backend selector column. Values pubsub or sqs.", "EVENT_TARGET")
-	addStringFlag(flags, &options, "Event table", &cfg.EventDestination, "event-destination", cfg.EventDestination, "Pub/Sub topic name or SQS queue URL column.", "EVENT_DESTINATION")
-	addStringFlag(flags, &options, "Event table", &cfg.EventOptions, "event-options", cfg.EventOptions, "Backend-specific JSON options column. Empty disables options.", "EVENT_OPTIONS")
+	finalize := bindConfigFlags(flags, &cfg, &options)
 
-	addIntFlag(flags, &options, "Batch processing", &cfg.CollectBatchTarget, "collect-batch-target", cfg.CollectBatchTarget, "Approximate target rows selected per batch, spread across eligible routes.", "COLLECT_BATCH_TARGET")
-	addIntFlag(flags, &options, "Batch processing", &cfg.SQSSendConcurrency, "sqs-send-concurrency", cfg.SQSSendConcurrency, "Maximum concurrent SQS send requests.", "SQS_SEND_CONCURRENCY")
-	addStringFlag(flags, &options, "Batch processing", &cfg.DLQTable, "dlq-table", cfg.DLQTable, "Dead letter table for poison events. Empty disables DLQ.", "DLQ_TABLE")
+	if err := flags.Parse(args); err != nil {
+		return appConfig{}, err
+	}
+	finalize()
+	if flags.NArg() > 0 {
+		return appConfig{}, fmt.Errorf("unexpected argument: %q", flags.Arg(0))
+	}
+
+	return cfg, nil
+}
+
+// loadInitConfig parses the init command's arguments. It reuses every relay
+// flag/env so a single configuration drives both verbs, and adds the
+// provisioning-only flags (--apply and the PG_INIT_*/PG_PRODUCER_ROLES settings).
+func loadInitConfig(args []string, output io.Writer) (appConfig, bool, error) {
+	loadDotEnv(".env")
+	cfg := loadConfigFromEnv()
+
+	flags := flag.NewFlagSet("outboxer init", flag.ContinueOnError)
+	flags.SetOutput(output)
+	options := []cliOption{}
+	flags.Usage = func() {
+		printUsage(output, options)
+	}
+
+	finalize := bindConfigFlags(flags, &cfg, &options)
+
+	var apply bool
+	flags.BoolVar(&apply, "apply", false, "Execute the generated SQL against the database instead of printing it to stdout.")
+	options = append(options, cliOption{category: "Provisioning", name: "apply", usage: "Execute the generated SQL against the database instead of printing it to stdout."})
+
+	addStringFlag(flags, &options, "Provisioning", &cfg.PGInitUser, "pg-init-user", cfg.PGInitUser, "Provisioning role to connect as for --apply. When set, init also creates and grants to the run role.", "PG_INIT_USER")
+	addValueFlag(flags, &options, "Provisioning", newSecretStringValue(&cfg.PGInitPassword), "pg-init-password", "Password for the provisioning role.", "PG_INIT_PASSWORD", redactDefault(cfg.PGInitPassword))
+	producerRoles := strings.Join(cfg.PGProducerRoles, ",")
+	addStringFlag(flags, &options, "Provisioning", &producerRoles, "pg-producer-roles", producerRoles, "Comma-separated existing roles granted SELECT, INSERT on the event table.", "PG_PRODUCER_ROLES")
+
+	if err := flags.Parse(args); err != nil {
+		return appConfig{}, false, err
+	}
+	finalize()
+	cfg.PGProducerRoles = parseStringList(producerRoles)
+	if flags.NArg() > 0 {
+		return appConfig{}, false, fmt.Errorf("unexpected argument: %q", flags.Arg(0))
+	}
+
+	return cfg, apply, nil
+}
+
+// bindConfigFlags registers every relay configuration flag on the flag set and
+// returns a finalize function that must be called after Parse to convert the
+// millisecond/list scratch values back onto the config.
+func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) func() {
+	addStringFlag(flags, options, "Event table", &cfg.EventTable, "event-table", cfg.EventTable, "Outbox table name.", "EVENT_TABLE")
+	addStringFlag(flags, options, "Event table", &cfg.EventID, "event-id", cfg.EventID, "Event id column.", "EVENT_ID")
+	addStringFlag(flags, options, "Event table", &cfg.EventTimestamp, "event-timestamp", cfg.EventTimestamp, "Event timestamp column.", "EVENT_TIMESTAMP")
+	addStringFlag(flags, options, "Event table", &cfg.EventPayload, "event-payload", cfg.EventPayload, "Event payload column.", "EVENT_PAYLOAD")
+	addStringFlag(flags, options, "Event table", &cfg.EventTarget, "event-target", cfg.EventTarget, "Backend selector column. Values pubsub or sqs.", "EVENT_TARGET")
+	addStringFlag(flags, options, "Event table", &cfg.EventDestination, "event-destination", cfg.EventDestination, "Pub/Sub topic name or SQS queue URL column.", "EVENT_DESTINATION")
+	addStringFlag(flags, options, "Event table", &cfg.EventOptions, "event-options", cfg.EventOptions, "Backend-specific JSON options column. Empty disables options.", "EVENT_OPTIONS")
+
+	addIntFlag(flags, options, "Batch processing", &cfg.CollectBatchTarget, "collect-batch-target", cfg.CollectBatchTarget, "Approximate target rows selected per batch, spread across eligible routes.", "COLLECT_BATCH_TARGET")
+	addIntFlag(flags, options, "Batch processing", &cfg.SQSSendConcurrency, "sqs-send-concurrency", cfg.SQSSendConcurrency, "Maximum concurrent SQS send requests.", "SQS_SEND_CONCURRENCY")
+	addStringFlag(flags, options, "Batch processing", &cfg.DLQTable, "dlq-table", cfg.DLQTable, "Dead letter table for poison events. Empty disables DLQ.", "DLQ_TABLE")
 
 	var watchdogIntervalMS = int(cfg.WatchdogInterval / time.Millisecond)
 	var errorCooldownMS = int(cfg.ErrorCooldown / time.Millisecond)
@@ -107,67 +170,64 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	var pubsubDestinations = strings.Join(cfg.PubSubDestinations, ",")
 	var sqsDestinations = strings.Join(cfg.SQSDestinations, ",")
 
-	addIntFlag(flags, &options, "Batch processing", &errorCooldownMS, "error-cooldown-ms", errorCooldownMS, "Sleep after batch or database errors in milliseconds.", "ERROR_COOLDOWN_MS")
-	addIntFlag(flags, &options, "Batch processing", &pollIntervalMS, "poll-interval-ms", pollIntervalMS, "Sleep after an empty batch in milliseconds.", "POLL_INTERVAL_MS")
-	addIntFlag(flags, &options, "Batch processing", &watchdogIntervalMS, "watchdog-interval-ms", watchdogIntervalMS, "Watchdog interval in milliseconds.", "WATCHDOG_INTERVAL_MS")
-	addIntFlag(flags, &options, "Batch processing", &publishTimeoutMS, "publish-timeout-ms", publishTimeoutMS, "Timeout for a single publish call in milliseconds. Must be positive.", "PUBLISH_TIMEOUT_MS")
-	addIntFlag(flags, &options, "Batch processing", &publishResultGraceMS, "publish-result-grace-ms", publishResultGraceMS, "Extra wait after provider publish timeout for async publish results.", "PUBLISH_RESULT_GRACE_MS")
-	addIntFlag(flags, &options, "Batch processing", &maxEventAgeMS, "max-event-age-ms", maxEventAgeMS, "Maximum selected event age in milliseconds. 0 disables age-based poison.", "MAX_EVENT_AGE_MS")
-	addIntFlag(flags, &options, "Batch processing", &statsIntervalMS, "stats-interval-ms", statsIntervalMS, "Periodic statistics logging interval in milliseconds. 0 disables statistics.", "STATS_INTERVAL_MS")
+	addIntFlag(flags, options, "Batch processing", &errorCooldownMS, "error-cooldown-ms", errorCooldownMS, "Sleep after batch or database errors in milliseconds.", "ERROR_COOLDOWN_MS")
+	addIntFlag(flags, options, "Batch processing", &pollIntervalMS, "poll-interval-ms", pollIntervalMS, "Sleep after an empty batch in milliseconds.", "POLL_INTERVAL_MS")
+	addIntFlag(flags, options, "Batch processing", &watchdogIntervalMS, "watchdog-interval-ms", watchdogIntervalMS, "Watchdog interval in milliseconds.", "WATCHDOG_INTERVAL_MS")
+	addIntFlag(flags, options, "Batch processing", &publishTimeoutMS, "publish-timeout-ms", publishTimeoutMS, "Timeout for a single publish call in milliseconds. Must be positive.", "PUBLISH_TIMEOUT_MS")
+	addIntFlag(flags, options, "Batch processing", &publishResultGraceMS, "publish-result-grace-ms", publishResultGraceMS, "Extra wait after provider publish timeout for async publish results.", "PUBLISH_RESULT_GRACE_MS")
+	addIntFlag(flags, options, "Batch processing", &maxEventAgeMS, "max-event-age-ms", maxEventAgeMS, "Maximum selected event age in milliseconds. 0 disables age-based poison.", "MAX_EVENT_AGE_MS")
+	addIntFlag(flags, options, "Batch processing", &statsIntervalMS, "stats-interval-ms", statsIntervalMS, "Periodic statistics logging interval in milliseconds. 0 disables statistics.", "STATS_INTERVAL_MS")
+	addStringFlag(flags, options, "Batch processing", &cfg.NotifyChannel, "notify-channel", cfg.NotifyChannel, "PostgreSQL LISTEN channel for the optional new-event notification trigger. Only used when POLL_INTERVAL_MS > 0.", "NOTIFY_CHANNEL")
 
-	addIntFlag(flags, &options, "HTTP / health", &cfg.HealthPort, "health-port", cfg.HealthPort, "HTTP health server port. Set to 0 to disable.", "HEALTH_PORT, PORT")
+	addIntFlag(flags, options, "HTTP / health", &cfg.HealthPort, "health-port", cfg.HealthPort, "HTTP health server port. Set to 0 to disable.", "HEALTH_PORT, PORT")
 
-	addStringFlag(flags, &options, "Logging", &cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug, info, warn, or error.", "LOG_LEVEL")
-	addStringFlag(flags, &options, "Logging", &cfg.LogFormat, "log-format", cfg.LogFormat, "Log format: text or json.", "LOG_FORMAT")
+	addStringFlag(flags, options, "Logging", &cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug, info, warn, or error.", "LOG_LEVEL")
+	addStringFlag(flags, options, "Logging", &cfg.LogFormat, "log-format", cfg.LogFormat, "Log format: text or json.", "LOG_FORMAT")
 
-	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGHost, "pg-host", cfg.PGHost, "PostgreSQL host.", "PG_HOST")
-	addValueFlag(flags, &options, "PostgreSQL", (*uint16Value)(&cfg.PGPort), "pg-port", "PostgreSQL port.", "PG_PORT", cfg.PGPort)
-	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGUser, "pg-user", cfg.PGUser, "PostgreSQL user.", "PG_USER")
-	addValueFlag(flags, &options, "PostgreSQL", newSecretStringValue(&cfg.PGPassword), "pg-password", "PostgreSQL password.", "PG_PASSWORD", redactDefault(cfg.PGPassword))
-	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGDatabase, "pg-database", cfg.PGDatabase, "PostgreSQL database.", "PG_DATABASE")
-	addBoolFlag(flags, &options, "PostgreSQL", &cfg.PGSSL, "pg-ssl", cfg.PGSSL, "Enable PostgreSQL TLS.", "PG_SSL")
-	addBoolFlag(flags, &options, "PostgreSQL", &cfg.PGSSLRejectUnauthorized, "pg-ssl-reject-unauthorized", cfg.PGSSLRejectUnauthorized, "Verify PostgreSQL TLS certificate and hostname.", "PG_SSL_REJECT_UNAUTHORIZED")
-	addStringFlag(flags, &options, "PostgreSQL", &cfg.PGSSLRootCert, "pg-ssl-root-cert", cfg.PGSSLRootCert, "Path to a CA certificate (PEM) used to verify the PostgreSQL server.", "PG_SSL_ROOT_CERT")
-	addIntFlag(flags, &options, "PostgreSQL", &pgTimeoutMS, "pg-connect-timeout-ms", pgTimeoutMS, "PostgreSQL connect timeout in milliseconds.", "PG_CONNECT_TIMEOUT_MS")
-	addIntFlag(flags, &options, "PostgreSQL", &pgQueryTimeoutMS, "pg-query-timeout-ms", pgQueryTimeoutMS, "Timeout for a single database query in milliseconds. 0 disables the timeout.", "PG_QUERY_TIMEOUT_MS")
+	addStringFlag(flags, options, "PostgreSQL", &cfg.PGHost, "pg-host", cfg.PGHost, "PostgreSQL host.", "PG_HOST")
+	addValueFlag(flags, options, "PostgreSQL", (*uint16Value)(&cfg.PGPort), "pg-port", "PostgreSQL port.", "PG_PORT", cfg.PGPort)
+	addStringFlag(flags, options, "PostgreSQL", &cfg.PGUser, "pg-user", cfg.PGUser, "PostgreSQL user.", "PG_USER")
+	addValueFlag(flags, options, "PostgreSQL", newSecretStringValue(&cfg.PGPassword), "pg-password", "PostgreSQL password.", "PG_PASSWORD", redactDefault(cfg.PGPassword))
+	addStringFlag(flags, options, "PostgreSQL", &cfg.PGDatabase, "pg-database", cfg.PGDatabase, "PostgreSQL database.", "PG_DATABASE")
+	addBoolFlag(flags, options, "PostgreSQL", &cfg.PGSSL, "pg-ssl", cfg.PGSSL, "Enable PostgreSQL TLS.", "PG_SSL")
+	addBoolFlag(flags, options, "PostgreSQL", &cfg.PGSSLRejectUnauthorized, "pg-ssl-reject-unauthorized", cfg.PGSSLRejectUnauthorized, "Verify PostgreSQL TLS certificate and hostname.", "PG_SSL_REJECT_UNAUTHORIZED")
+	addStringFlag(flags, options, "PostgreSQL", &cfg.PGSSLRootCert, "pg-ssl-root-cert", cfg.PGSSLRootCert, "Path to a CA certificate (PEM) used to verify the PostgreSQL server.", "PG_SSL_ROOT_CERT")
+	addIntFlag(flags, options, "PostgreSQL", &pgTimeoutMS, "pg-connect-timeout-ms", pgTimeoutMS, "PostgreSQL connect timeout in milliseconds.", "PG_CONNECT_TIMEOUT_MS")
+	addIntFlag(flags, options, "PostgreSQL", &pgQueryTimeoutMS, "pg-query-timeout-ms", pgQueryTimeoutMS, "Timeout for a single database query in milliseconds. 0 disables the timeout.", "PG_QUERY_TIMEOUT_MS")
 
-	addBoolFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubEnabled, "pubsub-enabled", cfg.PubSubEnabled, "Enable publishing to Google Pub/Sub.", "PUBSUB_ENABLED")
-	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.DefaultPubSubTopic, "default-pubsub-topic", cfg.DefaultPubSubTopic, "Pub/Sub topic used when an event has no destination.", "DEFAULT_PUBSUB_TOPIC")
-	addStringFlag(flags, &options, "Google Pub/Sub", &pubsubDestinations, "pubsub-destinations", pubsubDestinations, "Comma-separated Pub/Sub destinations this process owns. Empty means all Pub/Sub destinations.", "PUBSUB_DESTINATIONS")
-	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubProjectID, "pubsub-project-id", cfg.PubSubProjectID, "Google Cloud project for Pub/Sub. Detected from ADC when empty.", "PUBSUB_PROJECT_ID")
-	addStringFlag(flags, &options, "Google Pub/Sub", &cfg.PubSubAPIEndpoint, "pubsub-api-endpoint", cfg.PubSubAPIEndpoint, "Optional Pub/Sub API endpoint override.", "PUBSUB_API_ENDPOINT")
+	addBoolFlag(flags, options, "Google Pub/Sub", &cfg.PubSubEnabled, "pubsub-enabled", cfg.PubSubEnabled, "Enable publishing to Google Pub/Sub.", "PUBSUB_ENABLED")
+	addStringFlag(flags, options, "Google Pub/Sub", &cfg.DefaultPubSubTopic, "default-pubsub-topic", cfg.DefaultPubSubTopic, "Pub/Sub topic used when an event has no destination.", "DEFAULT_PUBSUB_TOPIC")
+	addStringFlag(flags, options, "Google Pub/Sub", &pubsubDestinations, "pubsub-destinations", pubsubDestinations, "Comma-separated Pub/Sub destinations this process owns. Empty means all Pub/Sub destinations.", "PUBSUB_DESTINATIONS")
+	addStringFlag(flags, options, "Google Pub/Sub", &cfg.PubSubProjectID, "pubsub-project-id", cfg.PubSubProjectID, "Google Cloud project for Pub/Sub. Detected from ADC when empty.", "PUBSUB_PROJECT_ID")
+	addStringFlag(flags, options, "Google Pub/Sub", &cfg.PubSubAPIEndpoint, "pubsub-api-endpoint", cfg.PubSubAPIEndpoint, "Optional Pub/Sub API endpoint override.", "PUBSUB_API_ENDPOINT")
 
-	addBoolFlag(flags, &options, "AWS SQS", &cfg.SQSEnabled, "sqs-enabled", cfg.SQSEnabled, "Enable publishing to AWS SQS.", "SQS_ENABLED")
-	addStringFlag(flags, &options, "AWS SQS", &cfg.DefaultSQSQueueURL, "default-sqs-queue-url", cfg.DefaultSQSQueueURL, "SQS queue URL used when an event has no destination.", "DEFAULT_SQS_QUEUE_URL")
-	addStringFlag(flags, &options, "AWS SQS", &sqsDestinations, "sqs-destinations", sqsDestinations, "Comma-separated SQS destinations this process owns. Empty means all SQS destinations.", "SQS_DESTINATIONS")
-	addStringFlag(flags, &options, "AWS SQS", &cfg.SQSAPIEndpoint, "sqs-api-endpoint", cfg.SQSAPIEndpoint, "Optional SQS API endpoint override.", "SQS_API_ENDPOINT")
-	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRegion, "aws-region", cfg.AWSRegion, "AWS region for SQS and STS.", "AWS_REGION")
-	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRoleARN, "aws-role-arn", cfg.AWSRoleARN, "Optional AWS role to assume before publishing to SQS.", "AWS_ROLE_ARN")
-	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSRoleSessionName, "aws-role-session-name", cfg.AWSRoleSessionName, "AWS assume-role session name.", "AWS_ROLE_SESSION_NAME")
-	addIntFlag(flags, &options, "AWS SQS", &awsRoleDurationSeconds, "aws-role-duration-seconds", awsRoleDurationSeconds, "AWS assumed-role duration in seconds.", "AWS_ROLE_DURATION_SECONDS")
-	addIntFlag(flags, &options, "AWS SQS", &awsCredentialRefreshWindowMS, "aws-credential-refresh-window-ms", awsCredentialRefreshWindowMS, "Refresh assumed credentials before expiry in milliseconds.", "AWS_CREDENTIAL_REFRESH_WINDOW_MS")
-	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSWebIdentityProvider, "aws-web-identity-provider", cfg.AWSWebIdentityProvider, "Set to 'google' to assume the AWS role with a Google OIDC token (GCP to AWS).", "AWS_WEB_IDENTITY_PROVIDER")
-	addStringFlag(flags, &options, "AWS SQS", &cfg.AWSWebIdentityAudience, "aws-web-identity-audience", cfg.AWSWebIdentityAudience, "Audience for the web identity token, matching the AWS IAM OIDC provider.", "AWS_WEB_IDENTITY_AUDIENCE")
+	addBoolFlag(flags, options, "AWS SQS", &cfg.SQSEnabled, "sqs-enabled", cfg.SQSEnabled, "Enable publishing to AWS SQS.", "SQS_ENABLED")
+	addStringFlag(flags, options, "AWS SQS", &cfg.DefaultSQSQueueURL, "default-sqs-queue-url", cfg.DefaultSQSQueueURL, "SQS queue URL used when an event has no destination.", "DEFAULT_SQS_QUEUE_URL")
+	addStringFlag(flags, options, "AWS SQS", &sqsDestinations, "sqs-destinations", sqsDestinations, "Comma-separated SQS destinations this process owns. Empty means all SQS destinations.", "SQS_DESTINATIONS")
+	addStringFlag(flags, options, "AWS SQS", &cfg.SQSAPIEndpoint, "sqs-api-endpoint", cfg.SQSAPIEndpoint, "Optional SQS API endpoint override.", "SQS_API_ENDPOINT")
+	addStringFlag(flags, options, "AWS SQS", &cfg.AWSRegion, "aws-region", cfg.AWSRegion, "AWS region for SQS and STS.", "AWS_REGION")
+	addStringFlag(flags, options, "AWS SQS", &cfg.AWSRoleARN, "aws-role-arn", cfg.AWSRoleARN, "Optional AWS role to assume before publishing to SQS.", "AWS_ROLE_ARN")
+	addStringFlag(flags, options, "AWS SQS", &cfg.AWSRoleSessionName, "aws-role-session-name", cfg.AWSRoleSessionName, "AWS assume-role session name.", "AWS_ROLE_SESSION_NAME")
+	addIntFlag(flags, options, "AWS SQS", &awsRoleDurationSeconds, "aws-role-duration-seconds", awsRoleDurationSeconds, "AWS assumed-role duration in seconds.", "AWS_ROLE_DURATION_SECONDS")
+	addIntFlag(flags, options, "AWS SQS", &awsCredentialRefreshWindowMS, "aws-credential-refresh-window-ms", awsCredentialRefreshWindowMS, "Refresh assumed credentials before expiry in milliseconds.", "AWS_CREDENTIAL_REFRESH_WINDOW_MS")
+	addStringFlag(flags, options, "AWS SQS", &cfg.AWSWebIdentityProvider, "aws-web-identity-provider", cfg.AWSWebIdentityProvider, "Set to 'google' to assume the AWS role with a Google OIDC token (GCP to AWS).", "AWS_WEB_IDENTITY_PROVIDER")
+	addStringFlag(flags, options, "AWS SQS", &cfg.AWSWebIdentityAudience, "aws-web-identity-audience", cfg.AWSWebIdentityAudience, "Audience for the web identity token, matching the AWS IAM OIDC provider.", "AWS_WEB_IDENTITY_AUDIENCE")
 
-	if err := flags.Parse(args); err != nil {
-		return appConfig{}, err
+	return func() {
+		cfg.WatchdogInterval = time.Duration(watchdogIntervalMS) * time.Millisecond
+		cfg.ErrorCooldown = time.Duration(errorCooldownMS) * time.Millisecond
+		cfg.PollInterval = time.Duration(pollIntervalMS) * time.Millisecond
+		cfg.PublishTimeout = time.Duration(publishTimeoutMS) * time.Millisecond
+		cfg.PublishResultGrace = time.Duration(publishResultGraceMS) * time.Millisecond
+		cfg.MaxEventAge = time.Duration(maxEventAgeMS) * time.Millisecond
+		cfg.StatsInterval = time.Duration(statsIntervalMS) * time.Millisecond
+		cfg.PGConnectTimeout = time.Duration(pgTimeoutMS) * time.Millisecond
+		cfg.PGQueryTimeout = time.Duration(pgQueryTimeoutMS) * time.Millisecond
+		cfg.AWSRoleDuration = time.Duration(awsRoleDurationSeconds) * time.Second
+		cfg.AWSCredentialRefreshWindow = time.Duration(awsCredentialRefreshWindowMS) * time.Millisecond
+		cfg.PubSubDestinations = parseStringList(pubsubDestinations)
+		cfg.SQSDestinations = parseStringList(sqsDestinations)
 	}
-
-	cfg.WatchdogInterval = time.Duration(watchdogIntervalMS) * time.Millisecond
-	cfg.ErrorCooldown = time.Duration(errorCooldownMS) * time.Millisecond
-	cfg.PollInterval = time.Duration(pollIntervalMS) * time.Millisecond
-	cfg.PublishTimeout = time.Duration(publishTimeoutMS) * time.Millisecond
-	cfg.PublishResultGrace = time.Duration(publishResultGraceMS) * time.Millisecond
-	cfg.MaxEventAge = time.Duration(maxEventAgeMS) * time.Millisecond
-	cfg.StatsInterval = time.Duration(statsIntervalMS) * time.Millisecond
-	cfg.PGConnectTimeout = time.Duration(pgTimeoutMS) * time.Millisecond
-	cfg.PGQueryTimeout = time.Duration(pgQueryTimeoutMS) * time.Millisecond
-	cfg.AWSRoleDuration = time.Duration(awsRoleDurationSeconds) * time.Second
-	cfg.AWSCredentialRefreshWindow = time.Duration(awsCredentialRefreshWindowMS) * time.Millisecond
-	cfg.PubSubDestinations = parseStringList(pubsubDestinations)
-	cfg.SQSDestinations = parseStringList(sqsDestinations)
-
-	return cfg, nil
 }
 
 func (cfg appConfig) validate() error {
@@ -225,6 +285,9 @@ func (cfg appConfig) validate() error {
 	if cfg.PollInterval > 0 && cfg.WatchdogInterval < 10*cfg.PollInterval {
 		return fmt.Errorf("watchdog interval (%s) must be at least 10x the poll interval (%s) to avoid false deadlocks: increase WATCHDOG_INTERVAL_MS or decrease POLL_INTERVAL_MS", cfg.WatchdogInterval, cfg.PollInterval)
 	}
+	if cfg.PollInterval > 0 && cfg.NotifyChannel == "" {
+		return fmt.Errorf("notify channel must not be empty when polling is enabled: set NOTIFY_CHANNEL or POLL_INTERVAL_MS=0")
+	}
 	if cfg.AWSWebIdentityProvider != "" {
 		if cfg.AWSWebIdentityProvider != awsWebIdentityProviderGoogle {
 			return fmt.Errorf("unsupported AWS_WEB_IDENTITY_PROVIDER %q: the only supported value is %q", cfg.AWSWebIdentityProvider, awsWebIdentityProviderGoogle)
@@ -252,6 +315,7 @@ func loadConfigFromEnv() appConfig {
 		CollectBatchTarget: getenvInt("COLLECT_BATCH_TARGET", 5000),
 		SQSSendConcurrency: getenvInt("SQS_SEND_CONCURRENCY", 8),
 		DLQTable:           getenv("DLQ_TABLE", ""),
+		NotifyChannel:      getenv("NOTIFY_CHANNEL", "outboxer_events"),
 
 		LogLevel:  getenv("LOG_LEVEL", "info"),
 		LogFormat: getenv("LOG_FORMAT", "text"),
@@ -284,6 +348,10 @@ func loadConfigFromEnv() appConfig {
 		PGSSLRootCert:           getenv("PG_SSL_ROOT_CERT", ""),
 		PGConnectTimeout:        time.Duration(getenvInt("PG_CONNECT_TIMEOUT_MS", 10000)) * time.Millisecond,
 		PGQueryTimeout:          time.Duration(getenvInt("PG_QUERY_TIMEOUT_MS", 30000)) * time.Millisecond,
+
+		PGInitUser:      getenv("PG_INIT_USER", ""),
+		PGInitPassword:  getenv("PG_INIT_PASSWORD", ""),
+		PGProducerRoles: parseStringList(getenv("PG_PRODUCER_ROLES", "")),
 
 		AWSRegion:                  getenv("AWS_REGION", ""),
 		AWSRoleARN:                 getenv("AWS_ROLE_ARN", ""),

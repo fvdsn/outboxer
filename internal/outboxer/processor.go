@@ -93,7 +93,11 @@ func startDeadlockDetector(interval time.Duration) {
 
 func (a *app) processEvents(ctx context.Context) {
 	slog.Info("Processing events", "table", a.cfg.EventTable)
+	if a.cfg.PollInterval > 0 {
+		slog.Debug("Notification wake-ups enabled", "channel", a.cfg.NotifyChannel)
+	}
 
+	var lastEstimate time.Time
 	for {
 		if ctx.Err() != nil {
 			return
@@ -108,9 +112,38 @@ func (a *app) processEvents(ctx context.Context) {
 			if errors.Is(err, errDatabaseBatch) {
 				sleepContext(ctx, a.cfg.ErrorCooldown)
 			}
-		} else if result.selected == 0 && a.cfg.PollInterval > 0 {
-			sleepContext(ctx, a.cfg.PollInterval)
+			continue
 		}
+
+		// Refresh the backlog estimate after the batch, never before: a
+		// notification wake-up must reach the select without first waiting on the
+		// estimate query, which could stall up to PG_QUERY_TIMEOUT.
+		a.maybeRefreshRemainingEstimate(ctx, &lastEstimate)
+
+		if result.selected == 0 && a.cfg.PollInterval > 0 {
+			a.waitForEvents(ctx)
+		}
+	}
+}
+
+// waitForEvents waits for a new-event notification, bounded by the poll interval
+// as a backstop. It listens on a transient connection borrowed for this idle
+// cycle and released before returning, so it never holds a connection while
+// batches run. If the listener cannot be established it falls back to a plain
+// sleep; the next idle cycle tries again.
+func (a *app) waitForEvents(ctx context.Context) {
+	listener, err := a.startListener(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.Debug("Failed to start notification listener, polling instead", "error", err.Error())
+		}
+		sleepContext(ctx, a.cfg.PollInterval)
+		return
+	}
+	defer listener.close()
+
+	if err := listener.wait(ctx, a.cfg.PollInterval); err != nil && ctx.Err() == nil {
+		slog.Debug("Notification wait failed, polling next cycle", "error", err.Error())
 	}
 }
 

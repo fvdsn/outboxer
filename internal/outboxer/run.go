@@ -8,13 +8,29 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
-// Run loads configuration, connects to the database and the enabled queue
+// Run dispatches on the first argument: the init subcommand provisions the
+// database schema, anything else (or only flags) runs the relay. An unknown
+// non-flag first argument is rejected rather than silently starting the relay.
+func Run(ctx context.Context, args []string) error {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		switch args[0] {
+		case "init":
+			return runInit(ctx, args[1:])
+		default:
+			return fmt.Errorf("unknown command %q", args[0])
+		}
+	}
+	return runRelay(ctx, args)
+}
+
+// runRelay loads configuration, connects to the database and the enabled queue
 // backends, and processes the outbox until the context is cancelled. It returns
 // an error for any fatal startup or configuration problem.
-func Run(ctx context.Context, args []string) error {
+func runRelay(ctx context.Context, args []string) error {
 	cfg, err := loadConfig(args, os.Stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {

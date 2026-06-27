@@ -328,6 +328,7 @@ func testConfig() appConfig {
 
 		CollectBatchTarget: 5000,
 		SQSSendConcurrency: 8,
+		NotifyChannel:      "outboxer_events",
 
 		WatchdogInterval:   time.Hour,
 		HealthPort:         9999,

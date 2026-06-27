@@ -18,7 +18,7 @@ import (
 )
 
 func TestLoadConfigUsesDefaults(t *testing.T) {
-	unsetEnv(t, "EVENT_PAYLOAD", "EVENT_DESTINATION", "EVENT_OPTIONS", "PG_HOST", "PG_USER", "HEALTH_PORT", "PORT", "POLL_INTERVAL_MS", "WATCHDOG_INTERVAL_MS")
+	unsetEnv(t, "EVENT_PAYLOAD", "EVENT_DESTINATION", "EVENT_OPTIONS", "PG_HOST", "PG_USER", "HEALTH_PORT", "PORT", "POLL_INTERVAL_MS", "WATCHDOG_INTERVAL_MS", "NOTIFY_CHANNEL")
 
 	cfg, err := loadConfig(nil, io.Discard)
 	if err != nil {
@@ -60,6 +60,9 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	}
 	if cfg.StatsInterval != 10*time.Second {
 		t.Fatalf("expected default stats interval 10s, got %s", cfg.StatsInterval)
+	}
+	if cfg.NotifyChannel != "outboxer_events" {
+		t.Fatalf("expected default notify channel outboxer_events, got %q", cfg.NotifyChannel)
 	}
 }
 
@@ -148,6 +151,23 @@ func TestOpenDBUsesSingleConnection(t *testing.T) {
 	}
 }
 
+func TestOpenDBUsesSingleConnectionWhenPolling(t *testing.T) {
+	cfg := testConfig()
+	cfg.PollInterval = time.Second
+
+	db, err := openDB(cfg)
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	defer db.Close()
+
+	// The transient notify listener borrows the single connection only while
+	// idle, so polling does not require a second connection.
+	if got := db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("expected one max open connection even when polling, got %d", got)
+	}
+}
+
 func TestLoadConfigUsesEnv(t *testing.T) {
 	t.Setenv("PG_HOST", "db")
 	t.Setenv("EVENT_OPTIONS", "event_options")
@@ -159,12 +179,16 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	t.Setenv("STATS_INTERVAL_MS", "15000")
 	t.Setenv("PUBSUB_DESTINATIONS", "topic-a, topic-b ,,")
 	t.Setenv("SQS_DESTINATIONS", "queue-a,queue-b")
+	t.Setenv("NOTIFY_CHANNEL", "my_channel")
 
 	cfg, err := loadConfig(nil, io.Discard)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
 
+	if cfg.NotifyChannel != "my_channel" {
+		t.Fatalf("expected env notify channel, got %q", cfg.NotifyChannel)
+	}
 	if cfg.PGHost != "db" {
 		t.Fatalf("expected env pg host, got %q", cfg.PGHost)
 	}
@@ -564,6 +588,29 @@ func TestValidateWatchdogMustExceedPollInterval(t *testing.T) {
 	cfg.WatchdogInterval = time.Hour
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("expected zero poll interval to skip the watchdog check, got %v", err)
+	}
+}
+
+func TestValidateNotifyChannelRequiredWhenPolling(t *testing.T) {
+	cfg := testConfig()
+	cfg.PollInterval = time.Minute
+	cfg.WatchdogInterval = time.Hour
+	cfg.NotifyChannel = ""
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when polling is enabled with an empty notify channel")
+	}
+
+	cfg.NotifyChannel = "outboxer_events"
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected a non-empty notify channel to be valid, got %v", err)
+	}
+
+	// A zero poll interval (the default hot loop) never listens, so an empty
+	// channel imposes no constraint.
+	cfg.PollInterval = 0
+	cfg.NotifyChannel = ""
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected empty notify channel to be valid without polling, got %v", err)
 	}
 }
 
