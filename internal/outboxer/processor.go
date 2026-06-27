@@ -91,7 +91,7 @@ func startDeadlockDetector(interval time.Duration) {
 	}()
 }
 
-func (a *app) processEvents(ctx context.Context) {
+func (a *app) processEvents(ctx context.Context) error {
 	slog.Info("Processing events", "table", a.cfg.EventTable)
 	if a.cfg.PollInterval > 0 {
 		slog.Debug("Notification wake-ups enabled", "channel", a.cfg.NotifyChannel)
@@ -100,14 +100,14 @@ func (a *app) processEvents(ctx context.Context) {
 	var lastEstimate time.Time
 	for {
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 
 		result, err := a.processOneBatch(ctx)
 		if err != nil {
 			if errors.Is(err, errFatalAfterCommit) {
 				slog.Error("Fatal sender error after commit, stopping processor", "error", err.Error())
-				return
+				return err
 			}
 			if errors.Is(err, errDatabaseBatch) {
 				sleepContext(ctx, a.cfg.ErrorCooldown)

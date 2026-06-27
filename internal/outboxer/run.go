@@ -104,7 +104,9 @@ func runRelay(ctx context.Context, args []string) error {
 	}
 	a.startStatsLogger(ctx)
 
-	a.processEvents(ctx)
+	if err := a.processEvents(ctx); err != nil {
+		return fmt.Errorf("process events: %w", err)
+	}
 	slog.Info("Graceful shutdown")
 	return nil
 }

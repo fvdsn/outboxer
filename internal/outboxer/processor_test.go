@@ -140,14 +140,16 @@ func TestProcessEventsStopsAfterFatalAfterCommit(t *testing.T) {
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		a.processEvents(context.Background())
-		close(done)
+		done <- a.processEvents(context.Background())
 	}()
 
 	select {
-	case <-done:
+	case err := <-done:
+		if !errors.Is(err, errFatalAfterCommit) {
+			t.Fatalf("processEvents returned %v, want fatal-after-commit error", err)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("processEvents did not stop after fatal-after-commit error")
 	}
