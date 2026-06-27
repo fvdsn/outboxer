@@ -112,14 +112,16 @@ func TestProcessEventsStopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		a.processEvents(ctx)
-		close(done)
+		done <- a.processEvents(ctx)
 	}()
 
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("processEvents returned an error after context cancellation: %v", err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("processEvents did not return after context cancellation")
 	}
@@ -178,16 +180,18 @@ func TestProcessEventsDoesNotCooldownAfterNonFatalSenderError(t *testing.T) {
 	mock.ExpectRollback()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		a.processEvents(ctx)
-		close(done)
+		done <- a.processEvents(ctx)
 	}()
 
 	time.Sleep(50 * time.Millisecond)
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("processEvents returned an error after context cancellation: %v", err)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("processEvents did not return after cancellation")
 	}

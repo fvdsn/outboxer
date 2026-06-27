@@ -232,7 +232,32 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 	}
 }
 
-func (cfg appConfig) validate() error {
+type configValidationMode uint8
+
+const (
+	configValidationRelay configValidationMode = iota
+	configValidationInit
+)
+
+// validate is the single entry point for command configuration validation.
+// Storage rules apply to both commands; relay-only rules are skipped by init
+// because provisioning does not require a runnable publishing configuration.
+func (cfg appConfig) validate(mode configValidationMode) error {
+	if err := cfg.validateStorage(); err != nil {
+		return err
+	}
+
+	switch mode {
+	case configValidationInit:
+		return nil
+	case configValidationRelay:
+		return cfg.validateRuntime()
+	default:
+		return fmt.Errorf("unknown configuration validation mode %d", mode)
+	}
+}
+
+func (cfg appConfig) validateStorage() error {
 	if cfg.EventTable == "" {
 		return fmt.Errorf("an event table is required: set EVENT_TABLE")
 	}
@@ -245,6 +270,35 @@ func (cfg appConfig) validate() error {
 	if cfg.PGSchema == "" {
 		return fmt.Errorf("a PostgreSQL schema is required: set PG_SCHEMA")
 	}
+	if cfg.DLQTable != "" && cfg.DLQTable == cfg.EventTable {
+		return fmt.Errorf("DLQ_TABLE must not equal EVENT_TABLE")
+	}
+	if cfg.PollInterval > 0 && cfg.NotifyChannel == "" {
+		return fmt.Errorf("notify channel must not be empty when polling is enabled: set NOTIFY_CHANNEL or POLL_INTERVAL_MS=0")
+	}
+
+	seen := map[string]string{}
+	columns := []struct{ value, label string }{
+		{cfg.EventID, "EVENT_ID"},
+		{cfg.EventPayload, "EVENT_PAYLOAD"},
+		{cfg.EventTarget, "EVENT_TARGET"},
+		{cfg.EventDestination, "EVENT_DESTINATION"},
+		{cfg.EventTimestamp, "EVENT_TIMESTAMP"},
+		{cfg.EventOptions, "EVENT_OPTIONS"},
+	}
+	for _, column := range columns {
+		if column.value == "" {
+			continue
+		}
+		if previous, ok := seen[column.value]; ok {
+			return fmt.Errorf("%s and %s both resolve to the same column name %q", previous, column.label, column.value)
+		}
+		seen[column.value] = column.label
+	}
+	return nil
+}
+
+func (cfg appConfig) validateRuntime() error {
 	if !cfg.PubSubEnabled && !cfg.SQSEnabled {
 		return fmt.Errorf("no publishing backend enabled: set PUBSUB_ENABLED=true and/or SQS_ENABLED=true")
 	}
@@ -256,9 +310,6 @@ func (cfg appConfig) validate() error {
 	}
 	if cfg.SQSEnabled && cfg.DefaultSQSQueueURL == "" && cfg.EventDestination == "" {
 		return fmt.Errorf("SQS needs a destination: set EVENT_DESTINATION or DEFAULT_SQS_QUEUE_URL")
-	}
-	if cfg.DLQTable != "" && cfg.DLQTable == cfg.EventTable {
-		return fmt.Errorf("DLQ_TABLE must not equal EVENT_TABLE")
 	}
 	if !cfg.PubSubEnabled && len(cfg.PubSubDestinations) > 0 {
 		return fmt.Errorf("PUBSUB_DESTINATIONS requires PUBSUB_ENABLED=true")
@@ -289,9 +340,6 @@ func (cfg appConfig) validate() error {
 	}
 	if cfg.PollInterval > 0 && cfg.WatchdogInterval < 10*cfg.PollInterval {
 		return fmt.Errorf("watchdog interval (%s) must be at least 10x the poll interval (%s) to avoid false deadlocks: increase WATCHDOG_INTERVAL_MS or decrease POLL_INTERVAL_MS", cfg.WatchdogInterval, cfg.PollInterval)
-	}
-	if cfg.PollInterval > 0 && cfg.NotifyChannel == "" {
-		return fmt.Errorf("notify channel must not be empty when polling is enabled: set NOTIFY_CHANNEL or POLL_INTERVAL_MS=0")
 	}
 	if cfg.AWSWebIdentityProvider != "" {
 		if cfg.AWSWebIdentityProvider != awsWebIdentityProviderGoogle {

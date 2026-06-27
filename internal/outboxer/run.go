@@ -41,7 +41,7 @@ func runRelay(ctx context.Context, args []string) error {
 
 	setupLogging(cfg.LogLevel, cfg.LogFormat)
 
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(configValidationRelay); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
 

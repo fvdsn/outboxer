@@ -26,7 +26,7 @@ func runInit(ctx context.Context, args []string) error {
 
 	setupLogging(cfg.LogLevel, cfg.LogFormat)
 
-	if err := validateInitConfig(cfg); err != nil {
+	if err := cfg.validate(configValidationInit); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
 
@@ -37,52 +37,6 @@ func runInit(ctx context.Context, args []string) error {
 	}
 
 	return applyInit(ctx, cfg)
-}
-
-// validateInitConfig checks the configuration subset init needs to generate the
-// schema. It does not require a publishing backend, since provisioning is
-// independent of where events are later sent.
-func validateInitConfig(cfg appConfig) error {
-	if cfg.EventTable == "" {
-		return fmt.Errorf("an event table is required: set EVENT_TABLE")
-	}
-	if cfg.EventID == "" {
-		return fmt.Errorf("an id column is required: set EVENT_ID")
-	}
-	if cfg.EventPayload == "" {
-		return fmt.Errorf("a payload column is required: set EVENT_PAYLOAD")
-	}
-	if cfg.PGSchema == "" {
-		return fmt.Errorf("a PostgreSQL schema is required: set PG_SCHEMA")
-	}
-	if cfg.DLQTable != "" && cfg.DLQTable == cfg.EventTable {
-		return fmt.Errorf("DLQ_TABLE must not equal EVENT_TABLE")
-	}
-	if cfg.PollInterval > 0 && cfg.NotifyChannel == "" {
-		return fmt.Errorf("notify channel must not be empty when polling is enabled: set NOTIFY_CHANNEL or POLL_INTERVAL_MS=0")
-	}
-
-	// Two configured, non-empty columns resolving to the same name would generate
-	// duplicate table columns.
-	seen := map[string]string{}
-	columns := []struct{ value, label string }{
-		{cfg.EventID, "EVENT_ID"},
-		{cfg.EventPayload, "EVENT_PAYLOAD"},
-		{cfg.EventTarget, "EVENT_TARGET"},
-		{cfg.EventDestination, "EVENT_DESTINATION"},
-		{cfg.EventTimestamp, "EVENT_TIMESTAMP"},
-		{cfg.EventOptions, "EVENT_OPTIONS"},
-	}
-	for _, column := range columns {
-		if column.value == "" {
-			continue
-		}
-		if prev, ok := seen[column.value]; ok {
-			return fmt.Errorf("%s and %s both resolve to the same column name %q", prev, column.label, column.value)
-		}
-		seen[column.value] = column.label
-	}
-	return nil
 }
 
 // initStatement is one SQL statement plus an optional comment shown only in

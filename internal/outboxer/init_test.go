@@ -196,20 +196,41 @@ func TestInitApplyEscapesPassword(t *testing.T) {
 	assertContains(t, applied, `LOGIN PASSWORD 'a''b'`)
 }
 
-func TestValidateInitConfigRejectsDuplicateColumns(t *testing.T) {
-	cfg := baselineInitConfig()
-	cfg.EventTarget = "id" // collides with EventID
+func TestValidateConfigRejectsDuplicateColumnsInEveryMode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode configValidationMode
+	}{
+		{name: "relay", mode: configValidationRelay},
+		{name: "init", mode: configValidationInit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := baselineInitConfig()
+			cfg.EventTarget = "id" // collides with EventID
 
-	err := validateInitConfig(cfg)
-	if err == nil || !strings.Contains(err.Error(), "same column name") {
-		t.Fatalf("expected duplicate column error, got %v", err)
+			err := cfg.validate(tc.mode)
+			if err == nil || !strings.Contains(err.Error(), "same column name") {
+				t.Fatalf("expected duplicate column error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateConfigInitDoesNotRequireRuntimeConfiguration(t *testing.T) {
+	cfg := baselineInitConfig()
+
+	if err := cfg.validate(configValidationInit); err != nil {
+		t.Fatalf("init validation rejected storage-only configuration: %v", err)
+	}
+	if err := cfg.validate(configValidationRelay); err == nil {
+		t.Fatal("relay validation accepted configuration without a publishing backend")
 	}
 }
 
 func TestValidateInitConfigRequiresCoreColumns(t *testing.T) {
 	cfg := baselineInitConfig()
 	cfg.EventTable = ""
-	if err := validateInitConfig(cfg); err == nil {
+	if err := cfg.validate(configValidationInit); err == nil {
 		t.Fatal("expected error for missing event table")
 	}
 }
@@ -217,7 +238,7 @@ func TestValidateInitConfigRequiresCoreColumns(t *testing.T) {
 func TestValidateInitConfigRequiresSchema(t *testing.T) {
 	cfg := baselineInitConfig()
 	cfg.PGSchema = ""
-	if err := validateInitConfig(cfg); err == nil {
+	if err := cfg.validate(configValidationInit); err == nil {
 		t.Fatal("expected error for missing PostgreSQL schema")
 	}
 }
@@ -225,7 +246,7 @@ func TestValidateInitConfigRequiresSchema(t *testing.T) {
 func TestValidateInitConfigRejectsDLQEqualsEvents(t *testing.T) {
 	cfg := baselineInitConfig()
 	cfg.DLQTable = cfg.EventTable
-	if err := validateInitConfig(cfg); err == nil {
+	if err := cfg.validate(configValidationInit); err == nil {
 		t.Fatal("expected error when DLQ table equals event table")
 	}
 }
@@ -234,7 +255,7 @@ func TestValidateInitConfigRequiresNotifyChannelWhenPolling(t *testing.T) {
 	cfg := baselineInitConfig()
 	cfg.PollInterval = time.Second
 	cfg.NotifyChannel = ""
-	if err := validateInitConfig(cfg); err == nil {
+	if err := cfg.validate(configValidationInit); err == nil {
 		t.Fatal("expected error for empty notify channel while polling")
 	}
 }

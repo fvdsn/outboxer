@@ -404,12 +404,12 @@ func TestValidateRequiresAnEnabledBackend(t *testing.T) {
 	cfg := testConfig()
 	cfg.PubSubEnabled = false
 	cfg.SQSEnabled = false
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when no backend is enabled")
 	}
 
 	cfg.PubSubEnabled = true
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected single enabled backend to be valid, got %v", err)
 	}
 }
@@ -420,12 +420,12 @@ func TestValidateRequiresTargetColumnWhenBothEnabled(t *testing.T) {
 	cfg.SQSEnabled = true
 
 	cfg.EventTarget = ""
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when both backends are enabled without a target column")
 	}
 
 	cfg.EventTarget = "target"
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected both backends with a target column to be valid, got %v", err)
 	}
 }
@@ -433,13 +433,13 @@ func TestValidateRequiresTargetColumnWhenBothEnabled(t *testing.T) {
 func TestValidateRequiresIDAndPayloadColumns(t *testing.T) {
 	cfg := testConfig()
 	cfg.EventID = ""
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when id column is empty")
 	}
 
 	cfg = testConfig()
 	cfg.EventPayload = ""
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when payload column is empty")
 	}
 }
@@ -447,7 +447,7 @@ func TestValidateRequiresIDAndPayloadColumns(t *testing.T) {
 func TestValidateRequiresPostgreSQLSchema(t *testing.T) {
 	cfg := testConfig()
 	cfg.PGSchema = ""
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected empty PostgreSQL schema to fail")
 	}
 }
@@ -458,11 +458,11 @@ func TestValidateRequiresDestinationOrDefault(t *testing.T) {
 	cfg.SQSEnabled = false
 	cfg.EventDestination = ""
 	cfg.DefaultPubSubTopic = ""
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when Pub/Sub has neither a destination column nor a default topic")
 	}
 	cfg.DefaultPubSubTopic = "default"
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected a default topic to satisfy Pub/Sub destination, got %v", err)
 	}
 
@@ -471,11 +471,11 @@ func TestValidateRequiresDestinationOrDefault(t *testing.T) {
 	cfg.SQSEnabled = true
 	cfg.EventDestination = ""
 	cfg.DefaultSQSQueueURL = ""
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when SQS has neither a destination column nor a default queue URL")
 	}
 	cfg.DefaultSQSQueueURL = "https://sqs.example/q"
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected a default queue URL to satisfy SQS destination, got %v", err)
 	}
 }
@@ -484,14 +484,14 @@ func TestValidateRequiresEnabledBackendForDestinationAllowlist(t *testing.T) {
 	cfg := testConfig()
 	cfg.PubSubEnabled = false
 	cfg.PubSubDestinations = []string{"topic-a"}
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when Pub/Sub destinations are configured while Pub/Sub is disabled")
 	}
 
 	cfg = testConfig()
 	cfg.SQSEnabled = false
 	cfg.SQSDestinations = []string{"queue-a"}
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when SQS destinations are configured while SQS is disabled")
 	}
 }
@@ -564,30 +564,30 @@ func TestValidateAWSWebIdentity(t *testing.T) {
 	base.AWSWebIdentityAudience = "//iam.example/aws"
 	base.AWSRoleARN = "arn:aws:iam::123456789012:role/outboxer"
 
-	if err := base.validate(); err != nil {
+	if err := base.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected a fully configured google web identity to be valid, got %v", err)
 	}
 
 	unsupported := base
 	unsupported.AWSWebIdentityProvider = "azure"
-	if err := unsupported.validate(); err == nil {
+	if err := unsupported.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error for an unsupported web identity provider")
 	}
 
 	noRole := base
 	noRole.AWSRoleARN = ""
-	if err := noRole.validate(); err == nil {
+	if err := noRole.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when web identity is set without a role ARN")
 	}
 
 	noAudience := base
 	noAudience.AWSWebIdentityAudience = ""
-	if err := noAudience.validate(); err == nil {
+	if err := noAudience.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when web identity is set without an audience")
 	}
 
 	off := testConfig()
-	if err := off.validate(); err != nil {
+	if err := off.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected web identity to be optional, got %v", err)
 	}
 }
@@ -596,19 +596,19 @@ func TestValidateWatchdogMustExceedPollInterval(t *testing.T) {
 	cfg := testConfig()
 	cfg.PollInterval = time.Minute
 	cfg.WatchdogInterval = 5 * time.Minute
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when watchdog interval is less than 10x the poll interval")
 	}
 
 	cfg.WatchdogInterval = 10 * time.Minute
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected watchdog interval of exactly 10x poll interval to be valid, got %v", err)
 	}
 
 	// A zero poll interval (the default hot loop) imposes no constraint.
 	cfg.PollInterval = 0
 	cfg.WatchdogInterval = time.Hour
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected zero poll interval to skip the watchdog check, got %v", err)
 	}
 }
@@ -618,12 +618,12 @@ func TestValidateNotifyChannelRequiredWhenPolling(t *testing.T) {
 	cfg.PollInterval = time.Minute
 	cfg.WatchdogInterval = time.Hour
 	cfg.NotifyChannel = ""
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when polling is enabled with an empty notify channel")
 	}
 
 	cfg.NotifyChannel = "outboxer_events"
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected a non-empty notify channel to be valid, got %v", err)
 	}
 
@@ -631,7 +631,7 @@ func TestValidateNotifyChannelRequiredWhenPolling(t *testing.T) {
 	// channel imposes no constraint.
 	cfg.PollInterval = 0
 	cfg.NotifyChannel = ""
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected empty notify channel to be valid without polling, got %v", err)
 	}
 }
@@ -649,12 +649,12 @@ func TestValidateRequiresPositivePublishTimeout(t *testing.T) {
 			cfg := testConfig()
 			tc.edit(&cfg)
 			cfg.PublishTimeout = 0
-			if err := cfg.validate(); err == nil {
+			if err := cfg.validate(configValidationRelay); err == nil {
 				t.Fatal("expected error when publish timeout is zero")
 			}
 
 			cfg.PublishTimeout = -time.Millisecond
-			if err := cfg.validate(); err == nil {
+			if err := cfg.validate(configValidationRelay); err == nil {
 				t.Fatal("expected error when publish timeout is negative")
 			}
 		})
@@ -664,7 +664,7 @@ func TestValidateRequiresPositivePublishTimeout(t *testing.T) {
 func TestValidateRequiresNonNegativePublishResultGrace(t *testing.T) {
 	cfg := testConfig()
 	cfg.PublishResultGrace = -time.Millisecond
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when publish result grace is negative")
 	}
 }
@@ -672,19 +672,19 @@ func TestValidateRequiresNonNegativePublishResultGrace(t *testing.T) {
 func TestValidateMaxEventAge(t *testing.T) {
 	cfg := testConfig()
 	cfg.MaxEventAge = -time.Millisecond
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when max event age is negative")
 	}
 
 	cfg = testConfig()
 	cfg.MaxEventAge = time.Minute
 	cfg.EventTimestamp = ""
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when max event age is enabled without timestamp column")
 	}
 
 	cfg.EventTimestamp = "timestamp"
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected max event age with timestamp column to be valid, got %v", err)
 	}
 }
@@ -692,12 +692,12 @@ func TestValidateMaxEventAge(t *testing.T) {
 func TestValidateStatsInterval(t *testing.T) {
 	cfg := testConfig()
 	cfg.StatsInterval = -time.Millisecond
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when stats interval is negative")
 	}
 
 	cfg.StatsInterval = 0
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected zero stats interval to disable stats, got %v", err)
 	}
 }
@@ -705,12 +705,12 @@ func TestValidateStatsInterval(t *testing.T) {
 func TestValidateRequiresPositiveSQSConcurrencyWhenSQSEnabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.SQSSendConcurrency = 0
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected error when SQS concurrency is zero and SQS is enabled")
 	}
 
 	cfg.SQSEnabled = false
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected SQS concurrency to be ignored when SQS is disabled, got %v", err)
 	}
 }
@@ -718,7 +718,7 @@ func TestValidateRequiresPositiveSQSConcurrencyWhenSQSEnabled(t *testing.T) {
 func TestValidateRequiresPositiveCollectBatchTarget(t *testing.T) {
 	cfg := testConfig()
 	cfg.CollectBatchTarget = 0
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected zero batch collection target to fail")
 	}
 }
@@ -726,12 +726,12 @@ func TestValidateRequiresPositiveCollectBatchTarget(t *testing.T) {
 func TestValidateRejectsDLQTableMatchingEventTable(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLQTable = cfg.EventTable
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(configValidationRelay); err == nil {
 		t.Fatal("expected DLQ table matching event table to fail")
 	}
 
 	cfg.DLQTable = "dead_letters"
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected distinct DLQ table to be valid, got %v", err)
 	}
 }
