@@ -6,7 +6,6 @@ package outboxer
 import (
 	"context"
 	"database/sql"
-	"sync"
 	"time"
 )
 
@@ -23,8 +22,6 @@ type app struct {
 	// processing loop. It is called from the HTTP handler and on HTTP server
 	// failure.
 	shutdown context.CancelFunc
-
-	txMu sync.Mutex
 }
 
 // withTimeout derives a context with the given timeout. A non-positive timeout

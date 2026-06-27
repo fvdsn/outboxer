@@ -143,15 +143,6 @@ func (r cloudPubSubPublishResult) Get(ctx context.Context) (string, error) {
 	return r.result.Get(ctx)
 }
 
-func (a *app) sendPubsubEvents(ctx context.Context, events []event, addIDToDelete func(any)) error {
-	return a.sendPubsubEventsWithCallbacks(ctx, events, senderCallbacks{
-		addConfirmedID: addIDToDelete,
-		addPoisonID: func(id any, _ string) {
-			addIDToDelete(id)
-		},
-	})
-}
-
 func (a *app) sendPubsubEventsWithCallbacks(ctx context.Context, events []event, callbacks senderCallbacks) error {
 	unordered := []event{}
 	orderedByGroup := map[string][]event{}
@@ -529,13 +520,4 @@ func isPubSubPermanentBackendError(err error) bool {
 
 	code := status.Code(err)
 	return code == codes.InvalidArgument || code == codes.OutOfRange
-}
-
-// sendPubsubEvent is kept as a compatibility wrapper for narrow unit tests.
-func (a *app) sendPubsubEvent(ctx context.Context, evt event, addIDToDelete func(any)) error {
-	return a.sendPubsubEvents(ctx, []event{evt}, addIDToDelete)
-}
-
-func pubsubPermanentError(reason string) error {
-	return &googleapi.Error{Code: pubsubPermanentBackendErrorCode, Message: fmt.Sprintf("permanent Pub/Sub rejection: %s", reason)}
 }

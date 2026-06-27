@@ -398,8 +398,6 @@ func (a *app) deleteEvents(ctx context.Context, tx *sql.Tx, ids []any) error {
 	ctx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
 	defer cancel()
 
-	a.txMu.Lock()
-	defer a.txMu.Unlock()
 	_, err := tx.ExecContext(ctx, query, ids...)
 	return err
 }

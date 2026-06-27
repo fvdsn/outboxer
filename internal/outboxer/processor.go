@@ -508,12 +508,6 @@ func (a *app) destinationForBackend(evt event, selected backend) string {
 	}
 }
 
-// resolveBackend is kept as a small compatibility shim for existing tests and
-// call sites that only need the selected backend.
-func (a *app) resolveBackend(evt event) backend {
-	return a.classifyRoute(evt).backend
-}
-
 func randomInt63() int64 {
 	randomMu.Lock()
 	defer randomMu.Unlock()

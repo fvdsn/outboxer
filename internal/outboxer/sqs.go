@@ -192,15 +192,6 @@ func (p *awsSQSPublisher) SendBatch(ctx context.Context, queueURL string, entrie
 	return converted, nil
 }
 
-func (a *app) sendSQSEvents(ctx context.Context, events []event, addIDToDelete func(any)) error {
-	return a.sendSQSEventsWithCallbacks(ctx, events, senderCallbacks{
-		addConfirmedID: addIDToDelete,
-		addPoisonID: func(id any, _ string) {
-			addIDToDelete(id)
-		},
-	})
-}
-
 func (a *app) sendSQSEventsWithCallbacks(ctx context.Context, events []event, callbacks senderCallbacks) error {
 	eventsByQueue := map[string][]event{}
 	for _, evt := range events {
@@ -335,16 +326,6 @@ func (a *app) sendSQSBatchWithSemaphore(ctx context.Context, sem chan struct{}, 
 		return false, ctx.Err()
 	}
 	return a.sendSQSBatch(ctx, queue, events, isFIFO, callbacks)
-}
-
-func (a *app) sendSQS10Events(ctx context.Context, queueURL string, events []event, addIDToDelete func(any)) error {
-	_, err := a.sendSQSBatch(ctx, queueURL, events, strings.HasSuffix(queueURL, ".fifo"), senderCallbacks{
-		addConfirmedID: addIDToDelete,
-		addPoisonID: func(id any, _ string) {
-			addIDToDelete(id)
-		},
-	})
-	return err
 }
 
 func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event, isFIFO bool, callbacks senderCallbacks) (bool, error) {
