@@ -18,7 +18,7 @@ import (
 )
 
 func TestLoadConfigUsesDefaults(t *testing.T) {
-	unsetEnv(t, "EVENT_PAYLOAD", "EVENT_DESTINATION", "EVENT_OPTIONS", "PG_HOST", "PG_USER", "HEALTH_PORT", "PORT", "POLL_INTERVAL_MS", "WATCHDOG_INTERVAL_MS", "NOTIFY_CHANNEL")
+	unsetEnv(t, "EVENT_PAYLOAD", "EVENT_DESTINATION", "EVENT_OPTIONS", "PG_HOST", "PG_USER", "PG_SCHEMA", "HEALTH_PORT", "PORT", "POLL_INTERVAL_MS", "WATCHDOG_INTERVAL_MS", "NOTIFY_CHANNEL")
 
 	cfg, err := loadConfig(nil, io.Discard)
 	if err != nil {
@@ -30,6 +30,9 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	}
 	if cfg.PGUser != "postgres" {
 		t.Fatalf("expected default pg user, got %q", cfg.PGUser)
+	}
+	if cfg.PGSchema != "public" {
+		t.Fatalf("expected default pg schema public, got %q", cfg.PGSchema)
 	}
 	if cfg.EventPayload != "payload" {
 		t.Fatalf("expected default event payload column, got %q", cfg.EventPayload)
@@ -170,6 +173,7 @@ func TestOpenDBUsesSingleConnectionWhenPolling(t *testing.T) {
 
 func TestLoadConfigUsesEnv(t *testing.T) {
 	t.Setenv("PG_HOST", "db")
+	t.Setenv("PG_SCHEMA", "outbox")
 	t.Setenv("EVENT_OPTIONS", "event_options")
 	t.Setenv("POLL_INTERVAL_MS", "250")
 	t.Setenv("PORT", "9090")
@@ -191,6 +195,9 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	}
 	if cfg.PGHost != "db" {
 		t.Fatalf("expected env pg host, got %q", cfg.PGHost)
+	}
+	if cfg.PGSchema != "outbox" {
+		t.Fatalf("expected env pg schema, got %q", cfg.PGSchema)
 	}
 	if cfg.PollInterval != 250*time.Millisecond {
 		t.Fatalf("expected env poll interval, got %s", cfg.PollInterval)
@@ -244,6 +251,7 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	t.Setenv("EVENT_DESTINATION", "env_destination")
 	t.Setenv("EVENT_OPTIONS", "env_options")
 	t.Setenv("PG_HOST", "env-db")
+	t.Setenv("PG_SCHEMA", "env-schema")
 	t.Setenv("PG_PORT", "5433")
 	t.Setenv("PG_CONNECT_TIMEOUT_MS", "1000")
 	t.Setenv("PG_SSL", "false")
@@ -260,6 +268,7 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 		"--event-destination=flag_destination",
 		"--event-options=flag_options",
 		"--pg-host=flag-db",
+		"--pg-schema=flag-schema",
 		"--pg-port=6543",
 		"--pg-connect-timeout-ms=2000",
 		"--pg-ssl=true",
@@ -286,6 +295,9 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	}
 	if cfg.PGHost != "flag-db" {
 		t.Fatalf("expected flag pg host, got %q", cfg.PGHost)
+	}
+	if cfg.PGSchema != "flag-schema" {
+		t.Fatalf("expected flag pg schema, got %q", cfg.PGSchema)
 	}
 	if cfg.PGPort != 6543 {
 		t.Fatalf("expected flag pg port, got %d", cfg.PGPort)
@@ -347,6 +359,8 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"Env: HEALTH_PORT, PORT",
 		"--pg-host",
 		"Env: PG_HOST",
+		"--pg-schema",
+		"Env: PG_SCHEMA",
 		"--pg-connect-timeout-ms",
 		"Env: PG_CONNECT_TIMEOUT_MS",
 		"--poll-interval-ms",
@@ -427,6 +441,14 @@ func TestValidateRequiresIDAndPayloadColumns(t *testing.T) {
 	cfg.EventPayload = ""
 	if err := cfg.validate(); err == nil {
 		t.Fatal("expected error when payload column is empty")
+	}
+}
+
+func TestValidateRequiresPostgreSQLSchema(t *testing.T) {
+	cfg := testConfig()
+	cfg.PGSchema = ""
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected empty PostgreSQL schema to fail")
 	}
 }
 

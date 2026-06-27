@@ -72,13 +72,13 @@ type rowQuerier interface {
 }
 
 func (a *app) loadDLQTableMetadata(ctx context.Context) (dlqTableMetadata, error) {
-	return loadDLQTableMetadata(ctx, a.db, a.cfg.DLQTable)
+	return loadDLQTableMetadata(ctx, a.db, a.cfg.PGSchema, a.cfg.DLQTable)
 }
 
-func loadDLQTableMetadata(ctx context.Context, q rowQuerier, dlqTable string) (dlqTableMetadata, error) {
-	// Pass the sanitized table name to to_regclass so quoted/mixed-case names are
-	// resolved the same way as the INSERT statement built with ident().
-	rows, err := q.QueryContext(ctx, dlqMetadataSQL, ident(dlqTable))
+func loadDLQTableMetadata(ctx context.Context, q rowQuerier, schema string, dlqTable string) (dlqTableMetadata, error) {
+	// Pass the qualified, sanitized table name to to_regclass so catalog lookup is
+	// independent of the connection's search_path.
+	rows, err := q.QueryContext(ctx, dlqMetadataSQL, qualifiedIdent(schema, dlqTable))
 	if err != nil {
 		return dlqTableMetadata{}, err
 	}
@@ -174,7 +174,7 @@ func (a *app) insertDeadLetters(ctx context.Context, tx *sql.Tx, poison []poison
 	ctx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
 	defer cancel()
 
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES ($1::jsonb)", ident(a.cfg.DLQTable), ident("event"))
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES ($1::jsonb)", qualifiedIdent(a.cfg.PGSchema, a.cfg.DLQTable), ident("event"))
 	for _, poisoned := range poison {
 		payload, err := json.Marshal(a.deadLetterPayload(poisoned))
 		if err != nil {
@@ -202,6 +202,7 @@ func (a *app) deadLetterPayload(poisoned poisonEvent) map[string]any {
 	}
 
 	payload := map[string]any{
+		"source_schema":    a.cfg.PGSchema,
 		"source_table":     a.cfg.EventTable,
 		"dead_lettered_at": time.Now().UTC().Format(time.RFC3339Nano),
 		"target":           target,

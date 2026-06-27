@@ -50,6 +50,7 @@ type appConfig struct {
 	PGUser                  string
 	PGPassword              string
 	PGDatabase              string
+	PGSchema                string
 	PGSSL                   bool
 	PGSSLRejectUnauthorized bool
 	PGSSLRootCert           string
@@ -189,6 +190,7 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 	addStringFlag(flags, options, "PostgreSQL", &cfg.PGUser, "pg-user", cfg.PGUser, "PostgreSQL user.", "PG_USER")
 	addValueFlag(flags, options, "PostgreSQL", newSecretStringValue(&cfg.PGPassword), "pg-password", "PostgreSQL password.", "PG_PASSWORD", redactDefault(cfg.PGPassword))
 	addStringFlag(flags, options, "PostgreSQL", &cfg.PGDatabase, "pg-database", cfg.PGDatabase, "PostgreSQL database.", "PG_DATABASE")
+	addStringFlag(flags, options, "PostgreSQL", &cfg.PGSchema, "pg-schema", cfg.PGSchema, "PostgreSQL schema containing the outbox objects.", "PG_SCHEMA")
 	addBoolFlag(flags, options, "PostgreSQL", &cfg.PGSSL, "pg-ssl", cfg.PGSSL, "Enable PostgreSQL TLS.", "PG_SSL")
 	addBoolFlag(flags, options, "PostgreSQL", &cfg.PGSSLRejectUnauthorized, "pg-ssl-reject-unauthorized", cfg.PGSSLRejectUnauthorized, "Verify PostgreSQL TLS certificate and hostname.", "PG_SSL_REJECT_UNAUTHORIZED")
 	addStringFlag(flags, options, "PostgreSQL", &cfg.PGSSLRootCert, "pg-ssl-root-cert", cfg.PGSSLRootCert, "Path to a CA certificate (PEM) used to verify the PostgreSQL server.", "PG_SSL_ROOT_CERT")
@@ -239,6 +241,9 @@ func (cfg appConfig) validate() error {
 	}
 	if cfg.EventPayload == "" {
 		return fmt.Errorf("a payload column is required: set EVENT_PAYLOAD")
+	}
+	if cfg.PGSchema == "" {
+		return fmt.Errorf("a PostgreSQL schema is required: set PG_SCHEMA")
 	}
 	if !cfg.PubSubEnabled && !cfg.SQSEnabled {
 		return fmt.Errorf("no publishing backend enabled: set PUBSUB_ENABLED=true and/or SQS_ENABLED=true")
@@ -343,6 +348,7 @@ func loadConfigFromEnv() appConfig {
 		PGUser:                  getenv("PG_USER", "postgres"),
 		PGPassword:              getenv("PG_PASSWORD", ""),
 		PGDatabase:              getenv("PG_DATABASE", "postgres"),
+		PGSchema:                getenv("PG_SCHEMA", "public"),
 		PGSSL:                   getenvBool("PG_SSL", false),
 		PGSSLRejectUnauthorized: getenvBool("PG_SSL_REJECT_UNAUTHORIZED", true),
 		PGSSLRootCert:           getenv("PG_SSL_ROOT_CERT", ""),

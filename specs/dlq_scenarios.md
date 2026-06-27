@@ -22,7 +22,7 @@ transactional guarantees.
 
 | ID | Scenario | Expected |
 | --- | --- | --- |
-| DLQ-PAYLOAD-01 | A poison event is dead-lettered. | `source_table`, `dead_lettered_at`, `error`, and `original_event` are present. |
+| DLQ-PAYLOAD-01 | A poison event is dead-lettered. | `source_schema`, `source_table`, `dead_lettered_at`, `error`, and `original_event` are present. |
 | DLQ-PAYLOAD-02 | Original event has configured optional columns. | `original_event` includes the complete selected row, including optional columns present in the event table. |
 | DLQ-PAYLOAD-03 | Original event omits optional columns because they are not configured/present. | `original_event` contains only the selected base event columns; no synthetic resolved columns are added. |
 | DLQ-PAYLOAD-04 | Original event contains JSON `options`. | JSON values are preserved in `original_event`, not stringified except where the source column itself is text. |

@@ -89,6 +89,7 @@ periodic `Statistics` fields are documented in [Logging](logs.md).
 | `--pg-user` | `PG_USER` | `postgres` | PostgreSQL user. |
 | `--pg-password` | `PG_PASSWORD` | empty | PostgreSQL password. |
 | `--pg-database` | `PG_DATABASE` | `postgres` | PostgreSQL database. |
+| `--pg-schema` | `PG_SCHEMA` | `public` | PostgreSQL schema containing the outbox table, optional DLQ table, and notification function. |
 | `--pg-ssl` | `PG_SSL` | `false` | Enable PostgreSQL TLS. |
 | `--pg-ssl-reject-unauthorized` | `PG_SSL_REJECT_UNAUTHORIZED` | `true` | Verify PostgreSQL TLS certificate and hostname. |
 | `--pg-ssl-root-cert` | `PG_SSL_ROOT_CERT` | empty | Path to a CA certificate (PEM) used to verify the server. |

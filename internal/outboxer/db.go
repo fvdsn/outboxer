@@ -69,7 +69,7 @@ func (a *app) checkDBWorks(ctx context.Context) error {
 	ctx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
 	defer cancel()
 
-	query := fmt.Sprintf("SELECT * FROM %s LIMIT 1", ident(a.cfg.EventTable))
+	query := fmt.Sprintf("SELECT * FROM %s LIMIT 1", qualifiedIdent(a.cfg.PGSchema, a.cfg.EventTable))
 	rows, err := a.db.QueryContext(ctx, query)
 	if err != nil {
 		return err
@@ -135,7 +135,7 @@ func (a *app) selectEventsQuery() (string, []any) {
 }
 
 func (a *app) selectEventsQuerySQL() string {
-	table := ident(a.cfg.EventTable)
+	table := qualifiedIdent(a.cfg.PGSchema, a.cfg.EventTable)
 	idCol := ident(a.cfg.EventID)
 	sourceAlias := "route_source"
 	candidateAlias := "candidate"
@@ -390,7 +390,7 @@ func (a *app) deleteEvents(ctx context.Context, tx *sql.Tx, ids []any) error {
 
 	query := fmt.Sprintf(
 		"DELETE FROM %s WHERE %s IN (%s)",
-		ident(a.cfg.EventTable),
+		qualifiedIdent(a.cfg.PGSchema, a.cfg.EventTable),
 		ident(a.cfg.EventID),
 		strings.Join(placeholders, ", "),
 	)
@@ -406,4 +406,8 @@ func (a *app) deleteEvents(ctx context.Context, tx *sql.Tx, ids []any) error {
 
 func ident(name string) string {
 	return pgx.Identifier{name}.Sanitize()
+}
+
+func qualifiedIdent(schema string, name string) string {
+	return pgx.Identifier{schema, name}.Sanitize()
 }

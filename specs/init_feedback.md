@@ -57,15 +57,10 @@ table columns.
 
 ## PostgreSQL schema must be defined
 
-The requirements grant `USAGE` on "the schema," but no schema is currently
-configured. The existing identifier handling also treats `app.events` as a
-single table name containing a dot rather than as a schema-qualified table.
-
-For a simple first version, `init` should explicitly provision objects in the
-`public` schema, grant `USAGE ON SCHEMA public`, and document that
-schema-qualified table names are not supported. A shared `PG_SCHEMA`
-configuration can be introduced later if custom schema support becomes
-necessary.
+Resolved by the shared `PG_SCHEMA` setting, which defaults to `public`. Init
+creates the configured schema when absent, and both provisioning and relay SQL
+qualify schema objects explicitly. Table settings remain plain object names;
+schema and table identifiers are never inferred by splitting dotted strings.
 
 ## Print-mode password placeholder must remain portable SQL
 
@@ -130,7 +125,7 @@ Instead of embedding the configured channel directly in a function shared by
 name, the trigger can pass the channel as an argument:
 
 ```sql
-CREATE OR REPLACE FUNCTION outboxer_notify() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION <PG_SCHEMA>.outboxer_notify() RETURNS trigger AS $$
 BEGIN
   PERFORM pg_notify(TG_ARGV[0], '');
   RETURN NULL;
@@ -138,9 +133,9 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER outboxer_notify
-AFTER INSERT ON events
+AFTER INSERT ON <PG_SCHEMA>.<EVENT_TABLE>
 FOR EACH STATEMENT
-EXECUTE FUNCTION outboxer_notify('outboxer_events');
+EXECUTE FUNCTION <PG_SCHEMA>.outboxer_notify('outboxer_events');
 ```
 
 This keeps the function definition generic and prevents provisioning one outbox

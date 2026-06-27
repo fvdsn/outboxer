@@ -62,6 +62,7 @@ an event:
 
 ```json
 {
+  "source_schema": "public",
   "source_table": "events",
   "dead_lettered_at": "2026-06-18T12:34:56Z",
   "error": "Event is invalid for SQS",
@@ -77,7 +78,8 @@ an event:
 }
 ```
 
-- `source_table` — the configured event table name.
+- `source_schema` — the configured PostgreSQL schema.
+- `source_table` — the configured event table name within that schema.
 - `dead_lettered_at` — when Outboxer inserted the DLQ row.
 - `error` — human-readable diagnostic detail for operators. It is not a stable,
   machine-readable classification API.

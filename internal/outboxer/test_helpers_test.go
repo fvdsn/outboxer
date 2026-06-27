@@ -340,12 +340,14 @@ func testConfig() appConfig {
 		PublishResultGrace: 5 * time.Second,
 		MaxEventAge:        0,
 		StatsInterval:      10 * time.Second,
+
+		PGSchema: "public",
 	}
 }
 
 const (
-	deleteOneSQL = `DELETE FROM "events" WHERE "id" IN ($1)`
-	deleteTwoSQL = `DELETE FROM "events" WHERE "id" IN ($1, $2)`
+	deleteOneSQL = `DELETE FROM "public"."events" WHERE "id" IN ($1)`
+	deleteTwoSQL = `DELETE FROM "public"."events" WHERE "id" IN ($1, $2)`
 )
 
 func expectSelectEvents(mock sqlmock.Sqlmock, a *app) *sqlmock.ExpectedQuery {
@@ -447,7 +449,7 @@ func deleteEventsSQL(count int) string {
 	for i := range placeholders {
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
 	}
-	return fmt.Sprintf(`DELETE FROM "events" WHERE "id" IN (%s)`, strings.Join(placeholders, ", "))
+	return fmt.Sprintf(`DELETE FROM "public"."events" WHERE "id" IN (%s)`, strings.Join(placeholders, ", "))
 }
 
 func anySQLArgs(count int) []driver.Value {

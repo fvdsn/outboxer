@@ -278,7 +278,7 @@ func TestSelectEventsQueryUsesBatchTargetAndBaseProjection(t *testing.T) {
 		"CROSS JOIN LATERAL",
 		"WHERE (NULLIF(\"candidate\".\"target\", '') IN ('pubsub', 'sqs'))",
 		"LIMIT GREATEST(1, (($1::bigint + routes.route_count - 1) / routes.route_count))",
-		"SELECT \"events\".* FROM \"events\" AS \"events\" JOIN selected",
+		"SELECT \"events\".* FROM \"public\".\"events\" AS \"events\" JOIN selected",
 		"ORDER BY \"events\".\"id\" FOR UPDATE",
 	} {
 		if !strings.Contains(query, expected) {
@@ -305,8 +305,8 @@ func TestSelectEventsQuerySupportsMissingSingleBackendColumns(t *testing.T) {
 	for _, expected := range []string{
 		"'pubsub' AS resolved_target",
 		"'topic-default' AS resolved_destination",
-		"FROM \"events\" AS \"route_source\" WHERE (TRUE) AND COALESCE('topic-default', '') <> ''",
-		"FROM \"events\" AS \"candidate\" WHERE (TRUE) AND COALESCE('topic-default', '') <> ''",
+		"FROM \"public\".\"events\" AS \"route_source\" WHERE (TRUE) AND COALESCE('topic-default', '') <> ''",
+		"FROM \"public\".\"events\" AS \"candidate\" WHERE (TRUE) AND COALESCE('topic-default', '') <> ''",
 	} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected collection query to contain %q, got:\n%s", expected, query)

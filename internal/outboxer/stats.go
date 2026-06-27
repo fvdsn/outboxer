@@ -167,7 +167,7 @@ func (a *app) estimateRemainingEvents(ctx context.Context) (int64, bool) {
 	defer cancel()
 
 	var estimate float64
-	if err := a.db.QueryRowContext(queryCtx, "SELECT reltuples FROM pg_catalog.pg_class WHERE oid = to_regclass($1)", ident(a.cfg.EventTable)).Scan(&estimate); err != nil {
+	if err := a.db.QueryRowContext(queryCtx, "SELECT reltuples FROM pg_catalog.pg_class WHERE oid = to_regclass($1)", qualifiedIdent(a.cfg.PGSchema, a.cfg.EventTable)).Scan(&estimate); err != nil {
 		return 0, false
 	}
 	if estimate < 0 {

@@ -35,7 +35,7 @@ creates it; you install it yourself, or let [`outboxer init`](provisioning.md)
 generate it when `POLL_INTERVAL_MS > 0`. The equivalent SQL is:
 
 ```sql
-CREATE OR REPLACE FUNCTION outboxer_notify() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION public.outboxer_notify() RETURNS trigger AS $$
 BEGIN
   PERFORM pg_notify(TG_ARGV[0], '');
   RETURN NULL;
@@ -43,13 +43,14 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER outboxer_notify
-AFTER INSERT ON events
+AFTER INSERT ON public.events
 FOR EACH STATEMENT
-EXECUTE FUNCTION outboxer_notify('outboxer_events');
+EXECUTE FUNCTION public.outboxer_notify('outboxer_events');
 ```
 
 - The channel name (`outboxer_events`) is passed as the trigger argument and must
   match `NOTIFY_CHANNEL`.
+- Replace `public` with the configured `PG_SCHEMA` when using a custom schema.
 - The function is **generic**: it reads the channel from the trigger's argument
   (`TG_ARGV[0]`) via `pg_notify` rather than hardcoding it in the body. A
   PostgreSQL trigger function is a schema-level object shared by name across every

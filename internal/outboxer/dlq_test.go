@@ -13,7 +13,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const insertDLQSQL = `INSERT INTO "dead_letters" ("event") VALUES ($1::jsonb)`
+const insertDLQSQL = `INSERT INTO "public"."dead_letters" ("event") VALUES ($1::jsonb)`
 
 type dlqPayloadMatcher struct {
 	t     *testing.T
@@ -100,7 +100,7 @@ func TestCheckDLQWorksValidatesConfiguredTable(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectQuery(dlqMetadataSQL).
-		WithArgs(`"dead_letters"`).
+		WithArgs(`"public"."dead_letters"`).
 		WillReturnRows(dlqMetadataRows(
 			dlqMetadataRow{name: "id", typeName: "int8", notNull: true, defaultExpr: "nextval('dead_letters_id_seq'::regclass)", canInsertColumn: true},
 			dlqMetadataRow{name: "event", typeName: "jsonb", notNull: true, canInsertColumn: true},
@@ -235,6 +235,9 @@ func TestDeadLetterPayloadIncludesResolvedRouteDefaults(t *testing.T) {
 
 	if payload["source_table"] != "events" {
 		t.Fatalf("unexpected source_table: %#v", payload["source_table"])
+	}
+	if payload["source_schema"] != "public" {
+		t.Fatalf("unexpected source_schema: %#v", payload["source_schema"])
 	}
 	if _, err := time.Parse(time.RFC3339Nano, payload["dead_lettered_at"].(string)); err != nil {
 		t.Fatalf("dead_lettered_at is not RFC3339Nano: %v", err)

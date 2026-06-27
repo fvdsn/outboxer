@@ -37,7 +37,8 @@ CREATE TABLE outboxer_dead_letters (
 
 The `event` JSON document must include:
 
-- `source_table`: the configured event table name.
+- `source_schema`: the configured PostgreSQL schema.
+- `source_table`: the configured event table name within that schema.
 - `dead_lettered_at`: the timestamp when Outboxer inserted the DLQ row.
 - `error`: human-readable diagnostic detail when available. This is for
   operators, not a stable machine-readable API.
@@ -60,6 +61,7 @@ Example:
 
 ```json
 {
+  "source_schema": "public",
   "source_table": "events",
   "dead_lettered_at": "2026-06-18T12:34:56Z",
   "error": "Event is invalid for SQS",

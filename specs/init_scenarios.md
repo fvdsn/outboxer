@@ -33,8 +33,17 @@ the real binary.
 | INIT-TBL-04 | Two configured non-empty columns resolve to the same name. | Config validation rejects it before any DDL; clear duplicate-column error. |
 | INIT-TBL-05 | Custom `EVENT_*` column names and `EVENT_TABLE`. | Generated DDL uses the custom, safely-quoted identifiers for every column. |
 | INIT-TBL-06 | Identifiers containing characters needing quoting. | All identifiers are quoted via `ident`; SQL is valid. |
-| INIT-TBL-07 | Schema-qualified table name (e.g. `app.events`). | Treated as a single literal table name (documented limitation); not split into schema + table. |
+| INIT-TBL-07 | Custom `PG_SCHEMA`. | Schema and table are emitted as two separately quoted identifiers; no object reference depends on `search_path`. |
 | INIT-TBL-08 | Only the primary key index is generated. | No secondary indexes appear in the output. |
+
+## Generated Schema
+
+| ID | Scenario | Expected |
+| --- | --- | --- |
+| INIT-SCHEMA-01 | `PG_SCHEMA` unset. | `public` is used and explicitly qualifies every table/function reference. |
+| INIT-SCHEMA-02 | `PG_SCHEMA=application`. | `CREATE SCHEMA IF NOT EXISTS application` is generated and all outbox, DLQ, notification, validation, and runtime SQL targets that schema. |
+| INIT-SCHEMA-03 | Provisioning and runtime roles have different `search_path` values. | Both operate on the configured schema; no object is created or resolved through `search_path`. |
+| INIT-SCHEMA-04 | `PG_SCHEMA` is empty. | Configuration validation fails before any DDL. |
 
 ## Generated DLQ Table
 
@@ -49,7 +58,7 @@ the real binary.
 | ID | Scenario | Expected |
 | --- | --- | --- |
 | INIT-NTF-01 | `POLL_INTERVAL_MS == 0` (default). | No notify function or trigger is generated. |
-| INIT-NTF-02 | `POLL_INTERVAL_MS > 0`. | A generic `CREATE OR REPLACE FUNCTION` using `pg_notify(TG_ARGV[0], '')` plus `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER ... AFTER INSERT ... FOR EACH STATEMENT EXECUTE FUNCTION outboxer_notify('<channel>')` are generated. |
+| INIT-NTF-02 | `POLL_INTERVAL_MS > 0`. | A generic, schema-qualified `CREATE OR REPLACE FUNCTION` using `pg_notify(TG_ARGV[0], '')` plus `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER ... AFTER INSERT ... FOR EACH STATEMENT` are generated. |
 | INIT-NTF-03 | Custom `NOTIFY_CHANNEL`. | The channel is passed as the trigger argument (`TG_ARGV[0]`), safely quoted; the function body is not specialized per channel. |
 | INIT-NTF-04 | Two outbox tables provisioned with different channels. | Each trigger passes its own channel argument; re-running for one table does not change the channel the other table's trigger notifies on. |
 
@@ -66,13 +75,13 @@ the real binary.
 
 | ID | Scenario | Expected |
 | --- | --- | --- |
-| INIT-ROLE-01 | `PG_INIT_USER` set, run role does not exist. | Run role is created `LOGIN` with `PG_PASSWORD`; granted `USAGE ON SCHEMA public`, `SELECT, DELETE` and `UPDATE (<EVENT_ID>)` on the outbox table. |
+| INIT-ROLE-01 | `PG_INIT_USER` set, run role does not exist. | Run role is created `LOGIN` with `PG_PASSWORD`; granted `USAGE ON SCHEMA <PG_SCHEMA>`, `SELECT, DELETE` and `UPDATE (<EVENT_ID>)` on the qualified outbox table. |
 | INIT-ROLE-06 | Run role processes a real event end to end. | The `UPDATE (<id>)` grant lets `SELECT ... FOR UPDATE` succeed; without it the batch select fails despite the `SELECT *` startup check passing. |
 | INIT-ROLE-02 | `PG_INIT_USER` set, run role already exists. | Role is not recreated and its password is left untouched; grants are (re)applied idempotently. |
 | INIT-ROLE-03 | `PG_INIT_USER` unset. | `--apply` connects as `PG_USER`/`PG_PASSWORD`; only schema objects are created; no role is created and no extra grants are issued. |
 | INIT-ROLE-04 | `DLQ_TABLE` set, `PG_INIT_USER` set. | Run role is additionally granted `INSERT` on the DLQ table. |
 | INIT-ROLE-05 | Run role's `PG_PASSWORD` is interpolated into `CREATE ROLE`. | The literal is properly escaped (single quotes doubled); the password is never logged. |
-| INIT-PROD-01 | `PG_PRODUCER_ROLES` lists one existing role. | That role is granted `SELECT, INSERT` on the outbox table; never `DELETE`. |
+| INIT-PROD-01 | `PG_PRODUCER_ROLES` lists one existing role. | That role is granted `USAGE` on `PG_SCHEMA` and `SELECT, INSERT` on the qualified outbox table; never `DELETE`. |
 | INIT-PROD-02 | `PG_PRODUCER_ROLES` lists multiple comma-separated roles. | Each existing role receives the grants. |
 | INIT-PROD-03 | A named producer role does not exist (`--apply`). | Apply fails with a clear message naming the missing role; transaction rolls back. |
 | INIT-PROD-04 | `PG_PRODUCER_ROLES` includes the run role. | The run role additionally receives `SELECT, INSERT` (all-in-one setup). |

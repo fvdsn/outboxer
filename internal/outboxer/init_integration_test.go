@@ -29,8 +29,9 @@ func TestInitApplyRoundTripIntegration(t *testing.T) {
 	}
 
 	suffix := strings.ReplaceAll(strconvNano(), "-", "_")
-	table := "outboxer_init_" + suffix
-	dlq := "outboxer_init_dlq_" + suffix
+	schema := "outboxer_init_" + suffix
+	table := "events"
+	dlq := "dead_letters"
 
 	cfg := appConfig{
 		EventTable:       table,
@@ -48,6 +49,7 @@ func TestInitApplyRoundTripIntegration(t *testing.T) {
 		PGUser:           pc.User,
 		PGPassword:       pc.Password,
 		PGDatabase:       pc.Database,
+		PGSchema:         schema,
 	}
 
 	ctx := context.Background()
@@ -58,9 +60,7 @@ func TestInitApplyRoundTripIntegration(t *testing.T) {
 			return
 		}
 		defer db.Close()
-		_, _ = db.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
-		_, _ = db.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(dlq)))
-		_, _ = db.ExecContext(ctx, "DROP FUNCTION IF EXISTS outboxer_notify() CASCADE")
+		_, _ = db.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", ident(schema)))
 	})
 
 	if err := applyInit(ctx, cfg); err != nil {

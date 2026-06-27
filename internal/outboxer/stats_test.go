@@ -36,7 +36,7 @@ func TestEstimateRemainingEventsUsesPgClassEstimate(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectQuery("SELECT reltuples FROM pg_catalog.pg_class WHERE oid = to_regclass($1)").
-		WithArgs(`"events"`).
+		WithArgs(`"public"."events"`).
 		WillReturnRows(sqlmock.NewRows([]string{"reltuples"}).AddRow(1234.9))
 
 	remaining, ok := a.estimateRemainingEvents(context.Background())
@@ -51,7 +51,7 @@ func TestEstimateRemainingEventsSkipsUnavailableEstimate(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectQuery("SELECT reltuples FROM pg_catalog.pg_class WHERE oid = to_regclass($1)").
-		WithArgs(`"events"`).
+		WithArgs(`"public"."events"`).
 		WillReturnError(context.DeadlineExceeded)
 
 	if remaining, ok := a.estimateRemainingEvents(context.Background()); ok || remaining != 0 {
@@ -65,7 +65,7 @@ func TestMaybeRefreshRemainingEstimateCachesAndThrottles(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectQuery("SELECT reltuples FROM pg_catalog.pg_class WHERE oid = to_regclass($1)").
-		WithArgs(`"events"`).
+		WithArgs(`"public"."events"`).
 		WillReturnRows(sqlmock.NewRows([]string{"reltuples"}).AddRow(1234.0))
 
 	var last time.Time

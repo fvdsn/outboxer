@@ -39,13 +39,17 @@ provisioning-specific schema flags:
 - **DLQ table** (`DLQ_TABLE`), only when set.
 - **Notify function and trigger**, only when `POLL_INTERVAL_MS > 0`, on the
   `NOTIFY_CHANNEL` channel. See [Notifications](notifications.md).
+- **PostgreSQL schema** (`PG_SCHEMA`), created when absent. It defaults to
+  `public`.
 
 Objects are created with `CREATE TABLE IF NOT EXISTS` / `CREATE OR REPLACE
 FUNCTION`, so `init` is repeatable and never drops, alters, or deletes a table or
 its data. (It does recreate its own notification trigger on each run.)
 
-Objects are provisioned in the `public` schema; schema-qualified table names are
-not supported.
+Every object reference is explicitly qualified with `PG_SCHEMA`, so provisioning
+and relay execution do not depend on either database role's `search_path`.
+`EVENT_TABLE` and `DLQ_TABLE` remain plain object names; configure the schema
+separately rather than putting a dotted name in either setting.
 
 ## Roles
 
@@ -53,18 +57,18 @@ not supported.
 
 | Role | Configured by | Purpose |
 | --- | --- | --- |
-| Init / admin | `PG_INIT_USER` / `PG_INIT_PASSWORD` | The identity `--apply` connects as. Needs DDL rights and, to manage the run role, `CREATEROLE` (managed Postgres admin accounts have it). |
+| Init / admin | `PG_INIT_USER` / `PG_INIT_PASSWORD` | The identity `--apply` connects as. Needs `CREATE` on the database for schema provisioning, DDL rights in an existing target schema, and, to manage the run role, `CREATEROLE` (managed Postgres admin accounts have it). |
 | Run | `PG_USER` / `PG_PASSWORD` | The relay's runtime identity, in both verbs. |
 | Producer | `PG_PRODUCER_ROLES` | The application(s) that insert events. |
 
 **The presence of `PG_INIT_USER` is the single knob** for role management:
 
 - **Set:** `init` connects as the provisioning role and additionally creates the
-  run role (if missing) and applies all grants. The run role gets `USAGE` on the
-  schema, `SELECT, DELETE` and `UPDATE (id)` on the outbox table (the
+  run role (if missing) and applies all grants. The run role gets `USAGE` on
+  `PG_SCHEMA`, `SELECT, DELETE` and `UPDATE (id)` on the outbox table (the
   `UPDATE (id)` is required by `SELECT ... FOR UPDATE`), and `INSERT` on the DLQ
-  table when configured. Each role in `PG_PRODUCER_ROLES` is granted
-  `SELECT, INSERT` on the outbox table.
+  table when configured. Each role in `PG_PRODUCER_ROLES` is granted `USAGE` on
+  `PG_SCHEMA` and `SELECT, INSERT` on the outbox table.
 - **Unset:** `init` connects as `PG_USER` / `PG_PASSWORD` and only creates the
   schema objects, assuming that user already holds the necessary DDL rights. No
   role is created and no grants are issued. This is the simple single-user case.
@@ -89,6 +93,7 @@ export EVENT_TABLE=events
 export DLQ_TABLE=dead_letters
 export POLL_INTERVAL_MS=5000
 export PG_HOST=... PG_DATABASE=app
+export PG_SCHEMA=public                              # or an application schema
 export PG_INIT_USER=admin PG_INIT_PASSWORD=...   # provisioning identity
 export PG_USER=relay PG_PASSWORD=...             # run role init will create
 export PG_PRODUCER_ROLES=app_service             # existing producer role

@@ -24,10 +24,10 @@ previously had to assemble by hand from [`events.md`](../docs/events.md),
 ## Design Principle: Same Config, Derived Schema
 
 `init` takes **no schema arguments of its own**. Everything it creates is derived
-from the existing relay configuration (`EVENT_TABLE`, the `EVENT_*` column names,
-`DLQ_TABLE`, `NOTIFY_CHANNEL`, `POLL_INTERVAL_MS`, the backend enable flags, the
-`PG_*` connection settings). The same environment that runs the relay describes
-what `init` provisions.
+from the existing relay configuration (`PG_SCHEMA`, `EVENT_TABLE`, the `EVENT_*`
+column names, `DLQ_TABLE`, `NOTIFY_CHANNEL`, `POLL_INTERVAL_MS`, the backend
+enable flags, the `PG_*` connection settings). The same environment that runs
+the relay describes what `init` provisions.
 
 The binding invariant:
 
@@ -107,6 +107,15 @@ files.
 
 What `init` generates is driven entirely by config:
 
+### Schema
+
+- `CREATE SCHEMA IF NOT EXISTS <PG_SCHEMA>`, defaulting to `public`.
+- Every schema object reference in both init and relay mode is explicitly
+  qualified with `PG_SCHEMA`; behavior must not depend on either connection's
+  `search_path`.
+- `EVENT_TABLE` and `DLQ_TABLE` are object names, not dotted qualified names.
+  The schema is configured separately.
+
 ### Outbox table
 
 - `CREATE TABLE IF NOT EXISTS <EVENT_TABLE>` with every **configured (non-empty)**
@@ -151,7 +160,7 @@ What `init` generates is driven entirely by config:
     argument rather than baking it into the function body:
 
     ```sql
-    CREATE OR REPLACE FUNCTION outboxer_notify() RETURNS trigger AS $$
+    CREATE OR REPLACE FUNCTION <PG_SCHEMA>.outboxer_notify() RETURNS trigger AS $$
     BEGIN
       PERFORM pg_notify(TG_ARGV[0], '');
       RETURN NULL;
@@ -159,9 +168,9 @@ What `init` generates is driven entirely by config:
     $$ LANGUAGE plpgsql;
 
     CREATE TRIGGER outboxer_notify
-    AFTER INSERT ON <EVENT_TABLE>
+    AFTER INSERT ON <PG_SCHEMA>.<EVENT_TABLE>
     FOR EACH STATEMENT
-    EXECUTE FUNCTION outboxer_notify('<NOTIFY_CHANNEL>');
+    EXECUTE FUNCTION <PG_SCHEMA>.outboxer_notify('<NOTIFY_CHANNEL>');
     ```
 
     Passing the channel via `TG_ARGV[0]` keeps the shared-by-name function
@@ -172,19 +181,6 @@ What `init` generates is driven entirely by config:
   - `POLL_INTERVAL_MS == 0` (default): the relay never `LISTEN`s, so the trigger
     would have no effect; `init` does not generate it.
 
-## Schema
-
-For a simple first version, `init` provisions all objects in the **`public`**
-schema and grants `USAGE ON SCHEMA public` to the run role.
-
-- **Schema-qualified table names are not supported.** The existing identifier
-  handling (`ident` → `pgx.Identifier{name}.Sanitize()`) treats a value like
-  `app.events` as a single table name literally containing a dot, not as
-  `app`-schema `events`. `init` inherits that behavior, so configuring a dotted
-  table name is unsupported and should be documented as such.
-- A shared `PG_SCHEMA` setting (used by both relay and `init`) can be introduced
-  later if custom-schema support becomes necessary. It is out of scope here.
-
 ## Connection & Roles
 
 Three roles, with `init` owning the lifecycle of the run role and only granting to
@@ -193,9 +189,10 @@ producers.
 ### Init connection
 
 - `PG_INIT_USER` / `PG_INIT_PASSWORD` — the credential `--apply` connects as. Must
-  have DDL rights on the target schema and, when it manages the run role,
-  `CREATEROLE` (managed Postgres admin accounts have `CREATEROLE` without being
-  superuser, so this works on RDS / Cloud SQL / etc.).
+  have `CREATE` on the database for schema provisioning, DDL rights in an
+  existing target schema, and, when it manages the run role, `CREATEROLE`
+  (managed Postgres admin accounts have `CREATEROLE` without being superuser, so
+  this works on RDS / Cloud SQL / etc.).
 - **Presence of `PG_INIT_USER` is the single knob** for role management:
   - Set: `--apply` connects as the init role and additionally creates the run
     role (if missing) and applies all grants.
@@ -215,7 +212,7 @@ producers.
   `IF NOT EXISTS`, so creation is guarded by a `DO $$ ... IF NOT EXISTS (SELECT
   FROM pg_roles ...) ... $$` block.
 - Granted the minimal runtime privileges:
-  - `USAGE ON SCHEMA public` (see [Schema](#schema)).
+  - `USAGE ON SCHEMA <PG_SCHEMA>`.
   - `SELECT, DELETE` on `<EVENT_TABLE>` — the relay selects rows and deletes
     confirmed ones; it never inserts events.
   - `UPDATE (<EVENT_ID>)` on `<EVENT_TABLE>` — the batch query is `SELECT ... FOR
@@ -233,9 +230,10 @@ producers.
 
 - `PG_PRODUCER_ROLES` — a **comma-separated list** of existing role names.
 - **Grant-only.** For each named role, `init` issues `GRANT SELECT, INSERT ON
-  <EVENT_TABLE>`. `init` never creates a producer role and never sets its
-  password: the producer is the application's own database user with its own
-  credential lifecycle and privileges that Outboxer has no reason to manage.
+  <PG_SCHEMA>.<EVENT_TABLE>` and `GRANT USAGE ON SCHEMA <PG_SCHEMA>`. `init`
+  never creates a producer role and never sets its password: the producer is the
+  application's own database user with its own credential lifecycle and
+  privileges that Outboxer has no reason to manage.
 - A named producer role that does not exist is an error in `--apply` (clear
   message naming the role); print mode emits the grant regardless, since print is
   offline.
@@ -289,10 +287,10 @@ the [round-trip invariant](#design-principle-same-config-derived-schema) honest:
 ## Validation
 
 `init` validates only the configuration subset it needs to generate the schema
-(table/column names, DLQ name, notify channel, backend flags that decide whether
-the target column is required, and — for `--apply` — the connection settings). It
-does not require a publishing backend to be enabled, since provisioning is
-independent of where events will later be sent.
+(schema/table/column names, DLQ name, notify channel, backend flags that decide
+whether the target column is required, and — for `--apply` — the connection
+settings). It does not require a publishing backend to be enabled, since
+provisioning is independent of where events will later be sent.
 
 ## Non-Goals
 
