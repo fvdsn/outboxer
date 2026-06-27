@@ -54,12 +54,15 @@ These are cross-cutting assertions that many scenarios should verify.
 | CFG-11 | `PUBSUB_DESTINATIONS` is set while Pub/Sub is disabled. | Validation fails. |
 | CFG-12 | `SQS_DESTINATIONS` is set while SQS is disabled. | Validation fails. |
 | CFG-13 | `EVENT_OPTIONS` is unset. | Options column defaults to `options`. |
-| CFG-14 | `EVENT_OPTIONS` is empty. | Backend-specific options are disabled; every event behaves as if options were `{}`. |
+| CFG-14 | `EVENT_OPTIONS` is `disabled`. | Backend-specific options are disabled; every event behaves as if options were `{}`. An empty value is rejected. |
 | CFG-15 | `MAX_EVENT_AGE_MS` is unset or `0`. | Age-based poison is disabled. |
 | CFG-16 | `MAX_EVENT_AGE_MS` is negative. | Validation fails. |
-| CFG-17 | `MAX_EVENT_AGE_MS > 0` and `EVENT_TIMESTAMP` is empty. | Validation fails. |
+| CFG-17 | `MAX_EVENT_AGE_MS > 0` and `EVENT_TIMESTAMP` is `disabled`. | Validation fails. |
 | CFG-18 | `MAX_EVENT_AGE_MS > 0` and the timestamp column is missing from the event table. | Startup database validation fails. |
 | CFG-19 | `WATCHDOG_INTERVAL_MS` is zero or negative. | Relay validation fails before the watchdog starts. |
+| CFG-20 | A typed env var has an unparseable value (bad integer, non-boolean, out-of-range port). | Startup fails; the value is not silently replaced by a default. |
+| CFG-21 | Any setting is given an empty value (`FOO=` or `--foo=`). | Startup fails; empty values are rejected as ambiguous. |
+| CFG-22 | An optional column or table uses `disabled` (env or CLI). | The column/table is omitted; the env and CLI forms behave identically. |
 
 Watchdog bound cases:
 

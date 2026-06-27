@@ -10,7 +10,7 @@ transactional guarantees.
 
 | ID | Scenario | Expected |
 | --- | --- | --- |
-| DLQ-CFG-01 | `DLQ_TABLE` is empty. | DLQ is disabled; startup does not require a DLQ table. |
+| DLQ-CFG-01 | `DLQ_TABLE` is unset or `disabled`. | DLQ is disabled; startup does not require a DLQ table. |
 | DLQ-CFG-02 | `DLQ_TABLE=outboxer_dead_letters` and the table has `id` and `event`. | Startup validation succeeds. |
 | DLQ-CFG-03 | `DLQ_TABLE` points to a missing table. | Startup validation fails. |
 | DLQ-CFG-04 | DLQ table exists but has no `event` column. | Startup validation fails. |

@@ -32,11 +32,11 @@ relay-ready database.
 Everything is derived from the relay configuration — there are no
 provisioning-specific schema flags:
 
-- **Outbox table** (`EVENT_TABLE`) with every configured, non-empty column
-  (`EVENT_ID`, `EVENT_PAYLOAD`, and the optional `EVENT_TARGET`,
-  `EVENT_DESTINATION`, `EVENT_TIMESTAMP`, `EVENT_OPTIONS`). Only `id` and
-  `payload` are `NOT NULL`; the rest are nullable.
-- **DLQ table** (`DLQ_TABLE`), only when set.
+- **Outbox table** (`EVENT_TABLE`) with each configured column (`EVENT_ID`,
+  `EVENT_PAYLOAD`, and the optional `EVENT_TARGET`, `EVENT_DESTINATION`,
+  `EVENT_TIMESTAMP`, `EVENT_OPTIONS`). An optional column set to `disabled` is
+  omitted. Only `id` and `payload` are `NOT NULL`; the rest are nullable.
+- **DLQ table** (`DLQ_TABLE`), only when set to a table name.
 - **Notify function and trigger**, only when `POLL_INTERVAL_MS > 0`, on the
   `NOTIFY_CHANNEL` channel. See [Notifications](notifications.md).
 - **PostgreSQL schema** (`PG_SCHEMA`), created when absent. It defaults to

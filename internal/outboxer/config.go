@@ -78,11 +78,20 @@ type cliOption struct {
 	category string
 	name     string
 	usage    string
+	// envVars are the environment variables that populate this flag, in priority
+	// order. The first one that is set is applied through the flag's own parser,
+	// so an environment value is validated exactly like the equivalent CLI flag.
+	envVars []string
 }
+
+// disableSentinel is the explicit value for omitting an optional column or table
+// (for example EVENT_OPTIONS=disabled or --dlq-table=disabled). An empty value is
+// rejected as ambiguous; this sentinel is the clear way to express "no column".
+const disableSentinel = "disabled"
 
 func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	loadDotEnv(".env")
-	cfg := loadConfigFromEnv()
+	cfg := defaultConfig()
 
 	flags := flag.NewFlagSet("outboxer", flag.ContinueOnError)
 	flags.SetOutput(output)
@@ -93,6 +102,9 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 
 	finalize := bindConfigFlags(flags, &cfg, &options)
 
+	if err := applyEnv(flags, options); err != nil {
+		return appConfig{}, err
+	}
 	if err := flags.Parse(args); err != nil {
 		return appConfig{}, err
 	}
@@ -109,7 +121,7 @@ func loadConfig(args []string, output io.Writer) (appConfig, error) {
 // provisioning-only flags (--apply and the PG_INIT_*/PG_PRODUCER_ROLES settings).
 func loadInitConfig(args []string, output io.Writer) (appConfig, bool, error) {
 	loadDotEnv(".env")
-	cfg := loadConfigFromEnv()
+	cfg := defaultConfig()
 
 	flags := flag.NewFlagSet("outboxer init", flag.ContinueOnError)
 	flags.SetOutput(output)
@@ -129,6 +141,9 @@ func loadInitConfig(args []string, output io.Writer) (appConfig, bool, error) {
 	producerRoles := strings.Join(cfg.PGProducerRoles, ",")
 	addStringFlag(flags, &options, "Provisioning", &producerRoles, "pg-producer-roles", producerRoles, "Comma-separated existing roles granted SELECT, INSERT on the event table.", "PG_PRODUCER_ROLES")
 
+	if err := applyEnv(flags, options); err != nil {
+		return appConfig{}, false, err
+	}
 	if err := flags.Parse(args); err != nil {
 		return appConfig{}, false, err
 	}
@@ -147,15 +162,15 @@ func loadInitConfig(args []string, output io.Writer) (appConfig, bool, error) {
 func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) func() {
 	addStringFlag(flags, options, "Event table", &cfg.EventTable, "event-table", cfg.EventTable, "Outbox table name.", "EVENT_TABLE")
 	addStringFlag(flags, options, "Event table", &cfg.EventID, "event-id", cfg.EventID, "Event id column.", "EVENT_ID")
-	addStringFlag(flags, options, "Event table", &cfg.EventTimestamp, "event-timestamp", cfg.EventTimestamp, "Event timestamp column.", "EVENT_TIMESTAMP")
+	addDisableableFlag(flags, options, "Event table", &cfg.EventTimestamp, "event-timestamp", cfg.EventTimestamp, "Event timestamp column.", "EVENT_TIMESTAMP")
 	addStringFlag(flags, options, "Event table", &cfg.EventPayload, "event-payload", cfg.EventPayload, "Event payload column.", "EVENT_PAYLOAD")
-	addStringFlag(flags, options, "Event table", &cfg.EventTarget, "event-target", cfg.EventTarget, "Backend selector column. Values pubsub or sqs.", "EVENT_TARGET")
-	addStringFlag(flags, options, "Event table", &cfg.EventDestination, "event-destination", cfg.EventDestination, "Pub/Sub topic name or SQS queue URL column.", "EVENT_DESTINATION")
-	addStringFlag(flags, options, "Event table", &cfg.EventOptions, "event-options", cfg.EventOptions, "Backend-specific JSON options column. Empty disables options.", "EVENT_OPTIONS")
+	addDisableableFlag(flags, options, "Event table", &cfg.EventTarget, "event-target", cfg.EventTarget, "Backend selector column. Values pubsub or sqs.", "EVENT_TARGET")
+	addDisableableFlag(flags, options, "Event table", &cfg.EventDestination, "event-destination", cfg.EventDestination, "Pub/Sub topic name or SQS queue URL column.", "EVENT_DESTINATION")
+	addDisableableFlag(flags, options, "Event table", &cfg.EventOptions, "event-options", cfg.EventOptions, "Backend-specific JSON options column.", "EVENT_OPTIONS")
 
 	addIntFlag(flags, options, "Batch processing", &cfg.CollectBatchTarget, "collect-batch-target", cfg.CollectBatchTarget, "Approximate target rows selected per batch, spread across eligible routes.", "COLLECT_BATCH_TARGET")
 	addIntFlag(flags, options, "Batch processing", &cfg.SQSSendConcurrency, "sqs-send-concurrency", cfg.SQSSendConcurrency, "Maximum concurrent SQS send requests.", "SQS_SEND_CONCURRENCY")
-	addStringFlag(flags, options, "Batch processing", &cfg.DLQTable, "dlq-table", cfg.DLQTable, "Dead letter table for poison events. Empty disables DLQ.", "DLQ_TABLE")
+	addDisableableFlag(flags, options, "Batch processing", &cfg.DLQTable, "dlq-table", cfg.DLQTable, "Dead letter table for poison events.", "DLQ_TABLE")
 
 	var watchdogIntervalMS = int(cfg.WatchdogInterval / time.Millisecond)
 	var errorCooldownMS = int(cfg.ErrorCooldown / time.Millisecond)
@@ -230,6 +245,25 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 		cfg.PubSubDestinations = parseStringList(pubsubDestinations)
 		cfg.SQSDestinations = parseStringList(sqsDestinations)
 	}
+}
+
+// applyEnv applies environment variables to the registered flags before CLI
+// parsing, so the precedence is CLI > environment > default and an environment
+// value is validated by the same flag parser as the equivalent CLI flag.
+func applyEnv(flags *flag.FlagSet, options []cliOption) error {
+	for _, option := range options {
+		for _, name := range option.envVars {
+			value, ok := os.LookupEnv(name)
+			if !ok {
+				continue
+			}
+			if err := flags.Set(option.name, value); err != nil {
+				return fmt.Errorf("invalid %s: %w", name, err)
+			}
+			break
+		}
+	}
+	return nil
 }
 
 type configValidationMode uint8
@@ -358,65 +392,64 @@ func (cfg appConfig) validateRuntime() error {
 	return nil
 }
 
-func loadConfigFromEnv() appConfig {
+// defaultConfig returns the configuration with every value at its built-in
+// default. Environment variables and CLI flags are layered on top by loadConfig.
+func defaultConfig() appConfig {
 	return appConfig{
-		EventTable:       getenv("EVENT_TABLE", "events"),
-		EventID:          getenv("EVENT_ID", "id"),
-		EventTimestamp:   getenv("EVENT_TIMESTAMP", "timestamp"),
-		EventPayload:     getenv("EVENT_PAYLOAD", "payload"),
-		EventTarget:      getenv("EVENT_TARGET", "target"),
-		EventDestination: getenv("EVENT_DESTINATION", "destination"),
-		EventOptions:     getenv("EVENT_OPTIONS", "options"),
+		EventTable:       "events",
+		EventID:          "id",
+		EventTimestamp:   "timestamp",
+		EventPayload:     "payload",
+		EventTarget:      "target",
+		EventDestination: "destination",
+		EventOptions:     "options",
 
-		CollectBatchTarget: getenvInt("COLLECT_BATCH_TARGET", 5000),
-		SQSSendConcurrency: getenvInt("SQS_SEND_CONCURRENCY", 8),
-		DLQTable:           getenv("DLQ_TABLE", ""),
-		NotifyChannel:      getenv("NOTIFY_CHANNEL", "outboxer_events"),
+		CollectBatchTarget: 5000,
+		SQSSendConcurrency: 8,
+		DLQTable:           "",
+		NotifyChannel:      "outboxer_events",
 
-		LogLevel:  getenv("LOG_LEVEL", "info"),
-		LogFormat: getenv("LOG_FORMAT", "text"),
+		LogLevel:  "info",
+		LogFormat: "text",
 
-		WatchdogInterval:   time.Duration(getenvInt("WATCHDOG_INTERVAL_MS", 10*60*1000)) * time.Millisecond,
-		HealthPort:         getenvInt("HEALTH_PORT", getenvInt("PORT", 0)),
-		PubSubEnabled:      os.Getenv("PUBSUB_ENABLED") == "true",
-		SQSEnabled:         os.Getenv("SQS_ENABLED") == "true",
-		DefaultPubSubTopic: getenv("DEFAULT_PUBSUB_TOPIC", "default"),
-		DefaultSQSQueueURL: getenv("DEFAULT_SQS_QUEUE_URL", ""),
-		PubSubDestinations: parseStringList(getenv("PUBSUB_DESTINATIONS", "")),
-		SQSDestinations:    parseStringList(getenv("SQS_DESTINATIONS", "")),
-		PubSubProjectID:    getenv("PUBSUB_PROJECT_ID", ""),
-		PubSubAPIEndpoint:  getenv("PUBSUB_API_ENDPOINT", ""),
-		SQSAPIEndpoint:     getenv("SQS_API_ENDPOINT", ""),
-		ErrorCooldown:      time.Duration(getenvInt("ERROR_COOLDOWN_MS", 5000)) * time.Millisecond,
-		PollInterval:       time.Duration(getenvInt("POLL_INTERVAL_MS", 0)) * time.Millisecond,
-		PublishTimeout:     time.Duration(getenvInt("PUBLISH_TIMEOUT_MS", 30000)) * time.Millisecond,
-		PublishResultGrace: time.Duration(getenvInt("PUBLISH_RESULT_GRACE_MS", 5000)) * time.Millisecond,
-		MaxEventAge:        time.Duration(getenvInt("MAX_EVENT_AGE_MS", 0)) * time.Millisecond,
-		StatsInterval:      time.Duration(getenvInt("STATS_INTERVAL_MS", 10000)) * time.Millisecond,
+		WatchdogInterval:   10 * time.Minute,
+		HealthPort:         0,
+		PubSubEnabled:      false,
+		SQSEnabled:         false,
+		DefaultPubSubTopic: "default",
+		DefaultSQSQueueURL: "",
+		PubSubProjectID:    "",
+		PubSubAPIEndpoint:  "",
+		SQSAPIEndpoint:     "",
+		ErrorCooldown:      5 * time.Second,
+		PollInterval:       0,
+		PublishTimeout:     30 * time.Second,
+		PublishResultGrace: 5 * time.Second,
+		MaxEventAge:        0,
+		StatsInterval:      10 * time.Second,
 
-		PGHost:                  getenv("PG_HOST", "localhost"),
-		PGPort:                  uint16(getenvInt("PG_PORT", 5432)),
-		PGUser:                  getenv("PG_USER", "postgres"),
-		PGPassword:              getenv("PG_PASSWORD", ""),
-		PGDatabase:              getenv("PG_DATABASE", "postgres"),
-		PGSchema:                getenv("PG_SCHEMA", "public"),
-		PGSSL:                   getenvBool("PG_SSL", false),
-		PGSSLRejectUnauthorized: getenvBool("PG_SSL_REJECT_UNAUTHORIZED", true),
-		PGSSLRootCert:           getenv("PG_SSL_ROOT_CERT", ""),
-		PGConnectTimeout:        time.Duration(getenvInt("PG_CONNECT_TIMEOUT_MS", 10000)) * time.Millisecond,
-		PGQueryTimeout:          time.Duration(getenvInt("PG_QUERY_TIMEOUT_MS", 30000)) * time.Millisecond,
+		PGHost:                  "localhost",
+		PGPort:                  5432,
+		PGUser:                  "postgres",
+		PGPassword:              "",
+		PGDatabase:              "postgres",
+		PGSchema:                "public",
+		PGSSL:                   false,
+		PGSSLRejectUnauthorized: true,
+		PGSSLRootCert:           "",
+		PGConnectTimeout:        10 * time.Second,
+		PGQueryTimeout:          30 * time.Second,
 
-		PGInitUser:      getenv("PG_INIT_USER", ""),
-		PGInitPassword:  getenv("PG_INIT_PASSWORD", ""),
-		PGProducerRoles: parseStringList(getenv("PG_PRODUCER_ROLES", "")),
+		PGInitUser:     "",
+		PGInitPassword: "",
 
-		AWSRegion:                  getenv("AWS_REGION", ""),
-		AWSRoleARN:                 getenv("AWS_ROLE_ARN", ""),
-		AWSRoleSessionName:         getenv("AWS_ROLE_SESSION_NAME", "outboxer"),
-		AWSRoleDuration:            time.Duration(getenvInt("AWS_ROLE_DURATION_SECONDS", 3600)) * time.Second,
-		AWSCredentialRefreshWindow: time.Duration(getenvInt("AWS_CREDENTIAL_REFRESH_WINDOW_MS", 5*60*1000)) * time.Millisecond,
-		AWSWebIdentityProvider:     getenv("AWS_WEB_IDENTITY_PROVIDER", ""),
-		AWSWebIdentityAudience:     getenv("AWS_WEB_IDENTITY_AUDIENCE", ""),
+		AWSRegion:                  "",
+		AWSRoleARN:                 "",
+		AWSRoleSessionName:         "outboxer",
+		AWSRoleDuration:            time.Hour,
+		AWSCredentialRefreshWindow: 5 * time.Minute,
+		AWSWebIdentityProvider:     "",
+		AWSWebIdentityAudience:     "",
 	}
 }
 
@@ -432,32 +465,56 @@ func parseStringList(value string) []string {
 	return out
 }
 
+func parseEnvVars(envVar string) []string {
+	names := []string{}
+	for _, part := range strings.Split(envVar, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			names = append(names, trimmed)
+		}
+	}
+	return names
+}
+
 func optionHelp(description string, envVar string, defaultValue any) string {
 	return fmt.Sprintf("%s Env: %s. Default: %v.", description, envVar, defaultValue)
 }
 
 func addStringFlag(flags *flag.FlagSet, options *[]cliOption, category string, destination *string, name string, value string, description string, envVar string) {
+	*destination = value
 	usage := optionHelp(description, envVar, value)
-	flags.StringVar(destination, name, value, usage)
-	*options = append(*options, cliOption{category: category, name: name, usage: usage})
+	flags.Var(&nonEmptyStringValue{value: destination}, name, usage)
+	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseEnvVars(envVar)})
+}
+
+// addDisableableFlag registers an optional column or table whose value may be the
+// disableSentinel ("disabled") to omit it. An empty value is rejected.
+func addDisableableFlag(flags *flag.FlagSet, options *[]cliOption, category string, destination *string, name string, value string, description string, envVar string) {
+	*destination = value
+	defaultDisplay := value
+	if defaultDisplay == "" {
+		defaultDisplay = disableSentinel
+	}
+	usage := optionHelp(description+fmt.Sprintf(" Set to %q to omit it.", disableSentinel), envVar, defaultDisplay)
+	flags.Var(&disableableStringValue{value: destination}, name, usage)
+	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseEnvVars(envVar)})
 }
 
 func addIntFlag(flags *flag.FlagSet, options *[]cliOption, category string, destination *int, name string, value int, description string, envVar string) {
 	usage := optionHelp(description, envVar, value)
 	flags.IntVar(destination, name, value, usage)
-	*options = append(*options, cliOption{category: category, name: name, usage: usage})
+	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseEnvVars(envVar)})
 }
 
 func addBoolFlag(flags *flag.FlagSet, options *[]cliOption, category string, destination *bool, name string, value bool, description string, envVar string) {
 	usage := optionHelp(description, envVar, value)
 	flags.BoolVar(destination, name, value, usage)
-	*options = append(*options, cliOption{category: category, name: name, usage: usage})
+	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseEnvVars(envVar)})
 }
 
 func addValueFlag(flags *flag.FlagSet, options *[]cliOption, category string, value flag.Value, name string, description string, envVar string, defaultValue any) {
 	usage := optionHelp(description, envVar, defaultValue)
 	flags.Var(value, name, usage)
-	*options = append(*options, cliOption{category: category, name: name, usage: usage})
+	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseEnvVars(envVar)})
 }
 
 func printUsage(output io.Writer, options []cliOption) {
@@ -479,6 +536,53 @@ func redactDefault(value string) string {
 		return ""
 	}
 	return "<set>"
+}
+
+// nonEmptyStringValue is a string flag that rejects an empty value, so an
+// ambiguous FOO="" (or --foo="") is an error rather than a silent empty value.
+type nonEmptyStringValue struct {
+	value *string
+}
+
+func (v *nonEmptyStringValue) String() string {
+	if v == nil || v.value == nil {
+		return ""
+	}
+	return *v.value
+}
+
+func (v *nonEmptyStringValue) Set(value string) error {
+	if value == "" {
+		return fmt.Errorf("value must not be empty")
+	}
+	*v.value = value
+	return nil
+}
+
+// disableableStringValue is a string flag that rejects an empty value but maps
+// the disableSentinel to an empty internal value, the explicit way to omit an
+// optional column or table.
+type disableableStringValue struct {
+	value *string
+}
+
+func (v *disableableStringValue) String() string {
+	if v == nil || v.value == nil || *v.value == "" {
+		return disableSentinel
+	}
+	return *v.value
+}
+
+func (v *disableableStringValue) Set(value string) error {
+	if value == "" {
+		return fmt.Errorf("value must not be empty; use %q to omit it", disableSentinel)
+	}
+	if strings.EqualFold(value, disableSentinel) {
+		*v.value = ""
+		return nil
+	}
+	*v.value = value
+	return nil
 }
 
 type uint16Value uint16
@@ -512,6 +616,9 @@ func (v *secretStringValue) String() string {
 }
 
 func (v *secretStringValue) Set(value string) error {
+	if value == "" {
+		return fmt.Errorf("value must not be empty")
+	}
 	*v.value = value
 	return nil
 }
@@ -545,31 +652,4 @@ func loadDotEnv(path string) {
 		}
 		_ = os.Setenv(key, value)
 	}
-}
-
-func getenv(key string, fallback string) string {
-	if value, ok := os.LookupEnv(key); ok {
-		return value
-	}
-	return fallback
-}
-
-func getenvBool(key string, fallback bool) bool {
-	value, ok := os.LookupEnv(key)
-	if !ok {
-		return fallback
-	}
-	return value == "true"
-}
-
-func getenvInt(key string, fallback int) int {
-	value, ok := os.LookupEnv(key)
-	if !ok {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return fallback
-	}
-	return parsed
 }

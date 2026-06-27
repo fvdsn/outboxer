@@ -177,7 +177,7 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	t.Setenv("EVENT_OPTIONS", "event_options")
 	t.Setenv("POLL_INTERVAL_MS", "250")
 	t.Setenv("PORT", "9090")
-	t.Setenv("HEALTH_PORT", "")
+	unsetEnv(t, "HEALTH_PORT")
 	t.Setenv("DLQ_TABLE", "dead_letters")
 	t.Setenv("MAX_EVENT_AGE_MS", "60000")
 	t.Setenv("STATS_INTERVAL_MS", "15000")
@@ -395,8 +395,62 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 	if strings.Contains(help, "super-secret") {
 		t.Fatalf("expected help to redact database password, got:\n%s", help)
 	}
-	if !strings.Contains(help, "Env: PG_PASSWORD") || !strings.Contains(help, "Default: <set>") {
-		t.Fatalf("expected help to mention redacted pg password default, got:\n%s", help)
+	if !strings.Contains(help, "Env: PG_PASSWORD") {
+		t.Fatalf("expected help to mention the pg password env var, got:\n%s", help)
+	}
+}
+
+func TestLoadConfigRejectsInvalidEnv(t *testing.T) {
+	cases := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{"invalid int", "COLLECT_BATCH_TARGET", "not-a-number"},
+		{"invalid bool", "PG_SSL_REJECT_UNAUTHORIZED", "ture"},
+		{"port overflow", "PG_PORT", "99999"},
+		{"empty int", "COLLECT_BATCH_TARGET", ""},
+		{"empty required string", "PG_HOST", ""},
+		{"empty optional column", "EVENT_OPTIONS", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.key, tc.value)
+			if _, err := loadConfig(nil, io.Discard); err == nil {
+				t.Fatalf("expected error for %s=%q", tc.key, tc.value)
+			}
+		})
+	}
+}
+
+func TestLoadConfigDisablesColumnWithSentinel(t *testing.T) {
+	t.Setenv("EVENT_OPTIONS", "disabled")
+	t.Setenv("EVENT_TARGET", "DISABLED")
+
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.EventOptions != "" {
+		t.Fatalf("expected EVENT_OPTIONS=disabled to omit the column, got %q", cfg.EventOptions)
+	}
+	if cfg.EventTarget != "" {
+		t.Fatalf("expected EVENT_TARGET=DISABLED to omit the column, got %q", cfg.EventTarget)
+	}
+}
+
+func TestLoadConfigDisablesColumnWithFlag(t *testing.T) {
+	unsetEnv(t, "EVENT_OPTIONS")
+
+	cfg, err := loadConfig([]string{"--event-options=disabled"}, io.Discard)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.EventOptions != "" {
+		t.Fatalf("expected --event-options=disabled to omit the column, got %q", cfg.EventOptions)
+	}
+	if _, err := loadConfig([]string{"--event-options="}, io.Discard); err == nil {
+		t.Fatal("expected --event-options= (empty) to error")
 	}
 }
 

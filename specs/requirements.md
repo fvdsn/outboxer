@@ -1021,8 +1021,8 @@ this spec says so explicitly.
 - Keep: `ERROR_COOLDOWN_MS`, `POLL_INTERVAL_MS`, `PUBLISH_TIMEOUT_MS`.
 - Add:
   - `EVENT_OPTIONS` (default: `options`), the JSONB options column containing
-    backend-specific publish options. Empty disables backend-specific options and
-    treats every event as `{}`.
+    backend-specific publish options. Set to `disabled` to omit the column, which
+    disables backend-specific options and treats every event as `{}`.
   - `COLLECT_BATCH_TARGET` (default: `5000`), the approximate target rows
     selected per batch, spread across eligible resolved `(target, destination)`
     routes.

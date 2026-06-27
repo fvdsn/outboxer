@@ -29,7 +29,7 @@ the real binary.
 | --- | --- | --- |
 | INIT-TBL-01 | All optional column env vars non-empty (default). | Every column is generated regardless of backend/feature config: `id` (PK, identity), `payload` (`NOT NULL`), `target`, `destination`, `timestamp` (`timestamptz`), `options` (`jsonb`); table name from `EVENT_TABLE`. |
 | INIT-TBL-02 | Optional columns. | `target`, `destination`, `timestamp`, `options` are all nullable; only `id` and `payload` are `NOT NULL`. |
-| INIT-TBL-03 | An optional column env var is empty (e.g. `EVENT_OPTIONS=""`). | That column is omitted entirely; no empty/invalid identifier is emitted; backend/feature flags do not otherwise affect column inclusion. |
+| INIT-TBL-03 | An optional column is disabled (e.g. `EVENT_OPTIONS=disabled`). | That column is omitted entirely; no empty/invalid identifier is emitted; backend/feature flags do not otherwise affect column inclusion. |
 | INIT-TBL-04 | Two configured non-empty columns resolve to the same name. | Config validation rejects it before any DDL; clear duplicate-column error. |
 | INIT-TBL-05 | Custom `EVENT_*` column names and `EVENT_TABLE`. | Generated DDL uses the custom, safely-quoted identifiers for every column. |
 | INIT-TBL-06 | Identifiers containing characters needing quoting. | All identifiers are quoted via `ident`; SQL is valid. |

@@ -9,6 +9,13 @@ Configuration precedence is:
 2. environment variables or `.env`
 3. defaults
 
+An environment variable is parsed exactly like the equivalent CLI flag, so
+`FOO=bar` behaves identically to `--foo=bar` and an invalid value (a bad integer,
+an unparseable boolean, an out-of-range port) is rejected at startup rather than
+silently ignored. An **empty** value (`FOO=` or `--foo=`) is always an error;
+optional columns and tables are omitted with the explicit `disabled` value
+instead (for example `EVENT_OPTIONS=disabled`).
+
 CLI flags use kebab-case names:
 
 ```sh
@@ -36,11 +43,11 @@ options.
 | --- | --- | --- | --- | --- |
 | `--event-table` | `EVENT_TABLE` | `events` | Table must exist. | Outbox table name. |
 | `--event-id` | `EVENT_ID` | `id` | Required. | Event id column. Determines ordering and idempotency. |
-| `--event-timestamp` | `EVENT_TIMESTAMP` | `timestamp` | Optional. | Event timestamp column, used for latency logs and `MAX_EVENT_AGE_MS`. |
+| `--event-timestamp` | `EVENT_TIMESTAMP` | `timestamp` | Optional. | Event timestamp column, used for latency logs and `MAX_EVENT_AGE_MS`. Set to `disabled` to omit it. |
 | `--event-payload` | `EVENT_PAYLOAD` | `payload` | Required. | Event payload column. |
-| `--event-target` | `EVENT_TARGET` | `target` | Required when both backends are enabled. | Backend selector column. Values `pubsub` or `sqs`. |
-| `--event-destination` | `EVENT_DESTINATION` | `destination` | Required when an enabled backend has no default destination. | Pub/Sub topic name or SQS queue URL column. |
-| `--event-options` | `EVENT_OPTIONS` | `options` | Optional. | Backend-specific JSON options column. Empty disables options. |
+| `--event-target` | `EVENT_TARGET` | `target` | Required when both backends are enabled. | Backend selector column. Values `pubsub` or `sqs`. Set to `disabled` to omit it. |
+| `--event-destination` | `EVENT_DESTINATION` | `destination` | Required when an enabled backend has no default destination. | Pub/Sub topic name or SQS queue URL column. Set to `disabled` to omit it. |
+| `--event-options` | `EVENT_OPTIONS` | `options` | Optional. | Backend-specific JSON options column. Set to `disabled` to omit it. |
 
 ## Batch processing
 
@@ -48,7 +55,7 @@ options.
 | --- | --- | --- | --- |
 | `--collect-batch-target` | `COLLECT_BATCH_TARGET` | `5000` | Approximate target rows selected per batch, spread across eligible routes. Must be positive. |
 | `--sqs-send-concurrency` | `SQS_SEND_CONCURRENCY` | `8` | Maximum concurrent SQS send requests. |
-| `--dlq-table` | `DLQ_TABLE` | empty | Dead letter table for poison events. Empty disables the DLQ. See [Dead Letter Queue](dlq.md). |
+| `--dlq-table` | `DLQ_TABLE` | `disabled` | Dead letter table for poison events. Defaults to `disabled`; set a table name to enable. See [Dead Letter Queue](dlq.md). |
 | `--max-event-age-ms` | `MAX_EVENT_AGE_MS` | `0` | Maximum selected event age in milliseconds. `0` disables age-based poison. Requires `EVENT_TIMESTAMP`. |
 | `--error-cooldown-ms` | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors in milliseconds. |
 | `--poll-interval-ms` | `POLL_INTERVAL_MS` | `0` | Idle wait after an empty batch in milliseconds. The default keeps polling immediately. When `> 0`, the wait is interrupted by a `LISTEN`/`NOTIFY` wake-up if the optional trigger is installed. See [Notifications](notifications.md). |
