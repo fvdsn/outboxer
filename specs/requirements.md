@@ -801,18 +801,14 @@ Required counters:
 
 Backlog / remaining events:
 
-- Outboxer must not run exact `count(*)` queries on the event table for periodic
-  statistics. Exact counts are too expensive on large outbox tables.
-- If a remaining-event value is reported, it must be explicitly labeled as an
-  estimate, for example `events_remaining_estimate`.
-- The estimate may use cheap PostgreSQL metadata such as `pg_class.reltuples` for
-  the configured event table, or it may be omitted when no cheap estimate is
-  available.
-- The estimate query, if implemented, must be bounded by `PG_QUERY_TIMEOUT_MS` and
-  must not run more frequently than the stats interval.
-- Remaining-event estimates are table-level estimates. They do not need to
-  account for this instance's route ownership filters, backend enablement, or
-  unroutable rows.
+- A periodic backlog estimate (`events_remaining_estimate`) is **not currently
+  implemented**. It was removed because the periodic estimate query ran between an
+  empty select and issuing `LISTEN`, widening the window in which a new-event
+  notification is missed (up to `PG_QUERY_TIMEOUT_MS`).
+- If reintroduced, it must not run exact `count(*)` queries (too expensive on
+  large outbox tables); it must use cheap metadata such as `pg_class.reltuples`,
+  be labeled as an estimate, be bounded by `PG_QUERY_TIMEOUT_MS`, run no more often
+  than the stats interval, and must not run on the empty-select-to-`LISTEN` path.
 
 Performance constraints:
 
@@ -837,7 +833,6 @@ batches_processed=12
 batch_errors=0
 sender_errors=2
 fatal_after_commit_errors=0
-events_remaining_estimate=125000
 ```
 
 ### Changes vs. current behavior

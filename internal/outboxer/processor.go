@@ -97,7 +97,6 @@ func (a *app) processEvents(ctx context.Context) error {
 		slog.Debug("Notification wake-ups enabled", "channel", a.cfg.NotifyChannel)
 	}
 
-	var lastEstimate time.Time
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -114,11 +113,6 @@ func (a *app) processEvents(ctx context.Context) error {
 			}
 			continue
 		}
-
-		// Refresh the backlog estimate after the batch, never before: a
-		// notification wake-up must reach the select without first waiting on the
-		// estimate query, which could stall up to PG_QUERY_TIMEOUT.
-		a.maybeRefreshRemainingEstimate(ctx, &lastEstimate)
 
 		if result.selected == 0 && a.cfg.PollInterval > 0 {
 			a.waitForEvents(ctx)

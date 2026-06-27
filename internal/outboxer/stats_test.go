@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestStatsSnapshotAndReset(t *testing.T) {
@@ -27,61 +25,6 @@ func TestStatsSnapshotAndReset(t *testing.T) {
 	}
 	if reset := stats.snapshotAndReset(); reset != (statsSnapshot{}) {
 		t.Fatalf("expected counters to reset, got %#v", reset)
-	}
-}
-
-func TestEstimateRemainingEventsUsesPgClassEstimate(t *testing.T) {
-	cfg := testConfig()
-	a, mock, cleanup := newMockProcessorApp(t, cfg)
-	defer cleanup()
-
-	mock.ExpectQuery("SELECT reltuples FROM pg_catalog.pg_class WHERE oid = to_regclass($1)").
-		WithArgs(`"public"."events"`).
-		WillReturnRows(sqlmock.NewRows([]string{"reltuples"}).AddRow(1234.9))
-
-	remaining, ok := a.estimateRemainingEvents(context.Background())
-	if !ok || remaining != 1234 {
-		t.Fatalf("estimateRemainingEvents = %d, %t; want 1234, true", remaining, ok)
-	}
-}
-
-func TestEstimateRemainingEventsSkipsUnavailableEstimate(t *testing.T) {
-	cfg := testConfig()
-	a, mock, cleanup := newMockProcessorApp(t, cfg)
-	defer cleanup()
-
-	mock.ExpectQuery("SELECT reltuples FROM pg_catalog.pg_class WHERE oid = to_regclass($1)").
-		WithArgs(`"public"."events"`).
-		WillReturnError(context.DeadlineExceeded)
-
-	if remaining, ok := a.estimateRemainingEvents(context.Background()); ok || remaining != 0 {
-		t.Fatalf("estimateRemainingEvents = %d, %t; want 0, false", remaining, ok)
-	}
-}
-
-func TestMaybeRefreshRemainingEstimateCachesAndThrottles(t *testing.T) {
-	cfg := testConfig() // StatsInterval is 10s
-	a, mock, cleanup := newMockProcessorApp(t, cfg)
-	defer cleanup()
-
-	mock.ExpectQuery("SELECT reltuples FROM pg_catalog.pg_class WHERE oid = to_regclass($1)").
-		WithArgs(`"public"."events"`).
-		WillReturnRows(sqlmock.NewRows([]string{"reltuples"}).AddRow(1234.0))
-
-	var last time.Time
-	a.maybeRefreshRemainingEstimate(context.Background(), &last)
-	if remaining, ok := a.stats.loadRemaining(); !ok || remaining != 1234 {
-		t.Fatalf("loadRemaining = %d, %t; want 1234, true", remaining, ok)
-	}
-
-	// A second call within the stats interval must not query again: only one
-	// query is expected, and the cached value must be preserved.
-	a.maybeRefreshRemainingEstimate(context.Background(), &last)
-	if remaining, ok := a.stats.loadRemaining(); !ok || remaining != 1234 {
-		t.Fatalf("expected cached estimate to be preserved, got %d, %t", remaining, ok)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unexpected database interactions: %v", err)
 	}
 }
 

@@ -17,29 +17,6 @@ type appStats struct {
 	batchErrors            atomic.Int64
 	senderErrors           atomic.Int64
 	fatalAfterCommitErrors atomic.Int64
-
-	// remaining caches the latest outbox backlog estimate. It is refreshed by
-	// the processor goroutine on its own connection and read by the stats
-	// logger, so the logger never issues its own concurrent database query.
-	remaining    atomic.Int64
-	hasRemaining atomic.Bool
-}
-
-func (s *appStats) setRemaining(value int64, ok bool) {
-	if s == nil {
-		return
-	}
-	if ok {
-		s.remaining.Store(value)
-	}
-	s.hasRemaining.Store(ok)
-}
-
-func (s *appStats) loadRemaining() (int64, bool) {
-	if s == nil || !s.hasRemaining.Load() {
-		return 0, false
-	}
-	return s.remaining.Load(), true
 }
 
 type batchStats struct {
@@ -137,41 +114,5 @@ func (a *app) logStats(ctx context.Context) {
 		"sender_errors", snapshot.senderErrors,
 		"fatal_after_commit_errors", snapshot.fatalAfterCommitErrors,
 	}
-	if remaining, ok := a.stats.loadRemaining(); ok {
-		attrs = append(attrs, "events_remaining_estimate", remaining)
-	}
 	slog.Info("Statistics", attrs...)
-}
-
-// maybeRefreshRemainingEstimate refreshes the cached backlog estimate at most
-// once per stats interval. It runs on the processor goroutine and connection, so
-// it never contends with batch work or forces a second database connection. The
-// last refresh time is owned by the caller.
-func (a *app) maybeRefreshRemainingEstimate(ctx context.Context, last *time.Time) {
-	if a.stats == nil || a.cfg.StatsInterval <= 0 {
-		return
-	}
-	if !last.IsZero() && time.Since(*last) < a.cfg.StatsInterval {
-		return
-	}
-	*last = time.Now()
-	value, ok := a.estimateRemainingEvents(ctx)
-	a.stats.setRemaining(value, ok)
-}
-
-func (a *app) estimateRemainingEvents(ctx context.Context) (int64, bool) {
-	if a.db == nil || a.cfg.EventTable == "" {
-		return 0, false
-	}
-	queryCtx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
-	defer cancel()
-
-	var estimate float64
-	if err := a.db.QueryRowContext(queryCtx, "SELECT reltuples FROM pg_catalog.pg_class WHERE oid = to_regclass($1)", qualifiedIdent(a.cfg.PGSchema, a.cfg.EventTable)).Scan(&estimate); err != nil {
-		return 0, false
-	}
-	if estimate < 0 {
-		return 0, false
-	}
-	return int64(estimate), true
 }

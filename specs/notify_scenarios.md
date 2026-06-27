@@ -47,16 +47,8 @@ tests against the real binary.
 | --- | --- | --- |
 | NTF-CONN-01 | `POLL_INTERVAL_MS>0` steady state. | Exactly one DB connection is used (`MaxOpenConns(1)`); the listener borrows it only while idle and releases it before the next batch. |
 | NTF-CONN-02 | The connection drops mid-wait. | The wait surfaces an error; the next idle cycle borrows a fresh connection and re-`LISTEN`s; processing resumes; the sweep covers the gap; no crash. |
-| NTF-CONN-03 | Statistics logging fires while the listener is mid-wait. | The stats logger reads the cached estimate without a database query, so it neither blocks nor needs a second connection. |
+| NTF-CONN-03 | Statistics logging fires while the listener is mid-wait. | The stats logger reads only in-memory counters, so it neither blocks nor needs a second connection. |
 | NTF-CONN-04 | Postgres fronted by a transaction-pooling pooler (e.g. pgbouncer). | Documented as unsupported for `LISTEN`; the direct single connection is unaffected. |
-
-## Statistics Estimate
-
-| ID | Scenario | Expected |
-| --- | --- | --- |
-| NTF-STATS-01 | The processor refreshes the backlog estimate. | The estimate is queried on the processor connection and cached; `events_remaining_estimate` reflects it. |
-| NTF-STATS-02 | Two refreshes occur within one `STATS_INTERVAL_MS`. | Only one query runs; the cached value is reused (throttled). |
-| NTF-STATS-03 | The estimate query is unavailable. | The cached value reports unavailable and the stats field is omitted. |
 
 ## Watchdog
 

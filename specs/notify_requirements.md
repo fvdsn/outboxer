@@ -103,12 +103,10 @@ Requirements and rationale:
 same one that waits for notifications. Outboxer keeps a **single database
 connection** (`MaxOpenConns(1)`); the listener does not add a second one.
 
-The naive obstacle is the periodic statistics query
-(`estimateRemainingEvents`): if it ran in a separate goroutine, a blocking
-`WaitForNotification` holding the only connection for up to `POLL_INTERVAL_MS`
-would starve it, which would force a second connection. This is avoided by moving
-the estimate onto the processor (see [Statistics Estimate](#statistics-estimate))
-so nothing queries the database concurrently with the processor.
+The statistics logger runs in its own goroutine but never touches the database —
+it reads only in-memory counters — so nothing queries the database concurrently
+with the processor. A single connection therefore suffices even while the
+listener blocks on `WaitForNotification` for up to `POLL_INTERVAL_MS`.
 
 Requirements:
 
@@ -134,21 +132,6 @@ Requirements:
 - When a wait returns because a notification arrived, the listener drains any
   further buffered notifications without blocking so a burst of inserts collapses
   into a single processing cycle.
-
-## Statistics Estimate
-
-The outbox backlog estimate (`events_remaining_estimate`, a cheap
-`pg_class.reltuples` read) must not be queried by the statistics logger in its own
-goroutine, because that concurrent database access is what would otherwise force a
-second connection.
-
-- The processor refreshes the estimate on its own connection, at most once per
-  `STATS_INTERVAL_MS`, and caches it.
-- The refresh runs **after** a batch completes, never before the next select, so a
-  notification wake-up reaches the select without first waiting on the estimate
-  query (which could stall up to `PG_QUERY_TIMEOUT`).
-- The statistics logger reads the cached value and never touches the database.
-- When the estimate is unavailable the field is omitted, as before.
 
 ## Watchdog Interaction
 

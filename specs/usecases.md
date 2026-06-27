@@ -387,8 +387,7 @@ identifier lengths.
 | STATS-COUNT-07 | Sender returns a non-fatal error. | `sender_errors` increases; `events_sent` still reflects provider-accepted events. |
 | STATS-COUNT-08 | Sender returns fatal-after-commit. | `fatal_after_commit_errors` increases before processing stops. |
 | STATS-COUNT-09 | A stats log line is emitted. | Interval counters reset for the next stats interval. |
-| STATS-DB-01 | Remaining-event estimate is enabled/implemented. | It uses a cheap estimate such as PostgreSQL metadata, not `count(*)`. |
-| STATS-DB-02 | Estimate query fails or times out. | Statistics log is still emitted without `events_remaining_estimate` or with an explicit unavailable value; processing continues. |
+| STATS-DB-01 | Statistics are collected during an interval. | No database query is issued for statistics; the backlog estimate is not implemented (removed to avoid widening the notification miss window). |
 | STATS-BACKEND-01 | Pub/Sub and SQS both process events in the interval. | Statistics remain high-level; no backend-specific stats code owns log emission. |
 | STATS-PERF-01 | Hot loop processes many small batches. | Counter updates are in-memory and do not add database/provider calls per batch. |
 
