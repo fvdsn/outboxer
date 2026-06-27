@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 )
 
 // runInit provisions the database objects the relay needs. Without --apply it
@@ -214,7 +215,7 @@ func applyInit(ctx context.Context, cfg appConfig) error {
 	defer func() { _ = tx.Rollback() }()
 
 	for _, stmt := range buildInitStatements(cfg, false) {
-		if _, err := tx.ExecContext(ctx, stmt.sql); err != nil {
+		if err := execInitStatement(ctx, tx, cfg.PGQueryTimeout, stmt.sql); err != nil {
 			return fmt.Errorf("apply provisioning statement: %w", err)
 		}
 	}
@@ -223,6 +224,9 @@ func applyInit(ctx context.Context, cfg appConfig) error {
 		return fmt.Errorf("post-apply validation: %w", err)
 	}
 
+	// tx.Commit takes no context (matching the relay), so it is not bounded by
+	// PG_QUERY_TIMEOUT; BeginTx uses the parent context because that context
+	// governs the whole transaction's lifetime.
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
@@ -231,10 +235,21 @@ func applyInit(ctx context.Context, cfg appConfig) error {
 	return nil
 }
 
+// execInitStatement runs a single provisioning statement bounded by
+// PG_QUERY_TIMEOUT, so a conflicting lock cannot hang provisioning indefinitely.
+func execInitStatement(ctx context.Context, tx *sql.Tx, timeout time.Duration, query string) error {
+	ctx, cancel := withTimeout(ctx, timeout)
+	defer cancel()
+	_, err := tx.ExecContext(ctx, query)
+	return err
+}
+
 // validateProvisionedSchema runs the relay's own shape checks against the
 // uncommitted transaction, so a successful apply guarantees a relay-ready schema.
 func validateProvisionedSchema(ctx context.Context, tx *sql.Tx, cfg appConfig) error {
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT 0", qualifiedIdent(cfg.PGSchema, cfg.EventTable)))
+	columnsCtx, cancel := withTimeout(ctx, cfg.PGQueryTimeout)
+	defer cancel()
+	rows, err := tx.QueryContext(columnsCtx, fmt.Sprintf("SELECT * FROM %s LIMIT 0", qualifiedIdent(cfg.PGSchema, cfg.EventTable)))
 	if err != nil {
 		return err
 	}
@@ -250,7 +265,9 @@ func validateProvisionedSchema(ctx context.Context, tx *sql.Tx, cfg appConfig) e
 	}
 
 	if cfg.DLQTable != "" {
-		metadata, err := loadDLQTableMetadata(ctx, tx, cfg.PGSchema, cfg.DLQTable)
+		dlqCtx, cancel := withTimeout(ctx, cfg.PGQueryTimeout)
+		defer cancel()
+		metadata, err := loadDLQTableMetadata(dlqCtx, tx, cfg.PGSchema, cfg.DLQTable)
 		if err != nil {
 			return err
 		}
