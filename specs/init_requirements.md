@@ -101,7 +101,9 @@ files.
 - In **apply** mode, the real `PG_PASSWORD` is used. Because DDL cannot be
   bind-parameterized, the value is interpolated as a properly-escaped SQL string
   literal (single quotes doubled), reusing the existing quoting helpers
-  (`ident`, `sqlStringLiteral`). It is never logged.
+  (`ident`, `sqlStringLiteral`). The surrounding `DO` body uses a fresh random
+  tagged dollar quote so dollar sequences in the password cannot terminate it.
+  The password is never logged.
 
 ## Generated Objects
 
@@ -209,8 +211,9 @@ producers.
 - Created with `LOGIN` and `PG_PASSWORD` **only if it does not already exist**.
   Existing roles are left untouched — `init` never `ALTER`s an existing role's
   password (least surprise; rotation is out of scope). `CREATE ROLE` has no
-  `IF NOT EXISTS`, so creation is guarded by a `DO $$ ... IF NOT EXISTS (SELECT
-  FROM pg_roles ...) ... $$` block.
+  `IF NOT EXISTS`, so creation is guarded by a randomly tagged
+  `DO $outboxer_…$ ... IF NOT EXISTS (SELECT FROM pg_roles ...)
+  ... $outboxer_…$` block.
 - Granted the minimal runtime privileges:
   - `USAGE ON SCHEMA <PG_SCHEMA>`.
   - `SELECT, DELETE` on `<EVENT_TABLE>` — the relay selects rows and deletes

@@ -2,6 +2,7 @@ package outboxer
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"flag"
@@ -136,12 +137,13 @@ func runRoleStatement(cfg appConfig, redactSecrets bool) initStatement {
 	} else if cfg.PGPassword != "" {
 		password = sqlStringLiteral(cfg.PGPassword)
 	}
-	sql := fmt.Sprintf("DO $$ BEGIN\n"+
+	tag := "$outboxer_" + rand.Text() + "$"
+	sql := fmt.Sprintf("DO %s BEGIN\n"+
 		"  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = %s) THEN\n"+
 		"    CREATE ROLE %s LOGIN PASSWORD %s;\n"+
 		"  END IF;\n"+
-		"END $$;",
-		sqlStringLiteral(cfg.PGUser), ident(cfg.PGUser), password)
+		"END %s;",
+		tag, sqlStringLiteral(cfg.PGUser), ident(cfg.PGUser), password, tag)
 	return initStatement{comment: comment, sql: sql}
 }
 

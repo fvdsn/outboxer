@@ -103,8 +103,15 @@ func TestInitScriptManagesRunRoleWithInitUser(t *testing.T) {
 
 	script := initScript(cfg, true)
 
-	assertContains(t, script, "DO $$ BEGIN")
+	assertContains(t, script, "DO $outboxer_")
 	assertContains(t, script, `CREATE ROLE "outboxer" LOGIN PASSWORD NULL`)
+	openStart := strings.Index(script, "DO ") + len("DO ")
+	openEnd := strings.Index(script[openStart:], " BEGIN")
+	if openEnd < 0 {
+		t.Fatalf("expected tagged DO block\n--- script ---\n%s", script)
+	}
+	tag := script[openStart : openStart+openEnd]
+	assertContains(t, script, "END "+tag+";")
 	assertContains(t, script, `GRANT USAGE ON SCHEMA "public" TO "outboxer"`)
 	assertContains(t, script, `GRANT SELECT, DELETE ON "public"."events" TO "outboxer"`)
 	assertContains(t, script, `GRANT UPDATE ("id") ON "public"."events" TO "outboxer"`)
@@ -190,10 +197,11 @@ func TestInitPrintRedactsPassword(t *testing.T) {
 func TestInitApplyEscapesPassword(t *testing.T) {
 	cfg := baselineInitConfig()
 	cfg.PGInitUser = "admin"
-	cfg.PGPassword = "a'b"
+	cfg.PGPassword = "a'b$$c"
 
 	applied := initScript(cfg, false)
-	assertContains(t, applied, `LOGIN PASSWORD 'a''b'`)
+	assertContains(t, applied, `LOGIN PASSWORD 'a''b$$c'`)
+	assertNotContains(t, applied, "DO $$")
 }
 
 func TestValidateConfigRejectsDuplicateColumnsInEveryMode(t *testing.T) {

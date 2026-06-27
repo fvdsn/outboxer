@@ -80,7 +80,7 @@ the real binary.
 | INIT-ROLE-02 | `PG_INIT_USER` set, run role already exists. | Role is not recreated and its password is left untouched; grants are (re)applied idempotently. |
 | INIT-ROLE-03 | `PG_INIT_USER` unset. | `--apply` connects as `PG_USER`/`PG_PASSWORD`; only schema objects are created; no role is created and no extra grants are issued. |
 | INIT-ROLE-04 | `DLQ_TABLE` set, `PG_INIT_USER` set. | Run role is additionally granted `INSERT` on the DLQ table. |
-| INIT-ROLE-05 | Run role's `PG_PASSWORD` is interpolated into `CREATE ROLE`. | The literal is properly escaped (single quotes doubled); the password is never logged. |
+| INIT-ROLE-05 | Run role's `PG_PASSWORD`, including quotes or `$$`, is interpolated into `CREATE ROLE`. | The literal is properly escaped (single quotes doubled), and a fresh random tagged dollar quote safely encloses the `DO` body; the password is never logged. |
 | INIT-PROD-01 | `PG_PRODUCER_ROLES` lists one existing role. | That role is granted `USAGE` on `PG_SCHEMA` and `SELECT, INSERT` on the qualified outbox table; never `DELETE`. |
 | INIT-PROD-02 | `PG_PRODUCER_ROLES` lists multiple comma-separated roles. | Each existing role receives the grants. |
 | INIT-PROD-03 | A named producer role does not exist (`--apply`). | Apply fails with a clear message naming the missing role; transaction rolls back. |
