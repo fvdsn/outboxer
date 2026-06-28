@@ -2,6 +2,7 @@ package sqs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -94,8 +95,24 @@ func fromColumns(columns map[string]any) provider.Event {
 		Payload:     []byte(payload),
 		Timestamp:   timestamp,
 		Destination: destination,
-		Options:     columns["options"],
+		Options:     sectionOptions(columns["options"]),
 	}
+}
+
+// sectionOptions mirrors the relay core: it parses the raw options column and
+// extracts this provider's section, the way providerEvent does in production.
+func sectionOptions(raw any) provider.Options {
+	var root map[string]any
+	switch typed := raw.(type) {
+	case map[string]any:
+		root = typed
+	case []byte:
+		_ = json.Unmarshal(typed, &root)
+	case string:
+		_ = json.Unmarshal([]byte(typed), &root)
+	}
+	values, _ := root[Target].(map[string]any)
+	return provider.Options{Values: values}
 }
 
 func testEvent(id, target, destination, orderingKey string) provider.Event {

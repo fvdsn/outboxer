@@ -215,17 +215,12 @@ type pubsubPendingPublish struct {
 
 func (a *sender) parsePubsubCandidate(ctx context.Context, evt provider.Event, callbacks provider.Callbacks) (pubsubCandidateEvent, bool) {
 	topicName := evt.Destination
-	options, err := provider.BackendOptions(evt.Options, Target)
-	if err != nil {
-		a.rejectMalformedOptions(ctx, evt, topicName, "", err, callbacks)
-		return pubsubCandidateEvent{}, false
-	}
-	orderingKey, err := options.String("orderingKey")
+	orderingKey, err := evt.Options.String("orderingKey")
 	if err != nil {
 		a.rejectMalformedOptions(ctx, evt, topicName, "orderingKey", err, callbacks)
 		return pubsubCandidateEvent{}, false
 	}
-	return pubsubCandidateEvent{evt: evt, options: options, topic: topicName, orderingKey: orderingKey}, true
+	return pubsubCandidateEvent{evt: evt, options: evt.Options, topic: topicName, orderingKey: orderingKey}, true
 }
 
 func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandidateEvent, callbacks provider.Callbacks) (pubsubPreparedEvent, bool) {
@@ -237,7 +232,7 @@ func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandida
 	}
 	id := evt.ID
 	data := evt.Payload
-	latency := provider.Latency(evt.Timestamp)
+	latency := evt.Latency()
 	var timestamp any
 	if !evt.Timestamp.IsZero() {
 		timestamp = evt.Timestamp
@@ -322,10 +317,7 @@ func (a *sender) logPubsubFailure(ctx context.Context, prepared pubsubPreparedEv
 }
 
 func (a *sender) rejectMalformedOptions(ctx context.Context, evt provider.Event, destination string, field string, err error, callbacks provider.Callbacks) {
-	signature := fmt.Sprintf("%s|%s|malformed-options", Target, destination)
-	if field != "" {
-		signature = fmt.Sprintf("%s|%s|%s|malformed-options", Target, destination, field)
-	}
+	signature := fmt.Sprintf("%s|%s|%s|malformed-options", Target, destination, field)
 	callbacks.AddPoisonID(evt.ID, err.Error())
 	logFailure(ctx, callbacks, "Failed to send event",
 		signature,

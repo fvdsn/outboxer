@@ -1,6 +1,7 @@
 package outboxer
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -21,13 +22,68 @@ type event struct {
 
 func providerEvent(evt event, cfg appConfig) provider.Event {
 	timestamp, _ := eventTimestamp(evt.columns[cfg.EventTimestamp])
+	// Structurally malformed options are dead-lettered before dispatch (see
+	// processEventBatch), so dispatched events always carry a valid section.
+	options, _ := eventOptions(evt.columns[cfg.EventOptions], evt.route.target)
 	return provider.Event{
 		ID:          evt.columns[cfg.EventID],
 		Payload:     valueBytes(evt.columns[cfg.EventPayload]),
 		Timestamp:   timestamp,
 		Destination: evt.route.destination,
-		Options:     evt.columns[cfg.EventOptions],
+		Options:     options,
 	}
+}
+
+// eventOptions parses the raw options column and extracts the section belonging
+// to target. It errors only on structural problems (invalid JSON, a non-object
+// root, or a non-object section); per-field validation is each provider's job.
+func eventOptions(raw any, target string) (provider.Options, error) {
+	root, err := optionsRoot(raw)
+	if err != nil {
+		return provider.Options{}, err
+	}
+	section, ok := root[target]
+	if !ok || section == nil {
+		return provider.Options{}, nil
+	}
+	values, ok := provider.Object(section)
+	if !ok {
+		return provider.Options{}, fmt.Errorf("%w: %s section must be an object", provider.ErrMalformedOptions, target)
+	}
+	return provider.Options{Values: values}, nil
+}
+
+func optionsRoot(value any) (map[string]any, error) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, nil
+	case map[string]any:
+		return typed, nil
+	case []byte:
+		return parseOptionsJSON(typed)
+	case string:
+		return parseOptionsJSON([]byte(typed))
+	default:
+		return nil, fmt.Errorf("%w: options column must be an object", provider.ErrMalformedOptions)
+	}
+}
+
+func parseOptionsJSON(content []byte) (map[string]any, error) {
+	if len(content) == 0 {
+		return nil, nil
+	}
+	var decoded any
+	if err := json.Unmarshal(content, &decoded); err != nil {
+		return nil, fmt.Errorf("%w: %w", provider.ErrMalformedOptions, err)
+	}
+	if decoded == nil {
+		return nil, nil
+	}
+	options, ok := decoded.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%w: options column must be an object", provider.ErrMalformedOptions)
+	}
+	return options, nil
 }
 
 func eventValue(evt event, column string) any {

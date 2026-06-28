@@ -203,6 +203,11 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		if evt.route.target == "" {
 			return result, fmtDBError(fmt.Errorf("selected event %v has no resolved route", eventValue(evt, a.cfg.EventID)))
 		}
+		if _, err := eventOptions(evt.columns[a.cfg.EventOptions], evt.route.target); err != nil {
+			poisonEvents = append(poisonEvents, poisonEvent{evt: evt, error: err.Error()})
+			deleteIDs = append(deleteIDs, eventValue(evt, a.cfg.EventID))
+			continue
+		}
 		eventsByTarget[evt.route.target] = append(eventsByTarget[evt.route.target], evt)
 	}
 

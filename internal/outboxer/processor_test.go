@@ -469,6 +469,35 @@ func TestProcessOneBatchDeletesExpiredEventWithoutProviderCall(t *testing.T) {
 	assertStatsSnapshot(t, a.stats.snapshotAndReset(), statsSnapshot{selected: 2, sent: 1, poison: 1, batchesProcessed: 1})
 }
 
+func TestProcessOneBatchDeadLettersStructurallyMalformedOptionsWithoutProviderCall(t *testing.T) {
+	cfg := testConfig()
+	cfg.PubSubEnabled = false
+	sqs := &fakeSQSPublisher{autoReply: true}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	setTestSQSProvider(a, sqs)
+
+	rows := mockEventRows().
+		AddRow(mockEventRow("bad", "sqs", "queue-a", "payload", []byte("[]"))...).
+		AddRow(mockEventRow("good", "sqs", "queue-a", "payload", nil)...)
+	mock.ExpectBegin()
+	expectSelectEvents(mock, a).WillReturnRows(rows)
+	mock.ExpectExec(deleteTwoSQL).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 2 {
+		t.Fatalf("expected two selected events, got %d", result.selected)
+	}
+	if len(sqs.requests) != 1 || len(sqs.requests[0].entries) != 1 || sqs.requests[0].entries[0].ID != "good" {
+		t.Fatalf("expected only the well-formed event to reach the provider, got %#v", sqs.requests)
+	}
+	assertStatsSnapshot(t, a.stats.snapshotAndReset(), statsSnapshot{selected: 2, sent: 1, poison: 1, batchesProcessed: 1})
+}
+
 func TestExpiredEventBoundaryAndInvalidTimestamps(t *testing.T) {
 	cfg := testConfig()
 	cfg.MaxEventAge = time.Minute

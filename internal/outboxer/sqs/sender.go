@@ -245,22 +245,16 @@ func (a *sender) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue
 }
 
 func (a *sender) parseSQSCandidate(ctx context.Context, evt provider.Event, queueURL string, callbacks provider.Callbacks) (sqsCandidateEvent, bool) {
-	options, err := provider.BackendOptions(evt.Options, Target)
-	if err != nil {
-		a.rejectMalformedOptions(ctx, evt, queueURL, "", err, callbacks)
-		return sqsCandidateEvent{}, false
-	}
-	orderingKey, err := options.String("messageGroupId")
+	orderingKey, err := evt.Options.String("messageGroupId")
 	if err != nil {
 		a.rejectMalformedOptions(ctx, evt, queueURL, "messageGroupId", err, callbacks)
 		return sqsCandidateEvent{}, false
 	}
 
-	id := evt.ID
 	return sqsCandidateEvent{
 		evt:         evt,
-		options:     options,
-		id:          id,
+		options:     evt.Options,
+		id:          evt.ID,
 		orderingKey: orderingKey,
 	}, true
 }
@@ -290,7 +284,7 @@ func (a *sender) prepareSQSEvent(ctx context.Context, candidate sqsCandidateEven
 	eventID := fmt.Sprint(candidate.id)
 	entryID := providerSafeID(eventID, sqsBatchEntryIDPattern)
 	data := candidate.evt.Payload
-	latency := provider.Latency(candidate.evt.Timestamp)
+	latency := candidate.evt.Latency()
 	var timestamp any
 	if !candidate.evt.Timestamp.IsZero() {
 		timestamp = candidate.evt.Timestamp
@@ -443,10 +437,7 @@ func (a *sender) sendSQSBatchIsolated(ctx context.Context, queueURL string, even
 }
 
 func (a *sender) rejectMalformedOptions(ctx context.Context, evt provider.Event, destination string, field string, err error, callbacks provider.Callbacks) {
-	signature := fmt.Sprintf("%s|%s|malformed-options", Target, destination)
-	if field != "" {
-		signature = fmt.Sprintf("%s|%s|%s|malformed-options", Target, destination, field)
-	}
+	signature := fmt.Sprintf("%s|%s|%s|malformed-options", Target, destination, field)
 	callbacks.AddPoisonID(evt.ID, err.Error())
 	logFailure(ctx, callbacks, "Failed to send event",
 		signature,
