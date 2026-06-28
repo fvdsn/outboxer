@@ -66,7 +66,7 @@ type BatchEntry struct {
 type sqsCandidateEvent struct {
 	evt         provider.Event
 	options     provider.Options
-	id          any
+	id          provider.EventID
 	orderingKey string
 }
 
@@ -78,7 +78,7 @@ func (evt sqsCandidateEvent) fifoGroupID() string {
 }
 
 type sqsPreparedEvent struct {
-	id          any
+	id          provider.EventID
 	timestamp   any
 	latency     any
 	payloadLen  int

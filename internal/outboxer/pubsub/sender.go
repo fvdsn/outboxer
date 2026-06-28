@@ -193,7 +193,7 @@ func (a *sender) sendPubsubIsolated(ctx context.Context, prepared pubsubPrepared
 }
 
 type pubsubPreparedEvent struct {
-	id         any
+	id         provider.EventID
 	timestamp  any
 	latency    any
 	message    Message

@@ -190,7 +190,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 
 	eventsByTarget := map[string][]event{}
 	poisonEvents := []poisonEvent{}
-	deleteIDs := []any{}
+	deleteIDs := []provider.EventID{}
 	for _, evt := range events {
 		if a.isExpiredEvent(evt, time.Now().UTC()) {
 			poisonEvents = append(poisonEvents, poisonEvent{evt: evt, error: "Event expired by MAX_EVENT_AGE_MS"})
@@ -337,7 +337,7 @@ func newSenderCollector(ctx context.Context, a *app, events []event) *senderColl
 	}
 }
 
-func (c *senderCollector) record(id any, reason string, poisoned bool) {
+func (c *senderCollector) record(id provider.EventID, reason string, poisoned bool) {
 	markProcessorProgress()
 	key := eventIDKey(id)
 
@@ -364,11 +364,11 @@ func (c *senderCollector) record(id any, reason string, poisoned bool) {
 	c.mu.Unlock()
 }
 
-func (c *senderCollector) confirm(id any) {
+func (c *senderCollector) confirm(id provider.EventID) {
 	c.record(id, "", false)
 }
 
-func (c *senderCollector) poison(id any, reason string) {
+func (c *senderCollector) poison(id provider.EventID, reason string) {
 	c.record(id, reason, true)
 }
 
@@ -396,7 +396,7 @@ func fmtDBError(err error) error {
 	return errors.Join(errDatabaseBatch, err)
 }
 
-func eventIDKey(id any) string {
+func eventIDKey(id provider.EventID) string {
 	return fmt.Sprintf("%T:%v", id, id)
 }
 
