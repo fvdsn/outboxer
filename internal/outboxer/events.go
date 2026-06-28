@@ -23,7 +23,6 @@ func providerEvent(evt event, cfg appConfig) provider.Event {
 		ID:          evt.columns[cfg.EventID],
 		Payload:     provider.ValueBytes(evt.columns[cfg.EventPayload]),
 		Timestamp:   evt.columns[cfg.EventTimestamp],
-		Target:      provider.ValueString(evt.columns[cfg.EventTarget]),
 		Destination: evt.route.destination,
 		Options:     evt.columns[cfg.EventOptions],
 	}

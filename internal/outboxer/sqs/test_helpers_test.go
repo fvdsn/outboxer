@@ -90,7 +90,6 @@ func fromColumns(columns map[string]any) provider.Event {
 		ID:          columns["id"],
 		Payload:     provider.ValueBytes(columns["payload"]),
 		Timestamp:   columns["timestamp"],
-		Target:      provider.ValueString(columns["target"]),
 		Destination: provider.ValueString(columns["destination"]),
 		Options:     columns["options"],
 	}

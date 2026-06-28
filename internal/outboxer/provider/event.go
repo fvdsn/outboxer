@@ -18,7 +18,6 @@ type Event struct {
 	ID          any
 	Payload     []byte
 	Timestamp   any
-	Target      string
 	Destination string
 	Options     any
 }

@@ -196,7 +196,6 @@ type pubsubPreparedEvent struct {
 	id         any
 	timestamp  any
 	latency    any
-	target     string
 	message    Message
 	startedAt  time.Time
 	payloadLen int
@@ -240,7 +239,6 @@ func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandida
 	id := evt.ID
 	data := evt.Payload
 	latency := provider.Latency(timestamp)
-	target := evt.Target
 
 	stringAttributes, deletedAttributes := sanitizeStringAttributes(attributes)
 	if len(deletedAttributes) != 0 {
@@ -255,7 +253,6 @@ func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandida
 		id:         id,
 		timestamp:  timestamp,
 		latency:    latency,
-		target:     target,
 		payloadLen: len(data),
 		message: Message{
 			Topic:       candidate.topic,
@@ -287,7 +284,7 @@ func (a *sender) publishPubsubEvent(ctx context.Context, prepared pubsubPrepared
 		"event_payload_size", prepared.payloadLen,
 		"event_ordering_key", prepared.message.OrderingKey,
 		"event_attributes", prepared.message.Attributes,
-		"event_target", prepared.target,
+		"event_target", Target,
 		"event_destination", prepared.message.Topic,
 	)
 	return prepared, a.publisher.Publish(ctx, prepared.message)
@@ -303,7 +300,7 @@ func (a *sender) markPubsubDone(prepared pubsubPreparedEvent, messageID string, 
 		"event_published_id", messageID,
 		"event_ordering_key", prepared.message.OrderingKey,
 		"event_attributes", prepared.message.Attributes,
-		"event_target", prepared.target,
+		"event_target", Target,
 		"event_destination", prepared.message.Topic,
 		"publish_latency", time.Since(prepared.startedAt).Seconds(),
 	)
@@ -315,7 +312,7 @@ func (a *sender) logPubsubFailure(ctx context.Context, prepared pubsubPreparedEv
 		"event_id", prepared.id,
 		"event_ordering_key", prepared.message.OrderingKey,
 		"event_attributes", prepared.message.Attributes,
-		"event_target", prepared.target,
+		"event_target", Target,
 		"event_destination", prepared.message.Topic,
 		"error", err.Error(),
 	)
