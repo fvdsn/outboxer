@@ -35,10 +35,6 @@ var (
 
 // Config contains the relay settings needed by the SQS provider.
 type Config struct {
-	EventID                    string
-	EventTimestamp             string
-	EventPayload               string
-	EventOptions               string
 	SQSSendConcurrency         int
 	PublishTimeout             time.Duration
 	SQSAPIEndpoint             string
@@ -155,7 +151,7 @@ func (a *sender) sendSQSEventsWithCallbacks(ctx context.Context, events []provid
 func (a *sender) sendSQSQueueEvents(ctx context.Context, sem chan struct{}, queue string, events []provider.Event, callbacks provider.Callbacks) error {
 	if !validSQSQueueURL(queue) {
 		for _, evt := range events {
-			callbacks.AddPoisonID(provider.Value(evt, a.cfg.EventID), "SQS queue URL is syntactically invalid")
+			callbacks.AddPoisonID(evt.ID, "SQS queue URL is syntactically invalid")
 		}
 		logFailure(ctx, callbacks, "Failed to send event batch",
 			fmt.Sprintf("%s|%s|invalid-queue-url", Target, queue),
@@ -249,7 +245,7 @@ func (a *sender) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue
 }
 
 func (a *sender) parseSQSCandidate(ctx context.Context, evt provider.Event, queueURL string, callbacks provider.Callbacks) (sqsCandidateEvent, bool) {
-	options, err := provider.BackendOptions(evt, a.cfg.EventOptions, Target)
+	options, err := provider.BackendOptions(evt.Options, Target)
 	if err != nil {
 		a.rejectMalformedOptions(ctx, evt, queueURL, "", err, callbacks)
 		return sqsCandidateEvent{}, false
@@ -260,7 +256,7 @@ func (a *sender) parseSQSCandidate(ctx context.Context, evt provider.Event, queu
 		return sqsCandidateEvent{}, false
 	}
 
-	id := provider.Value(evt, a.cfg.EventID)
+	id := evt.ID
 	return sqsCandidateEvent{
 		evt:         evt,
 		options:     options,
@@ -291,10 +287,10 @@ func (a *sender) prepareSQSEvent(ctx context.Context, candidate sqsCandidateEven
 		return sqsPreparedEvent{}, false
 	}
 
-	timestamp := provider.Value(candidate.evt, a.cfg.EventTimestamp)
+	timestamp := candidate.evt.Timestamp
 	eventID := fmt.Sprint(candidate.id)
 	entryID := providerSafeID(eventID, sqsBatchEntryIDPattern)
-	data := provider.Bytes(candidate.evt, a.cfg.EventPayload)
+	data := candidate.evt.Payload
 	latency := provider.Latency(timestamp)
 	if isSQSPoison(data, attributes, candidate.orderingKey, deduplicationID, delaySeconds) {
 		callbacks.AddPoisonID(candidate.id, "Event is invalid for SQS")
@@ -448,10 +444,10 @@ func (a *sender) rejectMalformedOptions(ctx context.Context, evt provider.Event,
 	if field != "" {
 		signature = fmt.Sprintf("%s|%s|%s|malformed-options", Target, destination, field)
 	}
-	callbacks.AddPoisonID(provider.Value(evt, a.cfg.EventID), err.Error())
+	callbacks.AddPoisonID(evt.ID, err.Error())
 	logFailure(ctx, callbacks, "Failed to send event",
 		signature,
-		"event_id", provider.Value(evt, a.cfg.EventID),
+		"event_id", evt.ID,
 		"event_destination", destination,
 		"error", err.Error(),
 	)

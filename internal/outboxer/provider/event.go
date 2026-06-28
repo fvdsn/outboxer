@@ -10,22 +10,17 @@ import (
 // ErrMalformedOptions identifies invalid provider-specific event options.
 var ErrMalformedOptions = errors.New("malformed event options")
 
-// Event is the provider-facing view of a selected outbox row. Columns remain
-// keyed by their configured database names; Destination is the route already
-// resolved by the collection query.
+// Event is the provider-facing view of a selected outbox row. The relay core
+// resolves each configured column into a role before dispatch, so providers
+// never deal with column names; Destination is the route already resolved by
+// the collection query, and Options is the raw value of the options column.
 type Event struct {
-	Columns     map[string]any
+	ID          any
+	Payload     []byte
+	Timestamp   any
+	Target      string
 	Destination string
-}
-
-// Value returns the raw value of a configured event column.
-func Value(evt Event, column string) any {
-	return evt.Columns[column]
-}
-
-// String returns an event column as a string.
-func String(evt Event, column string) string {
-	return ValueString(Value(evt, column))
+	Options     any
 }
 
 // ValueString converts a database value to its string representation.
@@ -44,9 +39,8 @@ func ValueString(value any) string {
 	}
 }
 
-// Bytes returns an event column as bytes.
-func Bytes(evt Event, column string) []byte {
-	value := Value(evt, column)
+// ValueBytes converts a database value to its byte representation.
+func ValueBytes(value any) []byte {
 	switch typed := value.(type) {
 	case nil:
 		return nil
@@ -64,9 +58,10 @@ type Options struct {
 	Values map[string]any
 }
 
-// BackendOptions extracts and validates one provider's options section.
-func BackendOptions(evt Event, column string, backend string) (Options, error) {
-	root, err := optionsObject(evt, column)
+// BackendOptions extracts and validates one provider's options section from the
+// raw options column value.
+func BackendOptions(options any, backend string) (Options, error) {
+	root, err := optionsObject(options)
 	if err != nil {
 		return Options{}, err
 	}
@@ -137,11 +132,7 @@ func Timestamp(value any) (time.Time, bool) {
 	}
 }
 
-func optionsObject(evt Event, column string) (map[string]any, error) {
-	if column == "" {
-		return nil, nil
-	}
-	value := Value(evt, column)
+func optionsObject(value any) (map[string]any, error) {
 	switch typed := value.(type) {
 	case nil:
 		return nil, nil

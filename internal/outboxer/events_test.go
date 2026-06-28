@@ -16,7 +16,7 @@ func TestEventBackendOptionsParseSelectedBackend(t *testing.T) {
 		"options": []byte(`{"pubsub":{"orderingKey":"key-a","attributes":{"trace":"abc"}},"sqs":{"messageGroupId":"group-a"}}`),
 	}}
 
-	pubsub, err := provider.BackendOptions(providerEvent(evt), cfg.EventOptions, eventTargetPubSub)
+	pubsub, err := provider.BackendOptions(providerEvent(evt, cfg).Options, eventTargetPubSub)
 	if err != nil {
 		t.Fatalf("eventPubSubOptions returned error: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestEventBackendOptionsParseSelectedBackend(t *testing.T) {
 		t.Fatalf("unexpected attributes: %#v", attributes)
 	}
 
-	sqs, err := provider.BackendOptions(providerEvent(evt), cfg.EventOptions, eventTargetSQS)
+	sqs, err := provider.BackendOptions(providerEvent(evt, cfg).Options, eventTargetSQS)
 	if err != nil {
 		t.Fatalf("eventSQSOptions returned error: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestEventBackendOptionsTreatsMissingOrDisabledOptionsAsEmpty(t *testing.T) 
 		{columns: map[string]any{"options": nil}},
 		{columns: map[string]any{"options": []byte(`null`)}},
 	} {
-		options, err := provider.BackendOptions(providerEvent(evt), cfg.EventOptions, eventTargetPubSub)
+		options, err := provider.BackendOptions(providerEvent(evt, cfg).Options, eventTargetPubSub)
 		if err != nil {
 			t.Fatalf("eventPubSubOptions returned error: %v", err)
 		}
@@ -66,7 +66,7 @@ func TestEventBackendOptionsTreatsMissingOrDisabledOptionsAsEmpty(t *testing.T) 
 	}
 
 	cfg.EventOptions = ""
-	options, err := provider.BackendOptions(providerEvent(event{columns: map[string]any{"options": []byte(`{"sqs":{"messageGroupId":"ignored"}}`)}}), cfg.EventOptions, eventTargetSQS)
+	options, err := provider.BackendOptions(providerEvent(event{columns: map[string]any{"options": []byte(`{"sqs":{"messageGroupId":"ignored"}}`)}}, cfg).Options, eventTargetSQS)
 	if err != nil {
 		t.Fatalf("eventSQSOptions returned error: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestEventBackendOptionsRejectsMalformedOptions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			options, err := provider.BackendOptions(providerEvent(tt.evt), cfg.EventOptions, eventTargetPubSub)
+			options, err := provider.BackendOptions(providerEvent(tt.evt, cfg).Options, eventTargetPubSub)
 			if err == nil && tt.check != nil {
 				err = tt.check(options)
 			}
@@ -117,7 +117,7 @@ func TestEventBackendOptionsRejectsMalformedOptions(t *testing.T) {
 
 func TestEventBackendOptionsIgnoresUnknownKeys(t *testing.T) {
 	cfg := testConfig()
-	options, err := provider.BackendOptions(providerEvent(event{columns: map[string]any{"options": []byte(`{"pubsub":{"unknown":42}}`)}}), cfg.EventOptions, eventTargetPubSub)
+	options, err := provider.BackendOptions(providerEvent(event{columns: map[string]any{"options": []byte(`{"pubsub":{"unknown":42}}`)}}, cfg).Options, eventTargetPubSub)
 	if err != nil {
 		t.Fatalf("eventPubSubOptions returned error: %v", err)
 	}

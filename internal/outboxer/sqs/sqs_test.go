@@ -27,7 +27,7 @@ func TestSendSQSEventsUsesDefaultQueueURL(t *testing.T) {
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "payload": "one"}},
+		fromColumns(map[string]any{"id": "event-1", "payload": "one"}),
 	}
 
 	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) { deleted = append(deleted, id) }); err != nil {
@@ -132,8 +132,6 @@ func TestSendSQSEventsStandardGroupsHundredAcrossTenQueues(t *testing.T) {
 func TestSendSQSEventsUsesDefaultQueueForHundredEvents(t *testing.T) {
 	cfg := testConfig()
 	cfg.PubSubEnabled = false
-	cfg.EventTarget = ""
-	cfg.EventDestination = ""
 	cfg.DefaultSQSQueueURL = "https://sqs.example/default"
 	cfg.SQSSendConcurrency = 16
 	sqs := &fakeSQSPublisher{autoReply: true}
@@ -227,7 +225,7 @@ func TestSendSQSBatchRespectsPublishTimeout(t *testing.T) {
 	a := &app{cfg: cfg, sqs: blockingSQSPublisher{}}
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "p"}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a", "payload": "p"}),
 	}
 
 	start := time.Now()
@@ -322,9 +320,9 @@ func TestSendSQSBatchHandlesStandardPartialResponses(t *testing.T) {
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": []byte(`{"sqs":{"attributes":{"ok":{"DataType":"String","StringValue":"1"}}}}`)}},
-		{Columns: map[string]any{"id": "event-2", "destination": "queue-a", "payload": "two"}},
-		{Columns: map[string]any{"id": "event-3", "destination": "queue-a", "payload": "three"}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": []byte(`{"sqs":{"attributes":{"ok":{"DataType":"String","StringValue":"1"}}}}`)}),
+		fromColumns(map[string]any{"id": "event-2", "destination": "queue-a", "payload": "two"}),
+		fromColumns(map[string]any{"id": "event-3", "destination": "queue-a", "payload": "three"}),
 	}
 
 	err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(id any) {
@@ -349,7 +347,7 @@ func TestSendSQSBatchSendsNativeTypedAttributes(t *testing.T) {
 	cfg := testConfig()
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a := &app{cfg: cfg, sqs: sqs}
-	events := []provider.Event{{Columns: map[string]any{
+	events := []provider.Event{fromColumns(map[string]any{
 		"id":          "event-1",
 		"destination": "queue-a",
 		"payload":     "one",
@@ -358,7 +356,7 @@ func TestSendSQSBatchSendsNativeTypedAttributes(t *testing.T) {
 			"attempt":{"DataType":"Number.int","StringValue":"3"},
 			"signature":{"DataType":"Binary.sig","BinaryValue":"SGVsbG8="}
 		}}}`),
-	}}}
+	})}
 
 	if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(any) {}); err != nil {
 		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
@@ -393,12 +391,12 @@ func TestSendSQSBatchRejectsInvalidNativeAttributes(t *testing.T) {
 			sqs := &fakeSQSPublisher{autoReply: true}
 			a := &app{cfg: cfg, sqs: sqs}
 			var deleted []any
-			events := []provider.Event{{Columns: map[string]any{
+			events := []provider.Event{fromColumns(map[string]any{
 				"id":          "event-1",
 				"destination": "queue-a",
 				"payload":     "one",
 				"options":     []byte(fmt.Sprintf(`{"sqs":{"attributes":{"bad":%s}}}`, tt.attribute)),
-			}}}
+			})}
 
 			if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(id any) { deleted = append(deleted, id) }); err != nil {
 				t.Fatalf("sendSQSBatchForTest returned error: %v", err)
@@ -426,8 +424,8 @@ func TestSendSQSBatchIsolatesPermanentBatchRequestError(t *testing.T) {
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one"}},
-		{Columns: map[string]any{"id": "event-2", "destination": "queue-a", "payload": "two"}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one"}),
+		fromColumns(map[string]any{"id": "event-2", "destination": "queue-a", "payload": "two"}),
 	}
 
 	if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(id any) {
@@ -455,7 +453,7 @@ func TestSendSQSBatchRetryableRequestErrorKeepsEvents(t *testing.T) {
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one"}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one"}),
 	}
 
 	err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(id any) {
@@ -478,7 +476,7 @@ func TestSendSQSBatchCanceledContextKeepsEvents(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "payload"}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a", "payload": "payload"}),
 	}
 
 	err := a.sendSQSBatchForTest(ctx, "queue-a", events, func(id any) {
@@ -503,11 +501,11 @@ func TestSendSQSEventsStandardUsesConcurrencyLimit(t *testing.T) {
 
 	events := make([]provider.Event, 25)
 	for i := range events {
-		events[i] = provider.Event{Columns: map[string]any{
+		events[i] = fromColumns(map[string]any{
 			"id":          fmt.Sprintf("event-%02d", i),
 			"destination": "queue-a",
 			"payload":     "payload",
-		}}
+		})
 	}
 
 	var deletedMu sync.Mutex
@@ -571,8 +569,8 @@ func TestSendSQSEventsStandardSplitsByBatchSize(t *testing.T) {
 	a := &app{cfg: cfg, sqs: sqs}
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": strings.Repeat("a", 600*1024)}},
-		{Columns: map[string]any{"id": "event-2", "destination": "queue-a", "payload": strings.Repeat("b", 600*1024)}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a", "payload": strings.Repeat("a", 600*1024)}),
+		fromColumns(map[string]any{"id": "event-2", "destination": "queue-a", "payload": strings.Repeat("b", 600*1024)}),
 	}
 
 	var deletedMu sync.Mutex
@@ -605,11 +603,11 @@ func TestSendSQSEventsStandardSplitsByCount(t *testing.T) {
 
 	events := make([]provider.Event, 11)
 	for i := range events {
-		events[i] = provider.Event{Columns: map[string]any{
+		events[i] = fromColumns(map[string]any{
 			"id":          fmt.Sprintf("event-%02d", i),
 			"destination": "queue-a",
 			"payload":     "payload",
-		}}
+		})
 	}
 
 	if err := a.sendSQSEventsForTest(context.Background(), events, func(any) {}); err != nil {
@@ -633,11 +631,11 @@ func TestSendSQSEventsStandardSendsTenInOneBatch(t *testing.T) {
 
 	events := make([]provider.Event, 10)
 	for i := range events {
-		events[i] = provider.Event{Columns: map[string]any{
+		events[i] = fromColumns(map[string]any{
 			"id":          fmt.Sprintf("event-%02d", i),
 			"destination": "queue-a",
 			"payload":     "payload",
-		}}
+		})
 	}
 
 	if err := a.sendSQSEventsForTest(context.Background(), events, func(any) {}); err != nil {
@@ -661,9 +659,9 @@ func TestSendSQSEventsFIFOStopsGroupAfterRetryableFailure(t *testing.T) {
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
-		{Columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}},
-		{Columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "options": combinedOrderingOptions("group-a")}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}),
+		fromColumns(map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}),
+		fromColumns(map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "options": combinedOrderingOptions("group-a")}),
 	}
 
 	err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
@@ -700,9 +698,9 @@ func TestSendSQSEventsFIFOOneGroupAllSuccessUsesSingleMessageRequests(t *testing
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
-		{Columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}},
-		{Columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "options": combinedOrderingOptions("group-a")}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}),
+		fromColumns(map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}),
+		fromColumns(map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "options": combinedOrderingOptions("group-a")}),
 	}
 
 	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
@@ -735,8 +733,8 @@ func TestSendSQSEventsFIFOProcessesDifferentGroups(t *testing.T) {
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
-		{Columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-b")}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}),
+		fromColumns(map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-b")}),
 	}
 
 	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
@@ -771,9 +769,9 @@ func TestSendSQSEventsFIFOProcessesWholeSelectedGroup(t *testing.T) {
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
-		{Columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}},
-		{Columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "options": combinedOrderingOptions("group-a")}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}),
+		fromColumns(map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}),
+		fromColumns(map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "options": combinedOrderingOptions("group-a")}),
 	}
 
 	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
@@ -801,8 +799,8 @@ func TestSendSQSEventsFIFODifferentGroupCanSucceedWhenOneFails(t *testing.T) {
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
-		{Columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-b")}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}),
+		fromColumns(map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-b")}),
 	}
 
 	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
@@ -827,8 +825,8 @@ func TestSendSQSEventsFIFOContinuesAfterContentPoison(t *testing.T) {
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "", "options": combinedOrderingOptions("group-a")}},
-		{Columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "", "options": combinedOrderingOptions("group-a")}),
+		fromColumns(map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}),
 	}
 
 	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
@@ -856,8 +854,8 @@ func TestSendSQSEventsFIFOTimeoutStopsSameGroup(t *testing.T) {
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
-		{Columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": map[string]any{"sqs": map[string]any{"messageGroupId": "group-a", "delaySeconds": "invalid"}}}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}),
+		fromColumns(map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": map[string]any{"sqs": map[string]any{"messageGroupId": "group-a", "delaySeconds": "invalid"}}}),
 	}
 
 	err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
@@ -886,7 +884,7 @@ func TestSendSQSBatchStandardQueueSendsFairQueueGroup(t *testing.T) {
 	a := &app{cfg: cfg, sqs: sqs}
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": combinedOrderingOptions("group-a")}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": combinedOrderingOptions("group-a")}),
 	}
 
 	if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(any) {}); err != nil {
@@ -908,7 +906,7 @@ func TestSendSQSBatchFIFOUsesExplicitDeduplicationID(t *testing.T) {
 	a := &app{cfg: cfg, sqs: sqs}
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": map[string]any{"sqs": map[string]any{"messageGroupId": "group-a", "messageDeduplicationId": "custom-dedup"}}}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": map[string]any{"sqs": map[string]any{"messageGroupId": "group-a", "messageDeduplicationId": "custom-dedup"}}}),
 	}
 
 	if err := a.sendSQSBatchForTest(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
@@ -927,7 +925,7 @@ func TestSendSQSBatchSendsDelayAndTraceHeader(t *testing.T) {
 	a := &app{cfg: cfg, sqs: sqs}
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": map[string]any{"sqs": map[string]any{"delaySeconds": 30, "messageSystemAttributes": map[string]any{"AWSTraceHeader": "Root=1-67891233-abcdef012345678912345678"}}}}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": map[string]any{"sqs": map[string]any{"delaySeconds": 30, "messageSystemAttributes": map[string]any{"AWSTraceHeader": "Root=1-67891233-abcdef012345678912345678"}}}}),
 	}
 
 	if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(any) {}); err != nil {
@@ -949,7 +947,7 @@ func TestSendSQSBatchOmitsDelayForFIFO(t *testing.T) {
 	a := &app{cfg: cfg, sqs: sqs}
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": map[string]any{"sqs": map[string]any{"messageGroupId": "group-a", "delaySeconds": 30}}}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": map[string]any{"sqs": map[string]any{"messageGroupId": "group-a", "delaySeconds": 30}}}),
 	}
 
 	if err := a.sendSQSBatchForTest(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
@@ -980,7 +978,7 @@ func TestSendSQSBatchDropsInvalidProviderOptionsAsPoison(t *testing.T) {
 			a := &app{cfg: cfg, sqs: sqs}
 			var deleted []any
 
-			events := []provider.Event{{Columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": tt.options}}}
+			events := []provider.Event{fromColumns(map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": tt.options})}
 			if err := a.sendSQSBatchForTest(context.Background(), "queue-a.fifo", events, func(id any) { deleted = append(deleted, id) }); err != nil {
 				t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 			}
@@ -1000,7 +998,7 @@ func TestSendSQSBatchFIFOWithoutOrderingKeyGetsFallbackGroup(t *testing.T) {
 	a := &app{cfg: cfg, sqs: sqs}
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one"}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one"}),
 	}
 
 	if err := a.sendSQSBatchForTest(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
@@ -1026,7 +1024,7 @@ func TestSendSQSBatchFIFODerivesSafeDedupID(t *testing.T) {
 	rawID := strings.Repeat("x", 129)
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": rawID, "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
+		fromColumns(map[string]any{"id": rawID, "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}),
 	}
 
 	if err := a.sendSQSBatchForTest(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
@@ -1052,7 +1050,7 @@ func TestSendSQSBatchStandardDerivesSafeBatchEntryID(t *testing.T) {
 	rawID := strings.Repeat("x", 81)
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": rawID, "destination": "queue-a", "payload": "one"}},
+		fromColumns(map[string]any{"id": rawID, "destination": "queue-a", "payload": "one"}),
 	}
 
 	if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(any) {}); err != nil {
@@ -1075,8 +1073,8 @@ func TestSendSQSBatchDropsLocalPoisonWithoutProviderCall(t *testing.T) {
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "empty", "destination": "queue-a", "payload": ""}},
-		{Columns: map[string]any{"id": "large", "destination": "queue-a", "payload": strings.Repeat("x", sqsEventMaxSizeByte+1)}},
+		fromColumns(map[string]any{"id": "empty", "destination": "queue-a", "payload": ""}),
+		fromColumns(map[string]any{"id": "large", "destination": "queue-a", "payload": strings.Repeat("x", sqsEventMaxSizeByte+1)}),
 	}
 
 	if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(id any) {
@@ -1100,7 +1098,7 @@ func TestSendSQSBatchDropsInvalidQueueURLWithoutProviderCall(t *testing.T) {
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "bad queue url", "payload": "payload"}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "bad queue url", "payload": "payload"}),
 	}
 
 	if err := a.sendSQSBatchForTest(context.Background(), "bad queue url", events, func(id any) {
@@ -1125,7 +1123,7 @@ func TestSendSQSBatchKeepsSyntacticallyValidMissingQueue(t *testing.T) {
 	var deleted []any
 
 	events := []provider.Event{
-		{Columns: map[string]any{"id": "event-1", "destination": "https://sqs.us-east-1.amazonaws.com/123456789012/missing", "payload": "payload"}},
+		fromColumns(map[string]any{"id": "event-1", "destination": "https://sqs.us-east-1.amazonaws.com/123456789012/missing", "payload": "payload"}),
 	}
 
 	err := a.sendSQSBatchForTest(context.Background(), "https://sqs.us-east-1.amazonaws.com/123456789012/missing", events, func(id any) {
@@ -1152,7 +1150,7 @@ func TestSendSQSBatchKeepsRetryableProviderErrors(t *testing.T) {
 			var deleted []any
 
 			events := []provider.Event{
-				{Columns: map[string]any{"id": "event-1", "destination": "https://sqs.us-east-1.amazonaws.com/123456789012/queue", "payload": "payload"}},
+				fromColumns(map[string]any{"id": "event-1", "destination": "https://sqs.us-east-1.amazonaws.com/123456789012/queue", "payload": "payload"}),
 			}
 
 			err := a.sendSQSBatchForTest(context.Background(), "https://sqs.us-east-1.amazonaws.com/123456789012/queue", events, func(id any) {

@@ -14,7 +14,6 @@ import (
 
 type appConfig struct {
 	Config
-	EventDestination   string
 	DefaultPubSubTopic string
 	SQSEnabled         bool
 }
@@ -27,15 +26,9 @@ type app struct {
 func testConfig() appConfig {
 	return appConfig{
 		Config: Config{
-			EventID:            "id",
-			EventTimestamp:     "timestamp",
-			EventPayload:       "payload",
-			EventTarget:        "target",
-			EventOptions:       "options",
 			PublishTimeout:     30 * time.Second,
 			PublishResultGrace: 5 * time.Second,
 		},
-		EventDestination:   "destination",
 		DefaultPubSubTopic: "default",
 		SQSEnabled:         true,
 	}
@@ -58,14 +51,25 @@ func (a *app) sendPubsubEventForTest(ctx context.Context, evt provider.Event, ad
 func (a *app) routeTestEvents(events []provider.Event) []provider.Event {
 	routed := make([]provider.Event, len(events))
 	for i, evt := range events {
-		destination := provider.String(evt, a.cfg.EventDestination)
-		if destination == "" {
-			destination = a.cfg.DefaultPubSubTopic
+		if evt.Destination == "" {
+			evt.Destination = a.cfg.DefaultPubSubTopic
 		}
-		evt.Destination = destination
 		routed[i] = evt
 	}
 	return routed
+}
+
+// fromColumns resolves a raw outbox row into the typed provider.Event the relay
+// core hands to senders, mirroring the production providerEvent resolution.
+func fromColumns(columns map[string]any) provider.Event {
+	return provider.Event{
+		ID:          columns["id"],
+		Payload:     provider.ValueBytes(columns["payload"]),
+		Timestamp:   columns["timestamp"],
+		Target:      provider.ValueString(columns["target"]),
+		Destination: provider.ValueString(columns["destination"]),
+		Options:     columns["options"],
+	}
 }
 
 func testEvent(id, target, destination, payload, orderingKey string) provider.Event {
@@ -82,7 +86,7 @@ func testEvent(id, target, destination, payload, orderingKey string) provider.Ev
 	if orderingKey != "" {
 		columns["options"] = combinedOrderingOptions(orderingKey)
 	}
-	return provider.Event{Columns: columns}
+	return fromColumns(columns)
 }
 
 func combinedOrderingOptions(key string) map[string]any {

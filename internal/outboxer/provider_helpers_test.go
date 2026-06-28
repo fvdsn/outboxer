@@ -13,7 +13,7 @@ import (
 
 func (a *app) sendPubsubEventsForTest(ctx context.Context, events []event, addIDToDelete func(any)) error {
 	sender := a.senders[eventTargetPubSub]
-	return sender.Send(ctx, providerEvents(a.routeTestPubsubEvents(events)), provider.Callbacks{
+	return sender.Send(ctx, providerEvents(a.routeTestPubsubEvents(events), a.cfg), provider.Callbacks{
 		AddConfirmedID: addIDToDelete,
 		AddPoisonID: func(id any, _ string) {
 			addIDToDelete(id)
@@ -59,7 +59,7 @@ type recordingProviderSender struct {
 func (s *recordingProviderSender) Send(_ context.Context, events []provider.Event, callbacks provider.Callbacks) error {
 	s.events = append(s.events, events...)
 	for _, evt := range events {
-		callbacks.AddConfirmedID(evt.Columns["id"])
+		callbacks.AddConfirmedID(evt.ID)
 	}
 	return nil
 }

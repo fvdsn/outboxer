@@ -124,11 +124,6 @@ func buildSQSSender(ctx context.Context, cfg appConfig) (provider.Sender, func()
 
 func pubsubConfig(cfg appConfig) outboxpubsub.Config {
 	return outboxpubsub.Config{
-		EventID:            cfg.EventID,
-		EventTimestamp:     cfg.EventTimestamp,
-		EventPayload:       cfg.EventPayload,
-		EventTarget:        cfg.EventTarget,
-		EventOptions:       cfg.EventOptions,
 		PubSubProjectID:    cfg.PubSubProjectID,
 		PubSubAPIEndpoint:  cfg.PubSubAPIEndpoint,
 		PublishTimeout:     cfg.PublishTimeout,
@@ -138,10 +133,6 @@ func pubsubConfig(cfg appConfig) outboxpubsub.Config {
 
 func sqsConfig(cfg appConfig) outboxsqs.Config {
 	return outboxsqs.Config{
-		EventID:                    cfg.EventID,
-		EventTimestamp:             cfg.EventTimestamp,
-		EventPayload:               cfg.EventPayload,
-		EventOptions:               cfg.EventOptions,
 		SQSSendConcurrency:         cfg.SQSSendConcurrency,
 		PublishTimeout:             cfg.PublishTimeout,
 		SQSAPIEndpoint:             cfg.SQSAPIEndpoint,
@@ -155,10 +146,10 @@ func sqsConfig(cfg appConfig) outboxsqs.Config {
 	}
 }
 
-func providerEvents(events []event) []provider.Event {
+func providerEvents(events []event, cfg appConfig) []provider.Event {
 	converted := make([]provider.Event, len(events))
 	for i, evt := range events {
-		converted[i] = providerEvent(evt)
+		converted[i] = providerEvent(evt, cfg)
 	}
 	return converted
 }

@@ -17,11 +17,6 @@ const Target = "pubsub"
 
 // Config contains the relay settings needed by the Pub/Sub provider.
 type Config struct {
-	EventID            string
-	EventTimestamp     string
-	EventPayload       string
-	EventTarget        string
-	EventOptions       string
 	PubSubProjectID    string
 	PubSubAPIEndpoint  string
 	PublishTimeout     time.Duration
@@ -221,7 +216,7 @@ type pubsubPendingPublish struct {
 
 func (a *sender) parsePubsubCandidate(ctx context.Context, evt provider.Event, callbacks provider.Callbacks) (pubsubCandidateEvent, bool) {
 	topicName := evt.Destination
-	options, err := provider.BackendOptions(evt, a.cfg.EventOptions, Target)
+	options, err := provider.BackendOptions(evt.Options, Target)
 	if err != nil {
 		a.rejectMalformedOptions(ctx, evt, topicName, "", err, callbacks)
 		return pubsubCandidateEvent{}, false
@@ -241,11 +236,11 @@ func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandida
 		a.rejectMalformedOptions(ctx, evt, candidate.topic, "attributes", err, callbacks)
 		return pubsubPreparedEvent{}, false
 	}
-	timestamp := provider.Value(evt, a.cfg.EventTimestamp)
-	id := provider.Value(evt, a.cfg.EventID)
-	data := provider.Bytes(evt, a.cfg.EventPayload)
+	timestamp := evt.Timestamp
+	id := evt.ID
+	data := evt.Payload
 	latency := provider.Latency(timestamp)
-	target := provider.String(evt, a.cfg.EventTarget)
+	target := evt.Target
 
 	stringAttributes, deletedAttributes := sanitizeStringAttributes(attributes)
 	if len(deletedAttributes) != 0 {
@@ -331,10 +326,10 @@ func (a *sender) rejectMalformedOptions(ctx context.Context, evt provider.Event,
 	if field != "" {
 		signature = fmt.Sprintf("%s|%s|%s|malformed-options", Target, destination, field)
 	}
-	callbacks.AddPoisonID(provider.Value(evt, a.cfg.EventID), err.Error())
+	callbacks.AddPoisonID(evt.ID, err.Error())
 	logFailure(ctx, callbacks, "Failed to send event",
 		signature,
-		"event_id", provider.Value(evt, a.cfg.EventID),
+		"event_id", evt.ID,
 		"event_destination", destination,
 		"error", err.Error(),
 	)

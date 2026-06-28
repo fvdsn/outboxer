@@ -305,7 +305,7 @@ func (a *app) isExpiredEvent(evt event, now time.Time) bool {
 
 func (a *app) collectProviderOutput(ctx context.Context, sender provider.Sender, events []event) (senderOutput, error) {
 	return a.collectSenderOutput(ctx, events, func(callbacks provider.Callbacks) error {
-		return sender.Send(ctx, providerEvents(events), callbacks)
+		return sender.Send(ctx, providerEvents(events, a.cfg), callbacks)
 	})
 }
 
