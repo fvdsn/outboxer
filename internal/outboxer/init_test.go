@@ -173,11 +173,14 @@ func TestInitScriptTriggerWhenPolling(t *testing.T) {
 	assertContains(t, script, `EXECUTE FUNCTION "public"."outboxer_notify"('outboxer_events')`)
 }
 
-func TestInitScriptNoTriggerWhenNotPolling(t *testing.T) {
+func TestInitScriptAlwaysCreatesTrigger(t *testing.T) {
+	// PollInterval is zero here: the trigger is provisioned regardless so the
+	// operator can enable LISTEN/NOTIFY later without re-running init.
 	script := initScript(baselineInitConfig(), true)
 
-	assertNotContains(t, script, "outboxer_notify")
-	assertNotContains(t, script, "pg_notify")
+	assertContains(t, script, `CREATE OR REPLACE FUNCTION "public"."outboxer_notify"()`)
+	assertContains(t, script, "PERFORM pg_notify(TG_ARGV[0], '')")
+	assertContains(t, script, `EXECUTE FUNCTION "public"."outboxer_notify"('outboxer_events')`)
 }
 
 func TestInitPrintRedactsPassword(t *testing.T) {

@@ -58,12 +58,12 @@ options.
 | `--dlq-table` | `DLQ_TABLE` | `disabled` | Dead letter table for poison events. Defaults to `disabled`; set a table name to enable. See [Dead Letter Queue](dlq.md). |
 | `--max-event-age-ms` | `MAX_EVENT_AGE_MS` | `0` | Maximum selected event age in milliseconds. `0` disables age-based poison. Requires `EVENT_TIMESTAMP`. |
 | `--error-cooldown-ms` | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors in milliseconds. |
-| `--poll-interval-ms` | `POLL_INTERVAL_MS` | `0` | Idle wait after an empty batch in milliseconds. The default keeps polling immediately. When `> 0`, the wait is interrupted by a `LISTEN`/`NOTIFY` wake-up if the optional trigger is installed. See [Notifications](notifications.md). |
+| `--poll-interval-ms` | `POLL_INTERVAL_MS` | `0` | Idle wait after an empty batch in milliseconds. The default keeps polling immediately. When `> 0`, the wait is interrupted by a `LISTEN`/`NOTIFY` wake-up via the notification trigger that `init` provisions. See [Notifications](notifications.md). |
 | `--watchdog-interval-ms` | `WATCHDOG_INTERVAL_MS` | `600000` | Watchdog interval in milliseconds. Must be positive and at least 10x `POLL_INTERVAL_MS` when polling is enabled. |
 | `--publish-timeout-ms` | `PUBLISH_TIMEOUT_MS` | `30000` | Timeout for a single publish call in milliseconds. Must be positive. |
 | `--publish-result-grace-ms` | `PUBLISH_RESULT_GRACE_MS` | `5000` | Extra wait after provider publish timeout for async Pub/Sub publish results. |
 | `--stats-interval-ms` | `STATS_INTERVAL_MS` | `10000` | Periodic statistics logging interval in milliseconds. `0` disables statistics. See [Statistics](#statistics). |
-| `--notify-channel` | `NOTIFY_CHANNEL` | `outboxer_events` | PostgreSQL `LISTEN` channel for the optional new-event notification trigger. Only used when `POLL_INTERVAL_MS > 0`. See [Notifications](notifications.md). |
+| `--notify-channel` | `NOTIFY_CHANNEL` | `outboxer_events` | PostgreSQL channel for the new-event notification trigger that `init` provisions; the relay also `LISTEN`s on it when `POLL_INTERVAL_MS > 0`. See [Notifications](notifications.md). |
 
 ## HTTP / health
 

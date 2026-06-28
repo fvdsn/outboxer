@@ -154,12 +154,15 @@ What `init` generates is driven entirely by config:
 
 ### Notify trigger
 
-- Keyed off `POLL_INTERVAL_MS`, consistent with the notify feature's "no modes"
-  principle:
-  - `POLL_INTERVAL_MS > 0`: generate a **generic** `CREATE OR REPLACE FUNCTION`
-    and a `DROP TRIGGER IF EXISTS ... ; CREATE TRIGGER ... AFTER INSERT ON
-    <EVENT_TABLE> FOR EACH STATEMENT` that passes the channel as a trigger
-    argument rather than baking it into the function body:
+- Always generated, independent of `POLL_INTERVAL_MS`. Provisioning is a
+  one-time operation while `POLL_INTERVAL_MS` is a relay-runtime setting, so the
+  trigger is installed unconditionally; an operator can then enable
+  `LISTEN`/`NOTIFY` wake-ups later by raising `POLL_INTERVAL_MS` without
+  re-running `init`. The trigger is a cheap statement-level `pg_notify` that
+  Postgres discards when no relay is listening, so it is harmless when unused.
+  A **generic** `CREATE OR REPLACE FUNCTION` and a `DROP TRIGGER IF EXISTS ... ;
+  CREATE TRIGGER ... AFTER INSERT ON <EVENT_TABLE> FOR EACH STATEMENT` pass the
+  channel as a trigger argument rather than baking it into the function body:
 
     ```sql
     CREATE OR REPLACE FUNCTION <PG_SCHEMA>.outboxer_notify() RETURNS trigger AS $$
@@ -180,8 +183,6 @@ What `init` generates is driven entirely by config:
     the channel another table's trigger notifies on. (This supersedes the
     channel-in-body form shown in [`notifications.md`](../docs/notifications.md);
     those docs should be aligned to this form.)
-  - `POLL_INTERVAL_MS == 0` (default): the relay never `LISTEN`s, so the trigger
-    would have no effect; `init` does not generate it.
 
 ## Connection & Roles
 

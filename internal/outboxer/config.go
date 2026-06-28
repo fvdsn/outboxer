@@ -190,7 +190,7 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 	addIntFlag(flags, options, "Batch processing", &publishResultGraceMS, "publish-result-grace-ms", publishResultGraceMS, "Extra wait after provider publish timeout for async publish results.", "PUBLISH_RESULT_GRACE_MS")
 	addIntFlag(flags, options, "Batch processing", &maxEventAgeMS, "max-event-age-ms", maxEventAgeMS, "Maximum selected event age in milliseconds. 0 disables age-based poison.", "MAX_EVENT_AGE_MS")
 	addIntFlag(flags, options, "Batch processing", &statsIntervalMS, "stats-interval-ms", statsIntervalMS, "Periodic statistics logging interval in milliseconds. 0 disables statistics.", "STATS_INTERVAL_MS")
-	addStringFlag(flags, options, "Batch processing", &cfg.NotifyChannel, "notify-channel", cfg.NotifyChannel, "PostgreSQL LISTEN channel for the optional new-event notification trigger. Only used when POLL_INTERVAL_MS > 0.", "NOTIFY_CHANNEL")
+	addStringFlag(flags, options, "Batch processing", &cfg.NotifyChannel, "notify-channel", cfg.NotifyChannel, "PostgreSQL channel for the new-event notification trigger that init provisions; the relay also LISTENs on it when POLL_INTERVAL_MS > 0.", "NOTIFY_CHANNEL")
 
 	addIntFlag(flags, options, "HTTP / health", &cfg.HealthPort, "health-port", cfg.HealthPort, "HTTP health server port. Set to 0 to disable.", "HEALTH_PORT, PORT")
 

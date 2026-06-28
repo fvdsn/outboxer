@@ -32,7 +32,8 @@ There is no on/off switch for this feature — it is keyed entirely off
 The trigger is provisioning DDL, run once by whoever owns the schema (typically
 in the same migration that creates the outbox table). The running relay never
 creates it; you install it yourself, or let [`outboxer init`](provisioning.md)
-generate it when `POLL_INTERVAL_MS > 0`. The equivalent SQL is:
+generate it (always, independent of `POLL_INTERVAL_MS`, so you can raise the
+poll interval later without re-provisioning). The equivalent SQL is:
 
 ```sql
 CREATE OR REPLACE FUNCTION public.outboxer_notify() RETURNS trigger AS $$

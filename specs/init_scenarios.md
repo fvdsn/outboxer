@@ -57,8 +57,8 @@ the real binary.
 
 | ID | Scenario | Expected |
 | --- | --- | --- |
-| INIT-NTF-01 | `POLL_INTERVAL_MS == 0` (default). | No notify function or trigger is generated. |
-| INIT-NTF-02 | `POLL_INTERVAL_MS > 0`. | A generic, schema-qualified `CREATE OR REPLACE FUNCTION` using `pg_notify(TG_ARGV[0], '')` plus `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER ... AFTER INSERT ... FOR EACH STATEMENT` are generated. |
+| INIT-NTF-01 | `POLL_INTERVAL_MS == 0` (default). | The notify function and trigger are still generated; provisioning is independent of the runtime poll interval. |
+| INIT-NTF-02 | Any poll interval. | A generic, schema-qualified `CREATE OR REPLACE FUNCTION` using `pg_notify(TG_ARGV[0], '')` plus `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER ... AFTER INSERT ... FOR EACH STATEMENT` are generated. |
 | INIT-NTF-03 | Custom `NOTIFY_CHANNEL`. | The channel is passed as the trigger argument (`TG_ARGV[0]`), safely quoted; the function body is not specialized per channel. |
 | INIT-NTF-04 | Two outbox tables provisioned with different channels. | Each trigger passes its own channel argument; re-running for one table does not change the channel the other table's trigger notifies on. |
 

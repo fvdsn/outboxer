@@ -64,11 +64,14 @@ func buildInitStatements(cfg appConfig, redactSecrets bool) []initStatement {
 	if cfg.DLQTable != "" {
 		stmts = append(stmts, initStatement{sql: createDLQTableSQL(cfg)})
 	}
-	// FIXME: we should always create the trigger in case the operator changes the poll interval later on
-	if cfg.PollInterval > 0 {
-		stmts = append(stmts, notifyFunctionStatement(cfg))
-		stmts = append(stmts, notifyTriggerStatements(cfg)...)
-	}
+	// The notification trigger is always provisioned, independent of
+	// POLL_INTERVAL_MS. Provisioning is a one-time operation while the poll
+	// interval is a relay-runtime setting; installing the trigger unconditionally
+	// lets an operator enable LISTEN/NOTIFY wake-ups later without re-running init.
+	// The trigger is a cheap statement-level pg_notify that is simply discarded
+	// when no relay is listening.
+	stmts = append(stmts, notifyFunctionStatement(cfg))
+	stmts = append(stmts, notifyTriggerStatements(cfg)...)
 
 	if manageRoles {
 		stmts = append(stmts, runRoleGrantStatements(cfg)...)

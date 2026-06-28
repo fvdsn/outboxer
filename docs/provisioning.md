@@ -1,8 +1,8 @@
 # Provisioning
 
 The `outboxer init` command creates the database objects the relay needs — the
-outbox table, the optional DLQ table, and the optional `LISTEN`/`NOTIFY` trigger
-— and, optionally, the run role and grants for a least-privilege deployment. It
+outbox table, the optional DLQ table, and the `LISTEN`/`NOTIFY` trigger — and,
+optionally, the run role and grants for a least-privilege deployment. It
 reuses the **same configuration as the relay**, so the objects it creates always
 match what the relay later validates and uses.
 
@@ -37,8 +37,9 @@ provisioning-specific schema flags:
   `EVENT_TIMESTAMP`, `EVENT_OPTIONS`). An optional column set to `disabled` is
   omitted. Only `id` and `payload` are `NOT NULL`; the rest are nullable.
 - **DLQ table** (`DLQ_TABLE`), only when set to a table name.
-- **Notify function and trigger**, only when `POLL_INTERVAL_MS > 0`, on the
-  `NOTIFY_CHANNEL` channel. See [Notifications](notifications.md).
+- **Notify function and trigger**, always, on the `NOTIFY_CHANNEL` channel, so
+  `LISTEN`/`NOTIFY` wake-ups can be enabled later by raising `POLL_INTERVAL_MS`
+  without re-running `init`. See [Notifications](notifications.md).
 - **PostgreSQL schema** (`PG_SCHEMA`), created when absent. It defaults to
   `public`.
 
