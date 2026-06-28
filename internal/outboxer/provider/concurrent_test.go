@@ -1,4 +1,4 @@
-package outboxer
+package provider
 
 import (
 	"errors"
@@ -11,15 +11,15 @@ func TestRunConcurrentRunsEveryItemAndJoinsErrors(t *testing.T) {
 	secondErr := errors.New("second")
 	var calls atomic.Int32
 
-	err := runConcurrent([]error{firstErr, nil, secondErr}, func(item error) error {
+	err := RunConcurrent([]error{firstErr, nil, secondErr}, func(item error) error {
 		calls.Add(1)
 		return item
 	})
 
 	if calls.Load() != 3 {
-		t.Fatalf("runConcurrent made %d calls, want 3", calls.Load())
+		t.Fatalf("RunConcurrent made %d calls, want 3", calls.Load())
 	}
 	if !errors.Is(err, firstErr) || !errors.Is(err, secondErr) {
-		t.Fatalf("runConcurrent returned %v, want both errors", err)
+		t.Fatalf("RunConcurrent returned %v, want both errors", err)
 	}
 }

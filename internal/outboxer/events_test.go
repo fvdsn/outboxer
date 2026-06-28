@@ -18,14 +18,14 @@ func TestEventBackendOptionsParseSelectedBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eventPubSubOptions returned error: %v", err)
 	}
-	orderingKey, err := pubsub.stringValue("orderingKey")
+	orderingKey, err := pubsub.String("orderingKey")
 	if err != nil {
 		t.Fatalf("orderingKey returned error: %v", err)
 	}
 	if orderingKey != "key-a" {
 		t.Fatalf("expected Pub/Sub ordering key, got %q", orderingKey)
 	}
-	attributes, err := pubsub.attributesValue("attributes")
+	attributes, err := pubsub.Object("attributes")
 	if err != nil {
 		t.Fatalf("attributes returned error: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestEventBackendOptionsParseSelectedBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eventSQSOptions returned error: %v", err)
 	}
-	messageGroupID, err := sqs.stringValue("messageGroupId")
+	messageGroupID, err := sqs.String("messageGroupId")
 	if err != nil {
 		t.Fatalf("messageGroupId returned error: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestEventBackendOptionsTreatsMissingOrDisabledOptionsAsEmpty(t *testing.T) 
 		if err != nil {
 			t.Fatalf("eventPubSubOptions returned error: %v", err)
 		}
-		if got, err := options.stringValue("orderingKey"); err != nil || got != "" {
+		if got, err := options.String("orderingKey"); err != nil || got != "" {
 			t.Fatalf("expected empty ordering key, got %q error %v", got, err)
 		}
 	}
@@ -68,7 +68,7 @@ func TestEventBackendOptionsTreatsMissingOrDisabledOptionsAsEmpty(t *testing.T) 
 	if err != nil {
 		t.Fatalf("eventSQSOptions returned error: %v", err)
 	}
-	if got, err := options.stringValue("messageGroupId"); err != nil || got != "" {
+	if got, err := options.String("messageGroupId"); err != nil || got != "" {
 		t.Fatalf("expected disabled options to be empty, got %q error %v", got, err)
 	}
 }
@@ -86,7 +86,7 @@ func TestEventBackendOptionsRejectsMalformedOptions(t *testing.T) {
 			name: "ordering key",
 			evt:  event{columns: map[string]any{"options": []byte(`{"pubsub":{"orderingKey":42}}`)}},
 			check: func(options backendOptions) error {
-				_, err := options.stringValue("orderingKey")
+				_, err := options.String("orderingKey")
 				return err
 			},
 		},
@@ -94,7 +94,7 @@ func TestEventBackendOptionsRejectsMalformedOptions(t *testing.T) {
 			name: "attributes",
 			evt:  event{columns: map[string]any{"options": []byte(`{"pubsub":{"attributes":[]}}`)}},
 			check: func(options backendOptions) error {
-				_, err := options.attributesValue("attributes")
+				_, err := options.Object("attributes")
 				return err
 			},
 		},
@@ -119,7 +119,7 @@ func TestEventBackendOptionsIgnoresUnknownKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eventPubSubOptions returned error: %v", err)
 	}
-	if got, err := options.stringValue("orderingKey"); err != nil || got != "" {
+	if got, err := options.String("orderingKey"); err != nil || got != "" {
 		t.Fatalf("expected unknown keys to be ignored, got %q error %v", got, err)
 	}
 }

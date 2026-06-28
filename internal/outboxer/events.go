@@ -1,13 +1,17 @@
 package outboxer
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
 	"time"
+
+	"github.com/fvdsn/outboxer/internal/outboxer/provider"
 )
 
-var errMalformedOptions = errors.New("malformed event options")
+var errMalformedOptions = provider.ErrMalformedOptions
+
+const (
+	eventTargetPubSub = "pubsub"
+	eventTargetSQS    = "sqs"
+)
 
 type backend int
 
@@ -29,177 +33,35 @@ type event struct {
 	route   eventRoute
 }
 
+type backendOptions = provider.Options
+
+func providerEvent(evt event) provider.Event {
+	return provider.Event{
+		Columns:     evt.columns,
+		Destination: evt.route.destination,
+	}
+}
+
 func eventValue(evt event, column string) any {
-	return evt.columns[column]
+	return provider.Value(providerEvent(evt), column)
 }
 
 func eventString(evt event, column string) string {
-	return valueString(eventValue(evt, column))
+	return provider.String(providerEvent(evt), column)
 }
 
 func valueString(value any) string {
-	switch typed := value.(type) {
-	case nil:
-		return ""
-	case string:
-		return typed
-	case []byte:
-		return string(typed)
-	case time.Time:
-		return typed.Format(time.RFC3339Nano)
-	default:
-		return fmt.Sprint(typed)
-	}
-}
-
-func eventBytes(evt event, column string) []byte {
-	value := eventValue(evt, column)
-	switch typed := value.(type) {
-	case nil:
-		return nil
-	case []byte:
-		return typed
-	case string:
-		return []byte(typed)
-	default:
-		return []byte(fmt.Sprint(typed))
-	}
+	return provider.ValueString(value)
 }
 
 func eventPubSubOptions(evt event, cfg appConfig) (backendOptions, error) {
-	return eventBackendOptions(evt, cfg.EventOptions, eventTargetPubSub)
+	return provider.BackendOptions(providerEvent(evt), cfg.EventOptions, eventTargetPubSub)
 }
 
 func eventSQSOptions(evt event, cfg appConfig) (backendOptions, error) {
-	return eventBackendOptions(evt, cfg.EventOptions, eventTargetSQS)
-}
-
-func eventBackendOptions(evt event, column string, backend string) (backendOptions, error) {
-	root, err := eventOptionsObject(evt, column)
-	if err != nil {
-		return backendOptions{}, err
-	}
-	value, ok := root[backend]
-	if !ok || value == nil {
-		return backendOptions{}, nil
-	}
-	section, ok := normalizeObject(value)
-	if !ok {
-		return backendOptions{}, fmt.Errorf("%w: %s section must be an object", errMalformedOptions, backend)
-	}
-	return backendOptions{values: section}, nil
-}
-
-func eventOptionsObject(evt event, column string) (map[string]any, error) {
-	if column == "" {
-		return nil, nil
-	}
-	value := eventValue(evt, column)
-	switch typed := value.(type) {
-	case nil:
-		return nil, nil
-	case map[string]any:
-		return typed, nil
-	case []byte:
-		return parseOptionsJSON(typed)
-	case string:
-		return parseOptionsJSON([]byte(typed))
-	default:
-		return nil, fmt.Errorf("%w: options column must be an object", errMalformedOptions)
-	}
-}
-
-func parseOptionsJSON(content []byte) (map[string]any, error) {
-	if len(content) == 0 {
-		return nil, nil
-	}
-	var decoded any
-	if err := json.Unmarshal(content, &decoded); err != nil {
-		return nil, fmt.Errorf("%w: %w", errMalformedOptions, err)
-	}
-	if decoded == nil {
-		return nil, nil
-	}
-	options, ok := decoded.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("%w: options column must be an object", errMalformedOptions)
-	}
-	return options, nil
-}
-
-type backendOptions struct {
-	values map[string]any
-}
-
-func (o backendOptions) stringValue(key string) (string, error) {
-	value, ok := o.values[key]
-	if !ok || value == nil {
-		return "", nil
-	}
-	stringValue, ok := value.(string)
-	if !ok {
-		return "", fmt.Errorf("%w: %s must be a string", errMalformedOptions, key)
-	}
-	return stringValue, nil
-}
-
-func (o backendOptions) attributesValue(key string) (map[string]any, error) {
-	value, ok := o.values[key]
-	if !ok || value == nil {
-		return nil, nil
-	}
-	attributes, ok := normalizeObject(value)
-	if !ok {
-		return nil, fmt.Errorf("%w: %s must be an object", errMalformedOptions, key)
-	}
-	return attributes, nil
-}
-
-func normalizeObject(value any) (map[string]any, bool) {
-	switch typed := value.(type) {
-	case map[string]any:
-		return typed, true
-	default:
-		return nil, false
-	}
-}
-
-func eventLatency(value any) any {
-	timestamp, ok := eventTimestamp(value)
-	if !ok {
-		return nil
-	}
-
-	return time.Since(timestamp).Seconds()
+	return provider.BackendOptions(providerEvent(evt), cfg.EventOptions, eventTargetSQS)
 }
 
 func eventTimestamp(value any) (time.Time, bool) {
-	switch typed := value.(type) {
-	case nil:
-		return time.Time{}, false
-	case time.Time:
-		return typed.UTC(), true
-	case string:
-		return parseEventTimestampString(typed)
-	case []byte:
-		return parseEventTimestampString(string(typed))
-	default:
-		return time.Time{}, false
-	}
-}
-
-func parseEventTimestampString(value string) (time.Time, bool) {
-	if value == "" {
-		return time.Time{}, false
-	}
-	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
-		return parsed.UTC(), true
-	}
-	if parsed, err := time.ParseInLocation("2006-01-02 15:04:05.999999999", value, time.UTC); err == nil {
-		return parsed.UTC(), true
-	}
-	if parsed, err := time.ParseInLocation("2006-01-02 15:04:05", value, time.UTC); err == nil {
-		return parsed.UTC(), true
-	}
-	return time.Time{}, false
+	return provider.Timestamp(value)
 }

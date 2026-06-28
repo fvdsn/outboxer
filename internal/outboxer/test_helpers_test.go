@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	"cloud.google.com/go/pubsub/v2"
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
@@ -32,12 +31,6 @@ type fakePubSubPublisher struct {
 	results  []fakePubSubResult
 	messages []pubsubMessage
 	flushes  []string
-	resumes  []fakePubSubResume
-}
-
-type fakePubSubResume struct {
-	topic       string
-	orderingKey string
 }
 
 type fakePubSubResult struct {
@@ -73,11 +66,7 @@ func (p *fakePubSubPublisher) Flush(topic string) {
 	p.flushes = append(p.flushes, topic)
 }
 
-func (p *fakePubSubPublisher) ResumePublish(topic string, orderingKey string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.resumes = append(p.resumes, fakePubSubResume{topic: topic, orderingKey: orderingKey})
-}
+func (p *fakePubSubPublisher) ResumePublish(string, string) {}
 
 func (p *fakePubSubPublisher) Close() error {
 	return nil
@@ -164,23 +153,6 @@ func (p *fakeSQSPublisher) SendBatch(_ context.Context, queueURL string, entries
 	return p.response, nil
 }
 
-type keyedSQSPublisher struct {
-	mu        sync.Mutex
-	requests  []fakeSQSRequest
-	responses map[string]sqsBatchResponse
-}
-
-func (p *keyedSQSPublisher) SendBatch(_ context.Context, queueURL string, entries []sqsBatchEntry) (sqsBatchResponse, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.requests = append(p.requests, fakeSQSRequest{queueURL: queueURL, entries: append([]sqsBatchEntry(nil), entries...)})
-	if len(entries) == 0 {
-		return sqsBatchResponse{}, nil
-	}
-	return p.responses[entries[0].ID], nil
-}
-
 type trackingSQSPublisher struct {
 	mu       sync.Mutex
 	inFlight int
@@ -247,73 +219,6 @@ func (r trackingPubSubResult) Get(context.Context) (string, error) {
 	r.started <- struct{}{}
 	<-r.release
 	return "message-1", nil
-}
-
-type concurrentPubSubPublisher struct {
-	mu       sync.Mutex
-	messages []pubsubMessage
-	started  chan string
-	release  chan struct{}
-}
-
-type concurrentPubSubResult struct {
-	key     string
-	started chan string
-	release chan struct{}
-}
-
-func (p *concurrentPubSubPublisher) Publish(_ context.Context, message pubsubMessage) pubsubPublishResult {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.messages = append(p.messages, message)
-	return concurrentPubSubResult{key: message.OrderingKey, started: p.started, release: p.release}
-}
-
-func (p *concurrentPubSubPublisher) Flush(string) {}
-
-func (p *concurrentPubSubPublisher) ResumePublish(string, string) {}
-
-func (p *concurrentPubSubPublisher) Close() error {
-	return nil
-}
-
-func (r concurrentPubSubResult) Get(context.Context) (string, error) {
-	r.started <- r.key
-	<-r.release
-	return "message-" + r.key, nil
-}
-
-type fakeTopicPublisher struct {
-	mu        sync.Mutex
-	publishes int
-	flushes   int
-	resumes   []string
-	stopCount int
-}
-
-func (p *fakeTopicPublisher) Publish(context.Context, *pubsub.Message) *pubsub.PublishResult {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.publishes++
-	return nil
-}
-
-func (p *fakeTopicPublisher) Flush() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.flushes++
-}
-
-func (p *fakeTopicPublisher) ResumePublish(orderingKey string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.resumes = append(p.resumes, orderingKey)
-}
-
-func (p *fakeTopicPublisher) Stop() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.stopCount++
 }
 
 func testConfig() appConfig {
@@ -581,48 +486,6 @@ func writeTestCACert(t *testing.T) string {
 		t.Fatalf("write cert: %v", err)
 	}
 	return path
-}
-
-func pubsubOnlyNoDefault() appConfig {
-	cfg := testConfig()
-	cfg.SQSEnabled = false
-	cfg.DefaultPubSubTopic = ""
-	return cfg
-}
-
-type blockingPubSubPublisher struct{}
-
-func (blockingPubSubPublisher) Publish(_ context.Context, _ pubsubMessage) pubsubPublishResult {
-	return fakePubSubResult{block: true}
-}
-
-func (blockingPubSubPublisher) Flush(string) {}
-
-func (blockingPubSubPublisher) ResumePublish(string, string) {}
-
-func (blockingPubSubPublisher) Close() error {
-	return nil
-}
-
-type blockingSQSPublisher struct{}
-
-func (blockingSQSPublisher) SendBatch(ctx context.Context, _ string, _ []sqsBatchEntry) (sqsBatchResponse, error) {
-	<-ctx.Done()
-	return sqsBatchResponse{}, ctx.Err()
-}
-
-type recordingBlockingSQSPublisher struct {
-	mu       sync.Mutex
-	requests []fakeSQSRequest
-}
-
-func (p *recordingBlockingSQSPublisher) SendBatch(ctx context.Context, queueURL string, entries []sqsBatchEntry) (sqsBatchResponse, error) {
-	p.mu.Lock()
-	p.requests = append(p.requests, fakeSQSRequest{queueURL: queueURL, entries: append([]sqsBatchEntry(nil), entries...)})
-	p.mu.Unlock()
-
-	<-ctx.Done()
-	return sqsBatchResponse{}, ctx.Err()
 }
 
 func strconvNano() string {

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	outboxpubsub "github.com/fvdsn/outboxer/internal/outboxer/pubsub"
 )
 
 var (
@@ -26,7 +28,7 @@ var (
 
 var (
 	errDatabaseBatch    = errors.New("database batch error")
-	errFatalAfterCommit = errors.New("fatal after commit")
+	errFatalAfterCommit = outboxpubsub.ErrFatalAfterCommit
 )
 
 func init() {
@@ -51,20 +53,6 @@ type senderResult struct {
 type senderCallbacks struct {
 	addConfirmedID func(any)
 	addPoisonID    func(any, string)
-}
-
-func (a *app) rejectMalformedOptions(ctx context.Context, evt event, provider string, destination string, field string, err error, callbacks senderCallbacks) {
-	signature := fmt.Sprintf("%s|%s|malformed-options", provider, destination)
-	if field != "" {
-		signature = fmt.Sprintf("%s|%s|%s|malformed-options", provider, destination, field)
-	}
-	callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-	a.logFailure(ctx, "Failed to send event",
-		signature,
-		"event_id", eventValue(evt, a.cfg.EventID),
-		"event_destination", destination,
-		"error", err.Error(),
-	)
 }
 
 func startDeadlockDetector(interval time.Duration) {

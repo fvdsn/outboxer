@@ -83,7 +83,7 @@ func runRelay(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("create SQS client: %w", err)
 		}
-		a.sqs = &awsSQSPublisher{client: sqsClient}
+		a.sqs = newAWSSQSPublisher(sqsClient)
 	}
 
 	slog.Info("Startup", "pid", os.Getpid())
