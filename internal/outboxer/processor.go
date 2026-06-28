@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	outboxpubsub "github.com/fvdsn/outboxer/internal/outboxer/pubsub"
+	"github.com/fvdsn/outboxer/internal/outboxer/provider"
 )
 
 var (
@@ -28,7 +28,7 @@ var (
 
 var (
 	errDatabaseBatch    = errors.New("database batch error")
-	errFatalAfterCommit = outboxpubsub.ErrFatalAfterCommit
+	errFatalAfterCommit = provider.ErrFatalAfterCommit
 )
 
 func init() {
@@ -48,11 +48,6 @@ type senderOutput struct {
 type senderResult struct {
 	output senderOutput
 	err    error
-}
-
-type senderCallbacks struct {
-	addConfirmedID func(any)
-	addPoisonID    func(any, string)
 }
 
 func startDeadlockDetector(interval time.Duration) {
@@ -193,8 +188,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		slog.Info("Processing batch", "count", len(events))
 	}
 
-	pubsubEvents := []event{}
-	sqsEvents := []event{}
+	eventsByTarget := map[string][]event{}
 	poisonEvents := []poisonEvent{}
 	deleteIDs := []any{}
 	for _, evt := range events {
@@ -206,33 +200,25 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		}
 
 		markProcessorProgress()
-		switch evt.route.backend {
-		case backendPubSub:
-			pubsubEvents = append(pubsubEvents, evt)
-		case backendSQS:
-			sqsEvents = append(sqsEvents, evt)
-		default:
+		if evt.route.target == "" {
 			return result, fmtDBError(fmt.Errorf("selected event %v has no resolved route", eventValue(evt, a.cfg.EventID)))
 		}
+		eventsByTarget[evt.route.target] = append(eventsByTarget[evt.route.target], evt)
 	}
 
-	results := make(chan senderResult, 2)
+	results := make(chan senderResult, len(eventsByTarget))
 	var wg sync.WaitGroup
 
-	if len(pubsubEvents) > 0 {
+	for target, providerEvents := range eventsByTarget {
+		sender, ok := a.senders[target]
+		if !ok {
+			return result, fmtDBError(fmt.Errorf("selected event target %q has no configured sender", target))
+		}
+		events := append([]event(nil), providerEvents...)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			output, err := a.collectPubsubOutput(ctx, pubsubEvents)
-			results <- senderResult{output: output, err: err}
-		}()
-	}
-
-	if len(sqsEvents) > 0 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			output, err := a.collectSQSOutput(ctx, sqsEvents)
+			output, err := a.collectProviderOutput(ctx, sender, events)
 			results <- senderResult{output: output, err: err}
 		}()
 	}
@@ -317,15 +303,9 @@ func (a *app) isExpiredEvent(evt event, now time.Time) bool {
 	return now.Sub(timestamp) > a.cfg.MaxEventAge
 }
 
-func (a *app) collectPubsubOutput(ctx context.Context, events []event) (senderOutput, error) {
-	return a.collectSenderOutput(ctx, events, func(callbacks senderCallbacks) error {
-		return a.sendPubsubEventsWithCallbacks(ctx, events, callbacks)
-	})
-}
-
-func (a *app) collectSQSOutput(ctx context.Context, events []event) (senderOutput, error) {
-	return a.collectSenderOutput(ctx, events, func(callbacks senderCallbacks) error {
-		return a.sendSQSEventsWithCallbacks(ctx, events, callbacks)
+func (a *app) collectProviderOutput(ctx context.Context, sender provider.Sender, events []event) (senderOutput, error) {
+	return a.collectSenderOutput(ctx, events, func(callbacks provider.Callbacks) error {
+		return sender.Send(ctx, providerEvents(events), callbacks)
 	})
 }
 
@@ -339,7 +319,7 @@ type senderCollector struct {
 	output senderOutput
 }
 
-func newSenderCollector(a *app, ctx context.Context, events []event) *senderCollector {
+func newSenderCollector(ctx context.Context, a *app, events []event) *senderCollector {
 	eventsByID := make(map[string]event, len(events))
 	for _, evt := range events {
 		eventsByID[eventIDKey(eventValue(evt, a.cfg.EventID))] = evt
@@ -396,11 +376,13 @@ func (c *senderCollector) snapshot() senderOutput {
 	}
 }
 
-func (a *app) collectSenderOutput(ctx context.Context, events []event, send func(senderCallbacks) error) (senderOutput, error) {
-	collector := newSenderCollector(a, ctx, events)
-	err := send(senderCallbacks{
-		addConfirmedID: collector.confirm,
-		addPoisonID:    collector.poison,
+func (a *app) collectSenderOutput(ctx context.Context, events []event, send func(provider.Callbacks) error) (senderOutput, error) {
+	collector := newSenderCollector(ctx, a, events)
+	err := send(provider.Callbacks{
+		AddConfirmedID: collector.confirm,
+		AddPoisonID:    collector.poison,
+		MarkProgress:   markProcessorProgress,
+		LogFailure:     a.logFailure,
 	})
 	return collector.snapshot(), err
 }

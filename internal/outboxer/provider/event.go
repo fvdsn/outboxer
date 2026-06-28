@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// ErrMalformedOptions identifies invalid provider-specific event options.
 var ErrMalformedOptions = errors.New("malformed event options")
 
 // Event is the provider-facing view of a selected outbox row. Columns remain
@@ -17,14 +18,17 @@ type Event struct {
 	Destination string
 }
 
+// Value returns the raw value of a configured event column.
 func Value(evt Event, column string) any {
 	return evt.Columns[column]
 }
 
+// String returns an event column as a string.
 func String(evt Event, column string) string {
 	return ValueString(Value(evt, column))
 }
 
+// ValueString converts a database value to its string representation.
 func ValueString(value any) string {
 	switch typed := value.(type) {
 	case nil:
@@ -40,6 +44,7 @@ func ValueString(value any) string {
 	}
 }
 
+// Bytes returns an event column as bytes.
 func Bytes(evt Event, column string) []byte {
 	value := Value(evt, column)
 	switch typed := value.(type) {
@@ -54,10 +59,12 @@ func Bytes(evt Event, column string) []byte {
 	}
 }
 
+// Options contains one provider's section of the event options object.
 type Options struct {
 	Values map[string]any
 }
 
+// BackendOptions extracts and validates one provider's options section.
 func BackendOptions(evt Event, column string, backend string) (Options, error) {
 	root, err := optionsObject(evt, column)
 	if err != nil {
@@ -86,6 +93,7 @@ func (o Options) String(key string) (string, error) {
 	return stringValue, nil
 }
 
+// Object returns an option value as an object.
 func (o Options) Object(key string) (map[string]any, error) {
 	value, ok := o.Values[key]
 	if !ok || value == nil {
@@ -98,11 +106,13 @@ func (o Options) Object(key string) (map[string]any, error) {
 	return object, nil
 }
 
+// Object performs a checked conversion to a string-keyed object.
 func Object(value any) (map[string]any, bool) {
 	object, ok := value.(map[string]any)
 	return object, ok
 }
 
+// Latency returns the number of seconds since a timestamp-like value.
 func Latency(value any) any {
 	timestamp, ok := Timestamp(value)
 	if !ok {
@@ -111,6 +121,7 @@ func Latency(value any) any {
 	return time.Since(timestamp).Seconds()
 }
 
+// Timestamp parses a supported database timestamp value and normalizes it to UTC.
 func Timestamp(value any) (time.Time, bool) {
 	switch typed := value.(type) {
 	case nil:

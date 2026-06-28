@@ -7,13 +7,14 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"github.com/fvdsn/outboxer/internal/outboxer/provider"
 )
 
 type app struct {
-	cfg    appConfig
-	db     *sql.DB
-	pubsub pubsubPublisher
-	sqs    sqsPublisher
+	cfg     appConfig
+	db      *sql.DB
+	senders map[string]provider.Sender
 
 	failureLogger *failureLogger
 	stats         *appStats

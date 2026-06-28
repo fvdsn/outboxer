@@ -1,3 +1,5 @@
+// Package provider defines the event and sender contract shared by the relay
+// core and concrete publishing providers.
 package provider
 
 import (

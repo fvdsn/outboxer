@@ -14,10 +14,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
-type AWSPublisher struct {
+type awsPublisher struct {
 	client *sqs.Client
 }
 
+// NewClient creates a configured AWS SQS client.
 func NewClient(ctx context.Context, cfg Config) (*sqs.Client, error) {
 	loadOptions := []func(*config.LoadOptions) error{}
 	if cfg.AWSRegion != "" {
@@ -61,8 +62,9 @@ func NewClient(ctx context.Context, cfg Config) (*sqs.Client, error) {
 	return sqs.NewFromConfig(awsConfig, clientOptions...), nil
 }
 
-func NewPublisher(client *sqs.Client) *AWSPublisher {
-	return &AWSPublisher{client: client}
+// NewPublisher creates an SQS publisher backed by the AWS SDK.
+func NewPublisher(client *sqs.Client) Publisher {
+	return &awsPublisher{client: client}
 }
 
 // googleIDTokenRetriever fetches a Google-signed OIDC ID token from the GCP
@@ -81,7 +83,7 @@ func (r *googleIDTokenRetriever) GetIdentityToken() ([]byte, error) {
 	return []byte(token), nil
 }
 
-func (p *AWSPublisher) SendBatch(ctx context.Context, queueURL string, entries []BatchEntry) (BatchResponse, error) {
+func (p *awsPublisher) SendBatch(ctx context.Context, queueURL string, entries []BatchEntry) (BatchResponse, error) {
 	awsEntries := make([]sqstypes.SendMessageBatchRequestEntry, 0, len(entries))
 	for _, entry := range entries {
 		awsEntry := sqstypes.SendMessageBatchRequestEntry{

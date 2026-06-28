@@ -56,34 +56,19 @@ func runRelay(ctx context.Context, args []string) error {
 	}
 	defer db.Close()
 
+	senders, closeProviders, err := buildProviderSenders(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer closeProviders()
+
 	a := &app{
 		cfg:           cfg,
 		db:            db,
+		senders:       senders,
 		shutdown:      cancel,
 		failureLogger: newFailureLogger(failureLogWindow),
 		stats:         &appStats{},
-	}
-
-	if cfg.PubSubEnabled {
-		pubsubClient, err := newPubSubClient(ctx, cfg)
-		if err != nil {
-			return fmt.Errorf("create Pub/Sub client: %w", err)
-		}
-		defer pubsubClient.Close()
-		a.pubsub = newCloudPubSubPublisher(pubsubClient, cfg)
-		defer func() {
-			if err := a.pubsub.Close(); err != nil {
-				slog.Error("Failed to close Pub/Sub publisher", "error", err.Error())
-			}
-		}()
-	}
-
-	if cfg.SQSEnabled {
-		sqsClient, err := newSQSClient(ctx, cfg)
-		if err != nil {
-			return fmt.Errorf("create SQS client: %w", err)
-		}
-		a.sqs = newAWSSQSPublisher(sqsClient)
 	}
 
 	slog.Info("Startup", "pid", os.Getpid())

@@ -41,8 +41,8 @@ func testConfig() appConfig {
 	}
 }
 
-func (a *app) callbacks(addIDToDelete func(any)) Callbacks {
-	return Callbacks{
+func (a *app) callbacks(addIDToDelete func(any)) provider.Callbacks {
+	return provider.Callbacks{
 		AddConfirmedID: addIDToDelete,
 		AddPoisonID: func(id any, _ string) {
 			addIDToDelete(id)
@@ -52,7 +52,7 @@ func (a *app) callbacks(addIDToDelete func(any)) Callbacks {
 
 func (a *app) sendSQSEventsForTest(ctx context.Context, events []provider.Event, addIDToDelete func(any)) error {
 	events = a.routeTestEvents(events)
-	return Send(ctx, a.cfg.Config, a.sqs, events, a.callbacks(addIDToDelete))
+	return NewSender(a.cfg.Config, a.sqs).Send(ctx, events, a.callbacks(addIDToDelete))
 }
 
 func (a *app) sendSQSBatchForTest(ctx context.Context, queueURL string, events []provider.Event, addIDToDelete func(any)) error {
@@ -61,7 +61,7 @@ func (a *app) sendSQSBatchForTest(ctx context.Context, queueURL string, events [
 		events[i].Destination = queueURL
 	}
 	callbacks := a.callbacks(addIDToDelete)
-	s := &sender{cfg: a.cfg.Config, publisher: a.sqs, callbacks: callbacks}
+	s := newSender(a.cfg.Config, a.sqs)
 	if !validSQSQueueURL(queueURL) {
 		return s.sendSQSQueueEvents(ctx, make(chan struct{}, a.cfg.SQSSendConcurrency), queueURL, events, callbacks)
 	}
@@ -93,10 +93,10 @@ func (a *app) routeTestEvents(events []provider.Event) []provider.Event {
 	return routed
 }
 
-func testEvent(id, target, destination, payload, orderingKey string) provider.Event {
+func testEvent(id, target, destination, orderingKey string) provider.Event {
 	columns := map[string]any{
 		"id":      id,
-		"payload": payload,
+		"payload": "payload",
 	}
 	if target != "" {
 		columns["target"] = target

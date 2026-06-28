@@ -189,19 +189,11 @@ func (a *app) insertDeadLetters(ctx context.Context, tx *sql.Tx, poison []poison
 }
 
 func (a *app) deadLetterPayload(poisoned poisonEvent) map[string]any {
-	target := ""
-	switch poisoned.evt.route.backend {
-	case backendPubSub:
-		target = eventTargetPubSub
-	case backendSQS:
-		target = eventTargetSQS
-	}
-
 	payload := map[string]any{
 		"source_schema":    a.cfg.PGSchema,
 		"source_table":     a.cfg.EventTable,
 		"dead_lettered_at": time.Now().UTC().Format(time.RFC3339Nano),
-		"target":           target,
+		"target":           poisoned.evt.route.target,
 		"destination":      poisoned.evt.route.destination,
 		"original_event":   originalEventJSON(poisoned.evt),
 	}

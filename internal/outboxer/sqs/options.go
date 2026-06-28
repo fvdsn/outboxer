@@ -14,6 +14,7 @@ import (
 	"github.com/fvdsn/outboxer/internal/outboxer/provider"
 )
 
+// MessageAttribute is the provider representation of an SQS message attribute.
 type MessageAttribute struct {
 	DataType         string
 	StringValue      string

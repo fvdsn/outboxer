@@ -8,6 +8,7 @@ import (
 	"google.golang.org/api/option"
 )
 
+// CloudPublisher adapts the Google Cloud client to the provider publisher contract.
 type CloudPublisher struct {
 	mu           sync.Mutex
 	publishers   map[string]pubsubTopicPublisher
@@ -25,6 +26,7 @@ type pubsubTopicPublisher interface {
 	Stop()
 }
 
+// NewClient creates a configured Google Cloud Pub/Sub client.
 func NewClient(ctx context.Context, cfg Config) (*pubsub.Client, error) {
 	options := []option.ClientOption{}
 	if cfg.PubSubAPIEndpoint != "" {
@@ -33,6 +35,7 @@ func NewClient(ctx context.Context, cfg Config) (*pubsub.Client, error) {
 	return pubsub.NewClient(ctx, cfg.PubSubProjectID, options...)
 }
 
+// NewCloudPublisher creates a topic-caching Pub/Sub publisher.
 func NewCloudPublisher(client *pubsub.Client, cfg Config) *CloudPublisher {
 	p := &CloudPublisher{
 		publishers: map[string]pubsubTopicPublisher{},
@@ -46,6 +49,7 @@ func NewCloudPublisher(client *pubsub.Client, cfg Config) *CloudPublisher {
 	return p
 }
 
+// Publish starts publishing one message.
 func (p *CloudPublisher) Publish(ctx context.Context, message Message) PublishResult {
 	pubsubMsg := &pubsub.Message{
 		Data:       message.Data,
@@ -57,10 +61,12 @@ func (p *CloudPublisher) Publish(ctx context.Context, message Message) PublishRe
 	return cloudPubSubPublishResult{result: p.publisher(message.Topic).Publish(ctx, pubsubMsg)}
 }
 
+// Flush sends all buffered messages for a topic.
 func (p *CloudPublisher) Flush(topic string) {
 	p.publisher(topic).Flush()
 }
 
+// ResumePublish resumes an ordering key after a publish failure.
 func (p *CloudPublisher) ResumePublish(topic string, orderingKey string) {
 	if orderingKey == "" {
 		return
@@ -68,6 +74,7 @@ func (p *CloudPublisher) ResumePublish(topic string, orderingKey string) {
 	p.publisher(topic).ResumePublish(orderingKey)
 }
 
+// Close stops every cached topic publisher.
 func (p *CloudPublisher) Close() error {
 	p.mu.Lock()
 	publishers := make([]pubsubTopicPublisher, 0, len(p.publishers))

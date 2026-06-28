@@ -13,13 +13,17 @@ import (
 	"github.com/fvdsn/outboxer/internal/outboxer/provider"
 )
 
+// Target identifies this provider in routing, the event-options section key,
+// and failure signatures.
+const Target = "sqs"
+
 const (
-	targetSQS           = "sqs"
 	sqsEventBatchSize   = 10
 	sqsEventMaxSizeByte = 1024 * 1024
 	sqsMaxAttributes    = 10
 	sqsMaxDelaySeconds  = 900
 
+	// WebIdentityProviderGoogle selects Google metadata identity tokens for AWS.
 	WebIdentityProviderGoogle = "google"
 )
 
@@ -29,6 +33,7 @@ var (
 	sqsAttributeNameRe     = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,256}$`)
 )
 
+// Config contains the relay settings needed by the SQS provider.
 type Config struct {
 	EventID                    string
 	EventTimestamp             string
@@ -46,17 +51,12 @@ type Config struct {
 	AWSWebIdentityAudience     string
 }
 
-type Callbacks struct {
-	AddConfirmedID func(any)
-	AddPoisonID    func(any, string)
-	MarkProgress   func()
-	LogFailure     func(context.Context, string, string, ...any)
-}
-
+// Publisher is the SQS client behavior used by the sender.
 type Publisher interface {
 	SendBatch(ctx context.Context, queueURL string, entries []BatchEntry) (BatchResponse, error)
 }
 
+// BatchEntry is one message in an SQS batch request.
 type BatchEntry struct {
 	ID                 string
 	MessageBody        string
@@ -96,16 +96,19 @@ type sqsQueueEvents struct {
 	events []provider.Event
 }
 
+// BatchResponse contains the per-entry outcomes of an SQS batch request.
 type BatchResponse struct {
 	Successful []BatchSuccess
 	Failed     []BatchFailure
 }
 
+// BatchSuccess identifies an entry accepted by SQS.
 type BatchSuccess struct {
 	ID        string
 	MessageID string
 }
 
+// BatchFailure describes an entry rejected by SQS.
 type BatchFailure struct {
 	ID          string
 	Code        string
@@ -116,15 +119,22 @@ type BatchFailure struct {
 type sender struct {
 	cfg       Config
 	publisher Publisher
-	callbacks Callbacks
 }
 
-func Send(ctx context.Context, cfg Config, publisher Publisher, events []provider.Event, callbacks Callbacks) error {
-	a := &sender{cfg: cfg, publisher: publisher, callbacks: callbacks}
+// NewSender creates an SQS implementation of provider.Sender.
+func NewSender(cfg Config, publisher Publisher) provider.Sender {
+	return newSender(cfg, publisher)
+}
+
+func newSender(cfg Config, publisher Publisher) *sender {
+	return &sender{cfg: cfg, publisher: publisher}
+}
+
+func (a *sender) Send(ctx context.Context, events []provider.Event, callbacks provider.Callbacks) error {
 	return a.sendSQSEventsWithCallbacks(ctx, events, callbacks)
 }
 
-func (a *sender) sendSQSEventsWithCallbacks(ctx context.Context, events []provider.Event, callbacks Callbacks) error {
+func (a *sender) sendSQSEventsWithCallbacks(ctx context.Context, events []provider.Event, callbacks provider.Callbacks) error {
 	eventsByQueue := map[string][]provider.Event{}
 	for _, evt := range events {
 		queue := evt.Destination
@@ -142,13 +152,13 @@ func (a *sender) sendSQSEventsWithCallbacks(ctx context.Context, events []provid
 	})
 }
 
-func (a *sender) sendSQSQueueEvents(ctx context.Context, sem chan struct{}, queue string, events []provider.Event, callbacks Callbacks) error {
+func (a *sender) sendSQSQueueEvents(ctx context.Context, sem chan struct{}, queue string, events []provider.Event, callbacks provider.Callbacks) error {
 	if !validSQSQueueURL(queue) {
 		for _, evt := range events {
 			callbacks.AddPoisonID(provider.Value(evt, a.cfg.EventID), "SQS queue URL is syntactically invalid")
 		}
-		a.logFailure(ctx, "Failed to send event batch",
-			fmt.Sprintf("sqs|%s|invalid-queue-url", queue),
+		logFailure(ctx, callbacks, "Failed to send event batch",
+			fmt.Sprintf("%s|%s|invalid-queue-url", Target, queue),
 			"event_destination", queue,
 			"error", "SQS queue URL is syntactically invalid",
 		)
@@ -177,7 +187,7 @@ func (a *sender) sendSQSQueueEvents(ctx context.Context, sem chan struct{}, queu
 	return a.sendSQSStandardEvents(ctx, sem, queue, prepared, callbacks)
 }
 
-func (a *sender) sendSQSStandardEvents(ctx context.Context, sem chan struct{}, queue string, queueEvents []sqsPreparedEvent, callbacks Callbacks) error {
+func (a *sender) sendSQSStandardEvents(ctx context.Context, sem chan struct{}, queue string, queueEvents []sqsPreparedEvent, callbacks provider.Callbacks) error {
 	chunks := chunkSQSStandardEvents(queueEvents)
 	return provider.RunConcurrent(chunks, func(chunk []sqsPreparedEvent) error {
 		batch := append([]sqsPreparedEvent(nil), chunk...)
@@ -208,7 +218,7 @@ func chunkSQSStandardEvents(events []sqsPreparedEvent) [][]sqsPreparedEvent {
 	return chunks
 }
 
-func (a *sender) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue string, queueEvents []sqsCandidateEvent, callbacks Callbacks) error {
+func (a *sender) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue string, queueEvents []sqsCandidateEvent, callbacks provider.Callbacks) error {
 	groups := map[string][]sqsCandidateEvent{}
 	groupOrder := []string{}
 	for _, evt := range queueEvents {
@@ -238,8 +248,8 @@ func (a *sender) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue
 	})
 }
 
-func (a *sender) parseSQSCandidate(ctx context.Context, evt provider.Event, queueURL string, callbacks Callbacks) (sqsCandidateEvent, bool) {
-	options, err := provider.BackendOptions(evt, a.cfg.EventOptions, targetSQS)
+func (a *sender) parseSQSCandidate(ctx context.Context, evt provider.Event, queueURL string, callbacks provider.Callbacks) (sqsCandidateEvent, bool) {
+	options, err := provider.BackendOptions(evt, a.cfg.EventOptions, Target)
 	if err != nil {
 		a.rejectMalformedOptions(ctx, evt, queueURL, "", err, callbacks)
 		return sqsCandidateEvent{}, false
@@ -259,7 +269,7 @@ func (a *sender) parseSQSCandidate(ctx context.Context, evt provider.Event, queu
 	}, true
 }
 
-func (a *sender) prepareSQSEvent(ctx context.Context, candidate sqsCandidateEvent, queueURL string, isFIFO bool, callbacks Callbacks) (sqsPreparedEvent, bool) {
+func (a *sender) prepareSQSEvent(ctx context.Context, candidate sqsCandidateEvent, queueURL string, isFIFO bool, callbacks provider.Callbacks) (sqsPreparedEvent, bool) {
 	attributes, err := sqsAttributes(candidate.options)
 	if err != nil {
 		a.rejectMalformedOptions(ctx, candidate.evt, queueURL, "attributes", err, callbacks)
@@ -288,8 +298,8 @@ func (a *sender) prepareSQSEvent(ctx context.Context, candidate sqsCandidateEven
 	latency := provider.Latency(timestamp)
 	if isSQSPoison(data, attributes, candidate.orderingKey, deduplicationID, delaySeconds) {
 		callbacks.AddPoisonID(candidate.id, "Event is invalid for SQS")
-		a.logFailure(ctx, "Failed to send event",
-			fmt.Sprintf("sqs|%s|%s|local-poison", queueURL, candidate.orderingKey),
+		logFailure(ctx, callbacks, "Failed to send event",
+			fmt.Sprintf("%s|%s|%s|local-poison", Target, queueURL, candidate.orderingKey),
 			"event_id", candidate.id,
 			"event_destination", queueURL,
 			"error", "Event is invalid for SQS",
@@ -326,7 +336,7 @@ func (a *sender) prepareSQSEvent(ctx context.Context, candidate sqsCandidateEven
 	}, true
 }
 
-func (a *sender) sendSQSBatchWithSemaphore(ctx context.Context, sem chan struct{}, queue string, events []sqsPreparedEvent, callbacks Callbacks) (bool, error) {
+func (a *sender) sendSQSBatchWithSemaphore(ctx context.Context, sem chan struct{}, queue string, events []sqsPreparedEvent, callbacks provider.Callbacks) (bool, error) {
 	select {
 	case sem <- struct{}{}:
 		defer func() { <-sem }()
@@ -336,11 +346,13 @@ func (a *sender) sendSQSBatchWithSemaphore(ctx context.Context, sem chan struct{
 	return a.sendSQSBatch(ctx, queue, events, callbacks)
 }
 
-func (a *sender) sendSQSBatch(ctx context.Context, queueURL string, events []sqsPreparedEvent, callbacks Callbacks) (bool, error) {
+func (a *sender) sendSQSBatch(ctx context.Context, queueURL string, events []sqsPreparedEvent, callbacks provider.Callbacks) (bool, error) {
 	if len(events) == 0 {
 		return false, nil
 	}
-	defer a.markProgress()
+	if callbacks.MarkProgress != nil {
+		defer callbacks.MarkProgress()
+	}
 
 	start := time.Now()
 	entries := make([]BatchEntry, 0, len(events))
@@ -354,7 +366,7 @@ func (a *sender) sendSQSBatch(ctx context.Context, queueURL string, events []sqs
 			"event_payload_size", evt.payloadLen,
 			"event_ordering_key", evt.orderingKey,
 			"event_attributes", evt.entry.Attributes,
-			"event_target", targetSQS,
+			"event_target", Target,
 			"event_destination", queueURL,
 		)
 		entries = append(entries, evt.entry)
@@ -368,8 +380,8 @@ func (a *sender) sendSQSBatch(ctx context.Context, queueURL string, events []sqs
 		if isSQSPermanentRequestError(err) {
 			if len(events) == 1 {
 				callbacks.AddPoisonID(events[0].id, err.Error())
-				a.logFailure(ctx, "Failed to send event",
-					fmt.Sprintf("sqs|%s|%s", queueURL, err.Error()),
+				logFailure(ctx, callbacks, "Failed to send event",
+					fmt.Sprintf("%s|%s|%s", Target, queueURL, err.Error()),
 					"event_id", events[0].id,
 					"event_destination", queueURL,
 					"error", err.Error(),
@@ -378,8 +390,8 @@ func (a *sender) sendSQSBatch(ctx context.Context, queueURL string, events []sqs
 			}
 			return a.sendSQSBatchIsolated(ctx, queueURL, events, callbacks)
 		}
-		a.logFailure(ctx, "Failed to send event batch",
-			fmt.Sprintf("sqs|%s|%s", queueURL, err.Error()),
+		logFailure(ctx, callbacks, "Failed to send event batch",
+			fmt.Sprintf("%s|%s|%s", Target, queueURL, err.Error()),
 			"event_destination", queueURL,
 			"error", err.Error(),
 		)
@@ -405,8 +417,8 @@ func (a *sender) sendSQSBatch(ctx context.Context, queueURL string, events []sqs
 			callbacks.AddPoisonID(idsByEntryID[entry.ID], fmt.Sprintf("%s: %s", entry.Code, entry.Message))
 			anyDone = true
 		}
-		a.logFailure(ctx, "Failed to send event",
-			fmt.Sprintf("sqs|%s|%s|%s", queueURL, entry.Code, entry.Message),
+		logFailure(ctx, callbacks, "Failed to send event",
+			fmt.Sprintf("%s|%s|%s|%s", Target, queueURL, entry.Code, entry.Message),
 			"event_id", entry.ID,
 			"event_destination", queueURL,
 			"error", fmt.Sprintf("%s: %s", entry.Code, entry.Message),
@@ -416,7 +428,7 @@ func (a *sender) sendSQSBatch(ctx context.Context, queueURL string, events []sqs
 	return anyDone, nil
 }
 
-func (a *sender) sendSQSBatchIsolated(ctx context.Context, queueURL string, events []sqsPreparedEvent, callbacks Callbacks) (bool, error) {
+func (a *sender) sendSQSBatchIsolated(ctx context.Context, queueURL string, events []sqsPreparedEvent, callbacks provider.Callbacks) (bool, error) {
 	anyDone := false
 	var joined error
 	for _, evt := range events {
@@ -431,13 +443,13 @@ func (a *sender) sendSQSBatchIsolated(ctx context.Context, queueURL string, even
 	return anyDone, joined
 }
 
-func (a *sender) rejectMalformedOptions(ctx context.Context, evt provider.Event, destination string, field string, err error, callbacks Callbacks) {
-	signature := fmt.Sprintf("%s|%s|malformed-options", targetSQS, destination)
+func (a *sender) rejectMalformedOptions(ctx context.Context, evt provider.Event, destination string, field string, err error, callbacks provider.Callbacks) {
+	signature := fmt.Sprintf("%s|%s|malformed-options", Target, destination)
 	if field != "" {
-		signature = fmt.Sprintf("%s|%s|%s|malformed-options", targetSQS, destination, field)
+		signature = fmt.Sprintf("%s|%s|%s|malformed-options", Target, destination, field)
 	}
 	callbacks.AddPoisonID(provider.Value(evt, a.cfg.EventID), err.Error())
-	a.logFailure(ctx, "Failed to send event",
+	logFailure(ctx, callbacks, "Failed to send event",
 		signature,
 		"event_id", provider.Value(evt, a.cfg.EventID),
 		"event_destination", destination,
@@ -445,15 +457,9 @@ func (a *sender) rejectMalformedOptions(ctx context.Context, evt provider.Event,
 	)
 }
 
-func (a *sender) logFailure(ctx context.Context, message string, signature string, attrs ...any) {
-	if a.callbacks.LogFailure != nil {
-		a.callbacks.LogFailure(ctx, message, signature, attrs...)
-	}
-}
-
-func (a *sender) markProgress() {
-	if a.callbacks.MarkProgress != nil {
-		a.callbacks.MarkProgress()
+func logFailure(ctx context.Context, callbacks provider.Callbacks, message string, signature string, attrs ...any) {
+	if callbacks.LogFailure != nil {
+		callbacks.LogFailure(ctx, message, signature, attrs...)
 	}
 }
 

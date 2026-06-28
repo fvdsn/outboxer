@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/fvdsn/outboxer/internal/outboxer/provider"
 )
 
 func TestProcessEventsStopsOnContextCancel(t *testing.T) {
@@ -40,11 +41,11 @@ func TestProcessEventsStopsAfterFatalAfterCommit(t *testing.T) {
 	cfg.SQSEnabled = false
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}}
+	setTestPubSubProvider(a, &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}})
 
 	rows := mockEventRows().
-		AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", mockDBValue(combinedOrderingOptions("key-a")))...).
-		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions("key-a")))...)
+		AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", mockDBValue(combinedOrderingOptions()))...).
+		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions()))...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -72,7 +73,7 @@ func TestProcessEventsDoesNotCooldownAfterNonFatalSenderError(t *testing.T) {
 	expectedErr := errors.New("retryable pubsub")
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = &fakePubSubPublisher{errs: []error{nil, expectedErr}}
+	setTestPubSubProvider(a, &fakePubSubPublisher{errs: []error{nil, expectedErr}})
 
 	firstRows := mockEventRows().
 		AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", nil)...).
@@ -111,7 +112,7 @@ func TestProcessOneBatchCommitsDoneBeforeNonFatalSenderError(t *testing.T) {
 	expectedErr := errors.New("retryable pubsub")
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = &fakePubSubPublisher{errs: []error{nil, expectedErr}}
+	setTestPubSubProvider(a, &fakePubSubPublisher{errs: []error{nil, expectedErr}})
 
 	rows := mockEventRows().
 		AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", nil)...).
@@ -140,7 +141,7 @@ func TestProcessOneBatchBeginFailureIsDatabaseError(t *testing.T) {
 	pubsub := &fakePubSubPublisher{}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = pubsub
+	setTestPubSubProvider(a, pubsub)
 	mock.ExpectBegin().WillReturnError(expectedErr)
 
 	result, err := a.processOneBatch(context.Background())
@@ -160,8 +161,8 @@ func TestProcessOneBatchEmptyBatchCommitsWithoutDelete(t *testing.T) {
 	cfg := testConfig()
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = &fakePubSubPublisher{}
-	a.sqs = &fakeSQSPublisher{autoReply: true}
+	setTestPubSubProvider(a, &fakePubSubPublisher{})
+	setTestSQSProvider(a, &fakeSQSPublisher{autoReply: true})
 
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(mockEventRows())
@@ -256,6 +257,33 @@ func TestSelectEventsQuerySupportsMissingDestinationWithBackendDefaults(t *testi
 	}
 }
 
+func TestProviderRegistrationDrivesCollectionSQL(t *testing.T) {
+	originalSpecs := providerSpecs
+	providerSpecs = append(append([]providerSpec(nil), originalSpecs...), providerSpec{
+		target:  "webhook",
+		enabled: func(appConfig) bool { return true },
+		route: func(appConfig) providerRoute {
+			return providerRoute{
+				target:             "webhook",
+				defaultDestination: "https://example.com/events",
+				ownedDestinations:  []string{"https://example.com/events"},
+			}
+		},
+	})
+	t.Cleanup(func() { providerSpecs = originalSpecs })
+
+	query := (&app{cfg: testConfig()}).selectEventsQuerySQL()
+	for _, expected := range []string{
+		"IN ('pubsub', 'sqs', 'webhook')",
+		"THEN 'https://example.com/events'",
+		"<> 'webhook' OR",
+	} {
+		if !strings.Contains(query, expected) {
+			t.Fatalf("expected provider registration to add %q to collection query, got:\n%s", expected, query)
+		}
+	}
+}
+
 func TestRouteOwnershipSQLRestrictsConfiguredDestinations(t *testing.T) {
 	cfg := testConfig()
 	cfg.PubSubDestinations = []string{"topic-a", "topic-b"}
@@ -291,14 +319,40 @@ func TestSelectEventsQueryFiltersOwnedDestinations(t *testing.T) {
 	}
 }
 
+func TestProcessOneBatchDispatchesByRegisteredTarget(t *testing.T) {
+	cfg := testConfig()
+	sender := &recordingProviderSender{}
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	a.senders = map[string]provider.Sender{"webhook": sender}
+
+	rows := mockEventRows().
+		AddRow(mockEventRow("event-1", "webhook", "https://example.com/events", "payload", nil)...)
+	mock.ExpectBegin()
+	expectSelectEvents(mock, a).WillReturnRows(rows)
+	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	result, err := a.processOneBatch(context.Background())
+	if err != nil {
+		t.Fatalf("processOneBatch returned error: %v", err)
+	}
+	if result.selected != 1 || len(sender.events) != 1 {
+		t.Fatalf("generic provider dispatch selected %d events and sent %d; want 1 and 1", result.selected, len(sender.events))
+	}
+	if sender.events[0].Destination != "https://example.com/events" {
+		t.Fatalf("provider received destination %q", sender.events[0].Destination)
+	}
+}
+
 func TestProcessOneBatchEmptySelectionCommitsWithoutRoutingLog(t *testing.T) {
 	cfg := testConfig()
 	pubsub := &fakePubSubPublisher{}
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = pubsub
-	a.sqs = sqs
+	setTestPubSubProvider(a, pubsub)
+	setTestSQSProvider(a, sqs)
 
 	query, _ := a.selectEventsQuery()
 	mock.ExpectBegin()
@@ -327,8 +381,8 @@ func TestProcessOneBatchCommitsHealthyRouteWhenAnotherRouteFails(t *testing.T) {
 	sqs := &fakeSQSPublisher{err: expectedErr}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = pubsub
-	a.sqs = sqs
+	setTestPubSubProvider(a, pubsub)
+	setTestSQSProvider(a, sqs)
 
 	query, _ := a.selectEventsQuery()
 	rows := mockEventRows().
@@ -363,7 +417,7 @@ func TestProcessOneBatchDeletesContentPoisonAndConfirmedSendTogether(t *testing.
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.sqs = sqs
+	setTestSQSProvider(a, sqs)
 
 	rows := mockEventRows().
 		AddRow(mockEventRow("poison", "sqs", "queue-a", "", nil)...).
@@ -392,7 +446,7 @@ func TestProcessOneBatchDeletesExpiredEventWithoutProviderCall(t *testing.T) {
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.sqs = sqs
+	setTestSQSProvider(a, sqs)
 
 	rows := mockEventRowsWithTimestamp().
 		AddRow(mockEventRow("expired", "sqs", "queue-a", "payload", nil, time.Now().Add(-2*time.Minute))...).
@@ -449,11 +503,11 @@ func TestProcessOneBatchCommitsDoneBeforeFatalAfterCommit(t *testing.T) {
 	cfg.SQSEnabled = false
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}}
+	setTestPubSubProvider(a, &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}})
 
 	rows := mockEventRows().
-		AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", mockDBValue(combinedOrderingOptions("key-a")))...).
-		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions("key-a")))...)
+		AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", mockDBValue(combinedOrderingOptions()))...).
+		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions()))...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -474,11 +528,11 @@ func TestProcessOneBatchPreservesFatalAfterCommitOnCommitFailure(t *testing.T) {
 	expectedErr := errors.New("commit failed")
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}}
+	setTestPubSubProvider(a, &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}})
 
 	rows := mockEventRows().
-		AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", mockDBValue(combinedOrderingOptions("key-a")))...).
-		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions("key-a")))...)
+		AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", mockDBValue(combinedOrderingOptions()))...).
+		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions()))...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -499,11 +553,11 @@ func TestProcessOneBatchPreservesFatalAfterCommitOnDeleteFailure(t *testing.T) {
 	expectedErr := errors.New("delete failed")
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}}
+	setTestPubSubProvider(a, &fakePubSubPublisher{errs: []error{nil, context.DeadlineExceeded}})
 
 	rows := mockEventRows().
-		AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", mockDBValue(combinedOrderingOptions("key-a")))...).
-		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions("key-a")))...)
+		AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", mockDBValue(combinedOrderingOptions()))...).
+		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions()))...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
 	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnError(expectedErr)
@@ -524,7 +578,7 @@ func TestProcessOneBatchRollsBackOnDeleteFailure(t *testing.T) {
 	expectedErr := errors.New("delete failed")
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = &fakePubSubPublisher{}
+	setTestPubSubProvider(a, &fakePubSubPublisher{})
 
 	rows := mockEventRows().AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", nil)...)
 	mock.ExpectBegin()
@@ -548,7 +602,7 @@ func TestProcessOneBatchRollsBackOnSelectFailure(t *testing.T) {
 	pubsub := &fakePubSubPublisher{}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = pubsub
+	setTestPubSubProvider(a, pubsub)
 
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnError(expectedErr)
@@ -572,7 +626,7 @@ func TestProcessOneBatchCommitFailureIsDatabaseError(t *testing.T) {
 	expectedErr := errors.New("commit failed")
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = &fakePubSubPublisher{}
+	setTestPubSubProvider(a, &fakePubSubPublisher{})
 
 	rows := mockEventRows().AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", nil)...)
 	mock.ExpectBegin()
@@ -600,7 +654,7 @@ func TestProcessOneBatchDeduplicatesDoneIDs(t *testing.T) {
 	}}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.sqs = sqs
+	setTestSQSProvider(a, sqs)
 
 	rows := mockEventRows().AddRow(mockEventRow("event-1", "sqs", "queue-a", "one", nil)...)
 	mock.ExpectBegin()
@@ -625,7 +679,7 @@ func TestProcessOneBatchIgnoresDoneIDOutsideSelectedBatch(t *testing.T) {
 	}}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.sqs = sqs
+	setTestSQSProvider(a, sqs)
 
 	rows := mockEventRows().AddRow(mockEventRow("event-1", "sqs", "queue-a", "one", nil)...)
 	mock.ExpectBegin()
@@ -653,8 +707,8 @@ func TestProcessOneBatchRunsEnabledBackendsConcurrently(t *testing.T) {
 	}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = pubsub
-	a.sqs = sqs
+	setTestPubSubProvider(a, pubsub)
+	setTestSQSProvider(a, sqs)
 
 	rows := mockEventRows().
 		AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", nil)...).
@@ -701,13 +755,13 @@ func TestProcessOneBatchRoutesAndDeletesHundredMixedBackendEvents(t *testing.T) 
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = pubsub
-	a.sqs = sqs
+	setTestPubSubProvider(a, pubsub)
+	setTestSQSProvider(a, sqs)
 
 	events := []event{}
 	for i := 0; i < 50; i++ {
-		events = append(events, testEvent(fmt.Sprintf("pubsub-%03d", i), "pubsub", "topic-a", "pubsub-payload", ""))
-		events = append(events, testEvent(fmt.Sprintf("sqs-%03d", i), "sqs", "queue-a", "sqs-payload", ""))
+		events = append(events, testEvent(fmt.Sprintf("pubsub-%03d", i), "pubsub", "topic-a", "pubsub-payload"))
+		events = append(events, testEvent(fmt.Sprintf("sqs-%03d", i), "sqs", "queue-a", "sqs-payload"))
 	}
 
 	mock.ExpectBegin()
@@ -743,13 +797,13 @@ func TestProcessOneBatchRoutesHundredMixedDestinations(t *testing.T) {
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = pubsub
-	a.sqs = sqs
+	setTestPubSubProvider(a, pubsub)
+	setTestSQSProvider(a, sqs)
 
 	events := []event{}
 	for i := 0; i < 50; i++ {
-		events = append(events, testEvent(fmt.Sprintf("pubsub-%03d", i), "pubsub", fmt.Sprintf("topic-%d", i/10), "pubsub-payload", ""))
-		events = append(events, testEvent(fmt.Sprintf("sqs-%03d", i), "sqs", fmt.Sprintf("queue-%d", i/10), "sqs-payload", ""))
+		events = append(events, testEvent(fmt.Sprintf("pubsub-%03d", i), "pubsub", fmt.Sprintf("topic-%d", i/10), "pubsub-payload"))
+		events = append(events, testEvent(fmt.Sprintf("sqs-%03d", i), "sqs", fmt.Sprintf("queue-%d", i/10), "sqs-payload"))
 	}
 
 	mock.ExpectBegin()
@@ -785,11 +839,11 @@ func TestProcessOneBatchUsesSingleBackendDefaultTopicForHundredEvents(t *testing
 	pubsub := &fakePubSubPublisher{}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = pubsub
+	setTestPubSubProvider(a, pubsub)
 
 	events := make([]event, 100)
 	for i := range events {
-		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "", "", "payload", "")
+		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "", "", "payload")
 	}
 
 	mock.ExpectBegin()
@@ -817,15 +871,15 @@ func TestProcessOneBatchUsesBackendDefaultsWithExplicitTargets(t *testing.T) {
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = pubsub
-	a.sqs = sqs
+	setTestPubSubProvider(a, pubsub)
+	setTestSQSProvider(a, sqs)
 
 	events := []event{}
 	for i := 0; i < 10; i++ {
-		events = append(events, testEvent(fmt.Sprintf("pubsub-explicit-%03d", i), "pubsub", "topic-explicit", "payload", ""))
-		events = append(events, testEvent(fmt.Sprintf("pubsub-default-%03d", i), "pubsub", "", "payload", ""))
-		events = append(events, testEvent(fmt.Sprintf("sqs-explicit-%03d", i), "sqs", "queue-explicit", "payload", ""))
-		events = append(events, testEvent(fmt.Sprintf("sqs-default-%03d", i), "sqs", "", "payload", ""))
+		events = append(events, testEvent(fmt.Sprintf("pubsub-explicit-%03d", i), "pubsub", "topic-explicit", "payload"))
+		events = append(events, testEvent(fmt.Sprintf("pubsub-default-%03d", i), "pubsub", "", "payload"))
+		events = append(events, testEvent(fmt.Sprintf("sqs-explicit-%03d", i), "sqs", "queue-explicit", "payload"))
+		events = append(events, testEvent(fmt.Sprintf("sqs-default-%03d", i), "sqs", "", "payload"))
 	}
 
 	mock.ExpectBegin()
@@ -855,12 +909,12 @@ func TestProcessOneBatchProcessesBacklogAcrossMultipleSelectedBatches(t *testing
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.sqs = sqs
+	setTestSQSProvider(a, sqs)
 
 	for batchIndex, selected := range []int{100, 100, 50} {
 		events := make([]event, selected)
 		for i := range events {
-			events[i] = testEvent(fmt.Sprintf("event-%d-%03d", batchIndex, i), "sqs", "queue-a", "payload", "")
+			events[i] = testEvent(fmt.Sprintf("event-%d-%03d", batchIndex, i), "sqs", "queue-a", "payload")
 		}
 		mock.ExpectBegin()
 		expectSelectEvents(mock, a).WillReturnRows(mockRowsForEvents(cfg, events))
@@ -942,7 +996,9 @@ func TestPostgresIntegrationProcessesAndDeletesEvents(t *testing.T) {
 	cfg.EventTable = table
 	pubsub := &fakePubSubPublisher{}
 	sqs := &fakeSQSPublisher{autoReply: true}
-	a := &app{cfg: cfg, db: db, pubsub: pubsub, sqs: sqs}
+	a := &app{cfg: cfg, db: db}
+	setTestPubSubProvider(a, pubsub)
+	setTestSQSProvider(a, sqs)
 
 	result, err := a.processOneBatch(ctx)
 	if err != nil {
@@ -1068,12 +1124,12 @@ func TestPostgresIntegrationRouteSelectionAcrossAllRoutes(t *testing.T) {
 		target := eventString(evt, cfg.EventTarget)
 		switch target {
 		case eventTargetPubSub:
-			if evt.route.backend != backendPubSub {
-				t.Fatalf("Pub/Sub event has resolved backend %v", evt.route.backend)
+			if evt.route.target != eventTargetPubSub {
+				t.Fatalf("Pub/Sub event has resolved target %q", evt.route.target)
 			}
 		case eventTargetSQS:
-			if evt.route.backend != backendSQS {
-				t.Fatalf("SQS event has resolved backend %v", evt.route.backend)
+			if evt.route.target != eventTargetSQS {
+				t.Fatalf("SQS event has resolved target %q", evt.route.target)
 			}
 		default:
 			t.Fatalf("collection included unroutable target %q in event %#v", target, evt.columns)
@@ -1158,7 +1214,7 @@ func TestPostgresIntegrationRouteGroupsExplicitAndDefaultDestinationTogether(t *
 		t.Fatalf("expected one resolved route capped at 40 events, got %d", len(events))
 	}
 	for _, evt := range events {
-		if evt.route.backend != backendPubSub || evt.route.destination != "topic-default" {
+		if evt.route.target != eventTargetPubSub || evt.route.destination != "topic-default" {
 			t.Fatalf("unexpected resolved route: %#v", evt.route)
 		}
 		if id := eventString(evt, cfg.EventID); !strings.HasPrefix(id, "000-explicit-") {

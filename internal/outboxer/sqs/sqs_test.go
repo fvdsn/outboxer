@@ -50,7 +50,7 @@ func TestSendSQSEventsStandardSendsHundredAsTenBatches(t *testing.T) {
 
 	events := make([]provider.Event, 100)
 	for i := range events {
-		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "sqs", "queue-a", "payload", "")
+		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "sqs", "queue-a", "")
 	}
 
 	var deletedMu sync.Mutex
@@ -96,7 +96,7 @@ func TestSendSQSEventsStandardGroupsHundredAcrossTenQueues(t *testing.T) {
 	events := make([]provider.Event, 100)
 	for i := range events {
 		queue := fmt.Sprintf("queue-%02d", i/10)
-		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "sqs", queue, "payload", "")
+		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "sqs", queue, "")
 	}
 
 	var deletedMu sync.Mutex
@@ -141,7 +141,7 @@ func TestSendSQSEventsUsesDefaultQueueForHundredEvents(t *testing.T) {
 
 	events := make([]provider.Event, 100)
 	for i := range events {
-		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "", "", "payload", "")
+		events[i] = testEvent(fmt.Sprintf("event-%03d", i), "", "", "")
 	}
 
 	var deletedMu sync.Mutex
@@ -176,11 +176,11 @@ func TestSendSQSEventsMixedStandardAndFIFOHappyPath(t *testing.T) {
 
 	events := []provider.Event{}
 	for i := 0; i < 20; i++ {
-		events = append(events, testEvent(fmt.Sprintf("standard-%03d", i), "sqs", "standard-queue", "payload", ""))
+		events = append(events, testEvent(fmt.Sprintf("standard-%03d", i), "sqs", "standard-queue", ""))
 	}
 	for i := 0; i < 6; i++ {
 		group := fmt.Sprintf("group-%d", i%2)
-		events = append(events, testEvent(fmt.Sprintf("fifo-%03d", i), "sqs", "orders.fifo", "payload", group))
+		events = append(events, testEvent(fmt.Sprintf("fifo-%03d", i), "sqs", "orders.fifo", group))
 	}
 
 	var deletedMu sync.Mutex

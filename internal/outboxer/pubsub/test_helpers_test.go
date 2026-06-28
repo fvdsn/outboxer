@@ -43,7 +43,7 @@ func testConfig() appConfig {
 
 func (a *app) sendPubsubEventsForTest(ctx context.Context, events []provider.Event, addIDToDelete func(any)) error {
 	events = a.routeTestEvents(events)
-	return Send(ctx, a.cfg.Config, a.pubsub, events, Callbacks{
+	return NewSender(a.cfg.Config, a.pubsub).Send(ctx, events, provider.Callbacks{
 		AddConfirmedID: addIDToDelete,
 		AddPoisonID: func(id any, _ string) {
 			addIDToDelete(id)

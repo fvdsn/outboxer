@@ -14,7 +14,6 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,7 +21,15 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	outboxpubsub "github.com/fvdsn/outboxer/internal/outboxer/pubsub"
+	outboxsqs "github.com/fvdsn/outboxer/internal/outboxer/sqs"
 )
+
+type pubsubPublishResult = outboxpubsub.PublishResult
+type pubsubMessage = outboxpubsub.Message
+type sqsBatchEntry = outboxsqs.BatchEntry
+type sqsBatchResponse = outboxsqs.BatchResponse
+type sqsBatchSuccess = outboxsqs.BatchSuccess
 
 type fakePubSubPublisher struct {
 	mu       sync.Mutex
@@ -105,18 +112,6 @@ type fakeSQSPublisher struct {
 type fakeSQSRequest struct {
 	queueURL string
 	entries  []sqsBatchEntry
-}
-
-type fakeSQSAPIError struct {
-	code string
-}
-
-func (e fakeSQSAPIError) Error() string {
-	return e.code
-}
-
-func (e fakeSQSAPIError) ErrorCode() string {
-	return e.code
 }
 
 func (p *fakeSQSPublisher) SendBatch(_ context.Context, queueURL string, entries []sqsBatchEntry) (sqsBatchResponse, error) {
@@ -292,7 +287,7 @@ func mockEventRow(id driver.Value, target string, destination string, payload dr
 	return append(values, extra...)
 }
 
-func testEvent(id, target, destination, payload, orderingKey string) event {
+func testEvent(id, target, destination, payload string) event {
 	columns := map[string]any{
 		"id":      id,
 		"payload": payload,
@@ -303,28 +298,14 @@ func testEvent(id, target, destination, payload, orderingKey string) event {
 	if destination != "" {
 		columns["destination"] = destination
 	}
-	if orderingKey != "" {
-		columns["options"] = combinedOrderingOptions(orderingKey)
-	}
 	return event{columns: columns}
 }
 
-func combinedOrderingOptions(key string) map[string]any {
+func combinedOrderingOptions() map[string]any {
 	return map[string]any{
-		"pubsub": map[string]any{"orderingKey": key},
-		"sqs":    map[string]any{"messageGroupId": key},
+		"pubsub": map[string]any{"orderingKey": "key-a"},
+		"sqs":    map[string]any{"messageGroupId": "key-a"},
 	}
-}
-
-func pubsubOptions(orderingKey string, attributes map[string]any) map[string]any {
-	section := map[string]any{}
-	if orderingKey != "" {
-		section["orderingKey"] = orderingKey
-	}
-	if attributes != nil {
-		section["attributes"] = attributes
-	}
-	return map[string]any{"pubsub": section}
 }
 
 func mockRowsForEvents(cfg appConfig, events []event) *sqlmock.Rows {
@@ -396,15 +377,6 @@ func anySQLArgs(count int) []driver.Value {
 	return args
 }
 
-func sortedDeletedIDs(deleted []any) []string {
-	ids := make([]string, 0, len(deleted))
-	for _, id := range deleted {
-		ids = append(ids, fmt.Sprint(id))
-	}
-	sort.Strings(ids)
-	return ids
-}
-
 func assertStatsSnapshot(t *testing.T, got statsSnapshot, want statsSnapshot) {
 	t.Helper()
 	if got != want {
@@ -412,26 +384,10 @@ func assertStatsSnapshot(t *testing.T, got statsSnapshot, want statsSnapshot) {
 	}
 }
 
-func expectedHundredEventIDs() []string {
-	ids := make([]string, 100)
-	for i := range ids {
-		ids[i] = fmt.Sprintf("event-%03d", i)
-	}
-	return ids
-}
-
 func sqsEntryCountByQueue(requests []fakeSQSRequest) map[string]int {
 	counts := map[string]int{}
 	for _, request := range requests {
 		counts[request.queueURL] += len(request.entries)
-	}
-	return counts
-}
-
-func sqsRequestCountByQueue(requests []fakeSQSRequest) map[string]int {
-	counts := map[string]int{}
-	for _, request := range requests {
-		counts[request.queueURL]++
 	}
 	return counts
 }

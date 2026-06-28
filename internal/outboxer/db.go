@@ -96,12 +96,15 @@ func validateEventColumns(cfg appConfig, columns []string) error {
 	if cfg.MaxEventAge > 0 {
 		required = append(required, cfg.EventTimestamp)
 	}
-	if cfg.PubSubEnabled && cfg.SQSEnabled {
+	routes := configuredProviderRoutes(cfg)
+	if len(routes) > 1 {
 		required = append(required, cfg.EventTarget)
 	}
-	if (cfg.PubSubEnabled && cfg.DefaultPubSubTopic == "") ||
-		(cfg.SQSEnabled && cfg.DefaultSQSQueueURL == "") {
-		required = append(required, cfg.EventDestination)
+	for _, route := range routes {
+		if route.defaultDestination == "" {
+			required = append(required, cfg.EventDestination)
+			break
+		}
 	}
 
 	missing := []string{}
@@ -193,52 +196,55 @@ func (a *app) selectEventsQuerySQL() string {
 }
 
 func (a *app) resolvedTargetSQL(tableAlias string) (expr string, predicate string) {
-	targetCol := columnSQL(tableAlias, a.cfg.EventTarget)
-	switch {
-	case a.cfg.EventTarget == "" && a.cfg.PubSubEnabled && !a.cfg.SQSEnabled:
-		return sqlStringLiteral(eventTargetPubSub), "TRUE"
-	case a.cfg.EventTarget == "" && a.cfg.SQSEnabled && !a.cfg.PubSubEnabled:
-		return sqlStringLiteral(eventTargetSQS), "TRUE"
-	case a.cfg.PubSubEnabled && !a.cfg.SQSEnabled:
-		return fmt.Sprintf("COALESCE(NULLIF(%s, ''), %s)", targetCol, sqlStringLiteral(eventTargetPubSub)),
-			fmt.Sprintf("COALESCE(NULLIF(%s, ''), %s) = %s", targetCol, sqlStringLiteral(eventTargetPubSub), sqlStringLiteral(eventTargetPubSub))
-	case a.cfg.SQSEnabled && !a.cfg.PubSubEnabled:
-		return fmt.Sprintf("COALESCE(NULLIF(%s, ''), %s)", targetCol, sqlStringLiteral(eventTargetSQS)),
-			fmt.Sprintf("COALESCE(NULLIF(%s, ''), %s) = %s", targetCol, sqlStringLiteral(eventTargetSQS), sqlStringLiteral(eventTargetSQS))
-	default:
-		return fmt.Sprintf("NULLIF(%s, '')", targetCol),
-			fmt.Sprintf("NULLIF(%s, '') IN (%s, %s)", targetCol, sqlStringLiteral(eventTargetPubSub), sqlStringLiteral(eventTargetSQS))
+	routes := configuredProviderRoutes(a.cfg)
+	if len(routes) == 0 {
+		return "NULL", "FALSE"
 	}
+	if len(routes) == 1 {
+		target := sqlStringLiteral(routes[0].target)
+		if a.cfg.EventTarget == "" {
+			return target, "TRUE"
+		}
+		targetCol := columnSQL(tableAlias, a.cfg.EventTarget)
+		expr := fmt.Sprintf("COALESCE(NULLIF(%s, ''), %s)", targetCol, target)
+		return expr, fmt.Sprintf("%s = %s", expr, target)
+	}
+	if a.cfg.EventTarget == "" {
+		return "NULL", "FALSE"
+	}
+
+	targetCol := columnSQL(tableAlias, a.cfg.EventTarget)
+	expr = fmt.Sprintf("NULLIF(%s, '')", targetCol)
+	return expr, fmt.Sprintf("%s IN (%s)", expr, sqlStringList(providerTargets(routes)))
 }
 
 func (a *app) resolvedDestinationSQL(tableAlias string, targetExpr string) string {
+	routes := configuredProviderRoutes(a.cfg)
 	destinationCol := columnSQL(tableAlias, a.cfg.EventDestination)
-	switch {
-	case a.cfg.EventDestination == "" && a.cfg.PubSubEnabled && !a.cfg.SQSEnabled:
-		return sqlStringLiteral(a.cfg.DefaultPubSubTopic)
-	case a.cfg.EventDestination == "" && a.cfg.SQSEnabled && !a.cfg.PubSubEnabled:
-		return sqlStringLiteral(a.cfg.DefaultSQSQueueURL)
-	case a.cfg.EventDestination == "":
+	if a.cfg.EventDestination == "" {
+		if len(routes) == 1 {
+			return sqlStringLiteral(routes[0].defaultDestination)
+		}
 		return a.defaultDestinationSQL(targetExpr)
-	default:
-		return fmt.Sprintf(
-			"COALESCE(NULLIF(%s, ''), %s)",
-			destinationCol,
-			a.defaultDestinationSQL(targetExpr),
-		)
 	}
+	return fmt.Sprintf(
+		"COALESCE(NULLIF(%s, ''), %s)",
+		destinationCol,
+		a.defaultDestinationSQL(targetExpr),
+	)
 }
 
 func (a *app) defaultDestinationSQL(targetExpr string) string {
-	return fmt.Sprintf(
-		"CASE WHEN %s = %s THEN %s WHEN %s = %s THEN %s ELSE '' END",
-		targetExpr,
-		sqlStringLiteral(eventTargetPubSub),
-		sqlStringLiteral(a.cfg.DefaultPubSubTopic),
-		targetExpr,
-		sqlStringLiteral(eventTargetSQS),
-		sqlStringLiteral(a.cfg.DefaultSQSQueueURL),
-	)
+	branches := []string{}
+	for _, route := range configuredProviderRoutes(a.cfg) {
+		branches = append(branches, fmt.Sprintf(
+			"WHEN %s = %s THEN %s",
+			targetExpr,
+			sqlStringLiteral(route.target),
+			sqlStringLiteral(route.defaultDestination),
+		))
+	}
+	return "CASE " + strings.Join(branches, " ") + " ELSE '' END"
 }
 
 func (a *app) routeMatchSQL(tableAlias string, targetExpr string, destinationExpr string) string {
@@ -272,14 +278,11 @@ func (a *app) routeMatchSQL(tableAlias string, targetExpr string, destinationExp
 }
 
 func (a *app) defaultTargetSQL() string {
-	switch {
-	case a.cfg.PubSubEnabled && !a.cfg.SQSEnabled:
-		return sqlStringLiteral(eventTargetPubSub)
-	case a.cfg.SQSEnabled && !a.cfg.PubSubEnabled:
-		return sqlStringLiteral(eventTargetSQS)
-	default:
-		return "''"
+	routes := configuredProviderRoutes(a.cfg)
+	if len(routes) == 1 {
+		return sqlStringLiteral(routes[0].target)
 	}
+	return "''"
 }
 
 func columnSQL(tableAlias string, name string) string {
@@ -291,35 +294,37 @@ func columnSQL(tableAlias string, name string) string {
 
 func (a *app) routableSQL(targetExpr string, destinationExpr string, targetPredicate string) string {
 	if targetPredicate == "" {
-		targetPredicate = fmt.Sprintf("%s IN (%s, %s)", targetExpr, sqlStringLiteral(eventTargetPubSub), sqlStringLiteral(eventTargetSQS))
+		targetPredicate = fmt.Sprintf("%s IN (%s)", targetExpr, sqlStringList(providerTargets(configuredProviderRoutes(a.cfg))))
 	}
 	return fmt.Sprintf("(%s) AND COALESCE(%s, '') <> '' AND %s", targetPredicate, destinationExpr, a.routeOwnershipSQL(targetExpr, destinationExpr))
 }
 
 func (a *app) routeOwnershipSQL(targetExpr string, destinationExpr string) string {
 	predicates := []string{}
-	if len(a.cfg.PubSubDestinations) > 0 {
+	for _, route := range configuredProviderRoutes(a.cfg) {
+		if len(route.ownedDestinations) == 0 {
+			continue
+		}
 		predicates = append(predicates, fmt.Sprintf(
 			"(%s <> %s OR %s IN (%s))",
 			targetExpr,
-			sqlStringLiteral(eventTargetPubSub),
+			sqlStringLiteral(route.target),
 			destinationExpr,
-			sqlStringList(a.cfg.PubSubDestinations),
-		))
-	}
-	if len(a.cfg.SQSDestinations) > 0 {
-		predicates = append(predicates, fmt.Sprintf(
-			"(%s <> %s OR %s IN (%s))",
-			targetExpr,
-			sqlStringLiteral(eventTargetSQS),
-			destinationExpr,
-			sqlStringList(a.cfg.SQSDestinations),
+			sqlStringList(route.ownedDestinations),
 		))
 	}
 	if len(predicates) == 0 {
 		return "TRUE"
 	}
 	return strings.Join(predicates, " AND ")
+}
+
+func providerTargets(routes []providerRoute) []string {
+	targets := make([]string, len(routes))
+	for i, route := range routes {
+		targets[i] = route.target
+	}
+	return targets
 }
 
 func scanEvents(rows *sql.Rows) ([]event, error) {
@@ -344,14 +349,8 @@ func scanEvents(rows *sql.Rows) ([]event, error) {
 		}
 
 		target := valueString(normalizeDBValue(values[0]))
-		routeBackend := backendNone
-		switch target {
-		case eventTargetPubSub:
-			routeBackend = backendPubSub
-		case eventTargetSQS:
-			routeBackend = backendSQS
-		default:
-			return nil, fmt.Errorf("selected event has unsupported resolved target %q", target)
+		if target == "" {
+			return nil, fmt.Errorf("selected event has empty resolved target")
 		}
 		destination := valueString(normalizeDBValue(values[1]))
 		if destination == "" {
@@ -360,7 +359,7 @@ func scanEvents(rows *sql.Rows) ([]event, error) {
 
 		evt := event{
 			columns: map[string]any{},
-			route:   eventRoute{backend: routeBackend, destination: destination},
+			route:   eventRoute{target: target, destination: destination},
 		}
 		for i, column := range columns[2:] {
 			evt.columns[column] = normalizeDBValue(values[i+2])

@@ -864,7 +864,7 @@ func TestSendPubsubEventsOrderedUnknownResultIsFatalAfterCommit(t *testing.T) {
 	}
 
 	err := a.sendPubsubEventsForTest(context.Background(), events, func(any) {})
-	if !errors.Is(err, ErrFatalAfterCommit) {
+	if !errors.Is(err, provider.ErrFatalAfterCommit) {
 		t.Fatalf("expected fatal-after-commit error, got %v", err)
 	}
 }

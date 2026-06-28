@@ -231,7 +231,7 @@ func TestDeadLetterPayloadIncludesResolvedRouteDefaults(t *testing.T) {
 	payload := a.deadLetterPayload(poisonEvent{
 		evt: event{
 			columns: map[string]any{"id": "event-1", "payload": "hello"},
-			route:   eventRoute{backend: backendPubSub, destination: cfg.DefaultPubSubTopic},
+			route:   eventRoute{target: eventTargetPubSub, destination: cfg.DefaultPubSubTopic},
 		},
 		error: "Pub/Sub message is invalid",
 	})
@@ -274,7 +274,7 @@ func TestProcessOneBatchDeadLettersContentPoisonAndDeletesConfirmedSendTogether(
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.sqs = sqs
+	setTestSQSProvider(a, sqs)
 
 	rows := mockEventRows().
 		AddRow(mockEventRow("poison", "sqs", "queue-a", "", nil)...).
@@ -324,7 +324,7 @@ func TestProcessOneBatchDeadLettersPubSubLocalPoison(t *testing.T) {
 	pubsub := &fakePubSubPublisher{}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.pubsub = pubsub
+	setTestPubSubProvider(a, pubsub)
 
 	rows := mockEventRows().AddRow(mockEventRow("poison", "pubsub", "bad/topic", "payload", nil)...)
 	mock.ExpectBegin()
@@ -364,7 +364,7 @@ func TestProcessOneBatchRollsBackWhenDeadLetterInsertFails(t *testing.T) {
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.sqs = sqs
+	setTestSQSProvider(a, sqs)
 
 	rows := mockEventRows().AddRow(mockEventRow("poison", "sqs", "queue-a", "", nil)...)
 	mock.ExpectBegin()
@@ -392,7 +392,7 @@ func TestProcessOneBatchDeadLettersExpiredEvent(t *testing.T) {
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a, mock, cleanup := newMockProcessorApp(t, cfg)
 	defer cleanup()
-	a.sqs = sqs
+	setTestSQSProvider(a, sqs)
 
 	rows := mockEventRowsWithTimestamp().AddRow(mockEventRow("expired", "sqs", "queue-a", "payload", nil, time.Now().Add(-2*time.Minute))...)
 	mock.ExpectBegin()

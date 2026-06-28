@@ -330,23 +330,23 @@ func (cfg appConfig) validateStorage() error {
 }
 
 func (cfg appConfig) validateRuntime() error {
-	if !cfg.PubSubEnabled && !cfg.SQSEnabled {
-		return fmt.Errorf("no publishing backend enabled: set PUBSUB_ENABLED=true and/or SQS_ENABLED=true")
+	routes := configuredProviderRoutes(cfg)
+	if len(routes) == 0 {
+		return fmt.Errorf("no publishing provider enabled")
 	}
-	if cfg.PubSubEnabled && cfg.SQSEnabled && cfg.EventTarget == "" {
-		return fmt.Errorf("a target column is required when both Pub/Sub and SQS are enabled: set EVENT_TARGET")
+	if len(routes) > 1 && cfg.EventTarget == "" {
+		return fmt.Errorf("a target column is required when multiple providers are enabled: set EVENT_TARGET")
 	}
-	if cfg.PubSubEnabled && cfg.DefaultPubSubTopic == "" && cfg.EventDestination == "" {
-		return fmt.Errorf("Pub/Sub needs a destination: set EVENT_DESTINATION or DEFAULT_PUBSUB_TOPIC")
+	for _, route := range routes {
+		if route.defaultDestination == "" && cfg.EventDestination == "" {
+			return fmt.Errorf("provider %q needs a destination: set EVENT_DESTINATION or its default destination", route.target)
+		}
 	}
-	if cfg.SQSEnabled && cfg.DefaultSQSQueueURL == "" && cfg.EventDestination == "" {
-		return fmt.Errorf("SQS needs a destination: set EVENT_DESTINATION or DEFAULT_SQS_QUEUE_URL")
-	}
-	if !cfg.PubSubEnabled && len(cfg.PubSubDestinations) > 0 {
-		return fmt.Errorf("PUBSUB_DESTINATIONS requires PUBSUB_ENABLED=true")
-	}
-	if !cfg.SQSEnabled && len(cfg.SQSDestinations) > 0 {
-		return fmt.Errorf("SQS_DESTINATIONS requires SQS_ENABLED=true")
+	for _, spec := range providerSpecs {
+		route := spec.route(cfg)
+		if !spec.enabled(cfg) && len(route.ownedDestinations) > 0 {
+			return fmt.Errorf("destination ownership for provider %q requires that provider to be enabled", route.target)
+		}
 	}
 	if cfg.CollectBatchTarget <= 0 {
 		return fmt.Errorf("batch collection target (%d) must be positive: set COLLECT_BATCH_TARGET", cfg.CollectBatchTarget)

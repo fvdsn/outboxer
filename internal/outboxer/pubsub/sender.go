@@ -11,10 +11,11 @@ import (
 	"github.com/fvdsn/outboxer/internal/outboxer/provider"
 )
 
-const targetPubSub = "pubsub"
+// Target identifies this provider in routing, the event-options section key,
+// and failure signatures.
+const Target = "pubsub"
 
-var ErrFatalAfterCommit = errors.New("fatal after commit")
-
+// Config contains the relay settings needed by the Pub/Sub provider.
 type Config struct {
 	EventID            string
 	EventTimestamp     string
@@ -27,13 +28,7 @@ type Config struct {
 	PublishResultGrace time.Duration
 }
 
-type Callbacks struct {
-	AddConfirmedID func(any)
-	AddPoisonID    func(any, string)
-	MarkProgress   func()
-	LogFailure     func(context.Context, string, string, ...any)
-}
-
+// Publisher is the Pub/Sub client behavior used by the sender.
 type Publisher interface {
 	Publish(ctx context.Context, message Message) PublishResult
 	Flush(topic string)
@@ -41,10 +36,12 @@ type Publisher interface {
 	Close() error
 }
 
+// PublishResult waits for the result of an asynchronous publish.
 type PublishResult interface {
 	Get(ctx context.Context) (string, error)
 }
 
+// Message is a provider-neutral representation of a Pub/Sub message.
 type Message struct {
 	Topic       string
 	Data        []byte
@@ -55,15 +52,22 @@ type Message struct {
 type sender struct {
 	cfg       Config
 	publisher Publisher
-	callbacks Callbacks
 }
 
-func Send(ctx context.Context, cfg Config, publisher Publisher, events []provider.Event, callbacks Callbacks) error {
-	a := &sender{cfg: cfg, publisher: publisher, callbacks: callbacks}
+// NewSender creates a Pub/Sub implementation of provider.Sender.
+func NewSender(cfg Config, publisher Publisher) provider.Sender {
+	return newSender(cfg, publisher)
+}
+
+func newSender(cfg Config, publisher Publisher) *sender {
+	return &sender{cfg: cfg, publisher: publisher}
+}
+
+func (a *sender) Send(ctx context.Context, events []provider.Event, callbacks provider.Callbacks) error {
 	return a.sendPubsubEventsWithCallbacks(ctx, events, callbacks)
 }
 
-func (a *sender) sendPubsubEventsWithCallbacks(ctx context.Context, events []provider.Event, callbacks Callbacks) error {
+func (a *sender) sendPubsubEventsWithCallbacks(ctx context.Context, events []provider.Event, callbacks provider.Callbacks) error {
 	unordered := []pubsubCandidateEvent{}
 	orderedByGroup := map[string][]pubsubCandidateEvent{}
 	groupOrder := []string{}
@@ -95,7 +99,7 @@ func (a *sender) sendPubsubEventsWithCallbacks(ctx context.Context, events []pro
 	return errors.Join(unorderedErr, orderedErr)
 }
 
-func (a *sender) sendPubsubUnorderedEvents(ctx context.Context, events []pubsubCandidateEvent, callbacks Callbacks) error {
+func (a *sender) sendPubsubUnorderedEvents(ctx context.Context, events []pubsubCandidateEvent, callbacks provider.Callbacks) error {
 	pending := []pubsubPendingPublish{}
 	topics := map[string]struct{}{}
 	for _, candidate := range events {
@@ -114,13 +118,13 @@ func (a *sender) sendPubsubUnorderedEvents(ctx context.Context, events []pubsubC
 
 	var joined error
 	for _, pendingPublish := range pending {
-		messageID, err := a.awaitPubsubResult(ctx, pendingPublish.result)
+		messageID, err := a.awaitPubsubResult(ctx, pendingPublish.result, callbacks)
 		switch {
 		case err == nil:
 			a.markPubsubDone(pendingPublish.prepared, messageID, callbacks)
 		case errors.Is(err, context.DeadlineExceeded):
 			joined = errors.Join(joined, err)
-			a.logPubsubFailure(ctx, pendingPublish.prepared, err)
+			a.logPubsubFailure(ctx, pendingPublish.prepared, err, callbacks)
 		case isPubSubPermanentBackendError(err):
 			done, isolateErr := a.sendPubsubIsolated(ctx, pendingPublish.prepared, false, callbacks)
 			if !done {
@@ -129,13 +133,13 @@ func (a *sender) sendPubsubUnorderedEvents(ctx context.Context, events []pubsubC
 			joined = errors.Join(joined, isolateErr)
 		default:
 			joined = errors.Join(joined, err)
-			a.logPubsubFailure(ctx, pendingPublish.prepared, err)
+			a.logPubsubFailure(ctx, pendingPublish.prepared, err, callbacks)
 		}
 	}
 	return joined
 }
 
-func (a *sender) sendPubsubOrderedGroup(ctx context.Context, events []pubsubCandidateEvent, callbacks Callbacks) error {
+func (a *sender) sendPubsubOrderedGroup(ctx context.Context, events []pubsubCandidateEvent, callbacks provider.Callbacks) error {
 	for _, candidate := range events {
 		prepared, ok := a.preparePubsubEvent(ctx, candidate, callbacks)
 		if !ok {
@@ -144,13 +148,13 @@ func (a *sender) sendPubsubOrderedGroup(ctx context.Context, events []pubsubCand
 		prepared, result := a.publishPubsubEvent(ctx, prepared)
 		a.publisher.Flush(prepared.message.Topic)
 
-		messageID, err := a.awaitPubsubResult(ctx, result)
+		messageID, err := a.awaitPubsubResult(ctx, result, callbacks)
 		switch {
 		case err == nil:
 			a.markPubsubDone(prepared, messageID, callbacks)
 		case errors.Is(err, context.DeadlineExceeded):
-			a.logPubsubFailure(ctx, prepared, err)
-			return errors.Join(ErrFatalAfterCommit, err)
+			a.logPubsubFailure(ctx, prepared, err, callbacks)
+			return errors.Join(provider.ErrFatalAfterCommit, err)
 		case isPubSubPermanentBackendError(err):
 			a.publisher.ResumePublish(prepared.message.Topic, prepared.message.OrderingKey)
 			done, isolateErr := a.sendPubsubIsolated(ctx, prepared, true, callbacks)
@@ -162,17 +166,17 @@ func (a *sender) sendPubsubOrderedGroup(ctx context.Context, events []pubsubCand
 			}
 		default:
 			a.publisher.ResumePublish(prepared.message.Topic, prepared.message.OrderingKey)
-			a.logPubsubFailure(ctx, prepared, err)
+			a.logPubsubFailure(ctx, prepared, err, callbacks)
 			return err
 		}
 	}
 	return nil
 }
 
-func (a *sender) sendPubsubIsolated(ctx context.Context, prepared pubsubPreparedEvent, ordered bool, callbacks Callbacks) (bool, error) {
+func (a *sender) sendPubsubIsolated(ctx context.Context, prepared pubsubPreparedEvent, ordered bool, callbacks provider.Callbacks) (bool, error) {
 	prepared, result := a.publishPubsubEvent(ctx, prepared)
 	a.publisher.Flush(prepared.message.Topic)
-	messageID, err := a.awaitPubsubResult(ctx, result)
+	messageID, err := a.awaitPubsubResult(ctx, result, callbacks)
 	if err != nil && ordered && !errors.Is(err, context.DeadlineExceeded) {
 		a.publisher.ResumePublish(prepared.message.Topic, prepared.message.OrderingKey)
 	}
@@ -181,14 +185,14 @@ func (a *sender) sendPubsubIsolated(ctx context.Context, prepared pubsubPrepared
 		a.markPubsubDone(prepared, messageID, callbacks)
 		return true, nil
 	case errors.Is(err, context.DeadlineExceeded) && ordered:
-		a.logPubsubFailure(ctx, prepared, err)
-		return false, errors.Join(ErrFatalAfterCommit, err)
+		a.logPubsubFailure(ctx, prepared, err, callbacks)
+		return false, errors.Join(provider.ErrFatalAfterCommit, err)
 	case isPubSubPermanentBackendError(err):
 		callbacks.AddPoisonID(prepared.id, err.Error())
-		a.logPubsubFailure(ctx, prepared, err)
+		a.logPubsubFailure(ctx, prepared, err, callbacks)
 		return true, nil
 	default:
-		a.logPubsubFailure(ctx, prepared, err)
+		a.logPubsubFailure(ctx, prepared, err, callbacks)
 		return false, err
 	}
 }
@@ -215,9 +219,9 @@ type pubsubPendingPublish struct {
 	result   PublishResult
 }
 
-func (a *sender) parsePubsubCandidate(ctx context.Context, evt provider.Event, callbacks Callbacks) (pubsubCandidateEvent, bool) {
+func (a *sender) parsePubsubCandidate(ctx context.Context, evt provider.Event, callbacks provider.Callbacks) (pubsubCandidateEvent, bool) {
 	topicName := evt.Destination
-	options, err := provider.BackendOptions(evt, a.cfg.EventOptions, targetPubSub)
+	options, err := provider.BackendOptions(evt, a.cfg.EventOptions, Target)
 	if err != nil {
 		a.rejectMalformedOptions(ctx, evt, topicName, "", err, callbacks)
 		return pubsubCandidateEvent{}, false
@@ -230,7 +234,7 @@ func (a *sender) parsePubsubCandidate(ctx context.Context, evt provider.Event, c
 	return pubsubCandidateEvent{evt: evt, options: options, topic: topicName, orderingKey: orderingKey}, true
 }
 
-func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandidateEvent, callbacks Callbacks) (pubsubPreparedEvent, bool) {
+func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandidateEvent, callbacks provider.Callbacks) (pubsubPreparedEvent, bool) {
 	evt := candidate.evt
 	attributes, err := candidate.options.Object("attributes")
 	if err != nil {
@@ -294,7 +298,7 @@ func (a *sender) publishPubsubEvent(ctx context.Context, prepared pubsubPrepared
 	return prepared, a.publisher.Publish(ctx, prepared.message)
 }
 
-func (a *sender) markPubsubDone(prepared pubsubPreparedEvent, messageID string, callbacks Callbacks) {
+func (a *sender) markPubsubDone(prepared pubsubPreparedEvent, messageID string, callbacks provider.Callbacks) {
 	callbacks.AddConfirmedID(prepared.id)
 	slog.Debug("Event sent",
 		"event_id", prepared.id,
@@ -310,9 +314,9 @@ func (a *sender) markPubsubDone(prepared pubsubPreparedEvent, messageID string, 
 	)
 }
 
-func (a *sender) logPubsubFailure(ctx context.Context, prepared pubsubPreparedEvent, err error) {
-	a.logFailure(ctx, "Failed to send event",
-		fmt.Sprintf("pubsub|%s|%s|%s", prepared.message.Topic, prepared.message.OrderingKey, err.Error()),
+func (a *sender) logPubsubFailure(ctx context.Context, prepared pubsubPreparedEvent, err error, callbacks provider.Callbacks) {
+	logFailure(ctx, callbacks, "Failed to send event",
+		fmt.Sprintf("%s|%s|%s|%s", Target, prepared.message.Topic, prepared.message.OrderingKey, err.Error()),
 		"event_id", prepared.id,
 		"event_ordering_key", prepared.message.OrderingKey,
 		"event_attributes", prepared.message.Attributes,
@@ -322,13 +326,13 @@ func (a *sender) logPubsubFailure(ctx context.Context, prepared pubsubPreparedEv
 	)
 }
 
-func (a *sender) rejectMalformedOptions(ctx context.Context, evt provider.Event, destination string, field string, err error, callbacks Callbacks) {
-	signature := fmt.Sprintf("%s|%s|malformed-options", targetPubSub, destination)
+func (a *sender) rejectMalformedOptions(ctx context.Context, evt provider.Event, destination string, field string, err error, callbacks provider.Callbacks) {
+	signature := fmt.Sprintf("%s|%s|malformed-options", Target, destination)
 	if field != "" {
-		signature = fmt.Sprintf("%s|%s|%s|malformed-options", targetPubSub, destination, field)
+		signature = fmt.Sprintf("%s|%s|%s|malformed-options", Target, destination, field)
 	}
 	callbacks.AddPoisonID(provider.Value(evt, a.cfg.EventID), err.Error())
-	a.logFailure(ctx, "Failed to send event",
+	logFailure(ctx, callbacks, "Failed to send event",
 		signature,
 		"event_id", provider.Value(evt, a.cfg.EventID),
 		"event_destination", destination,
@@ -336,20 +340,16 @@ func (a *sender) rejectMalformedOptions(ctx context.Context, evt provider.Event,
 	)
 }
 
-func (a *sender) logFailure(ctx context.Context, message string, signature string, attrs ...any) {
-	if a.callbacks.LogFailure != nil {
-		a.callbacks.LogFailure(ctx, message, signature, attrs...)
+func logFailure(ctx context.Context, callbacks provider.Callbacks, message string, signature string, attrs ...any) {
+	if callbacks.LogFailure != nil {
+		callbacks.LogFailure(ctx, message, signature, attrs...)
 	}
 }
 
-func (a *sender) markProgress() {
-	if a.callbacks.MarkProgress != nil {
-		a.callbacks.MarkProgress()
+func (a *sender) awaitPubsubResult(ctx context.Context, result PublishResult, callbacks provider.Callbacks) (string, error) {
+	if callbacks.MarkProgress != nil {
+		defer callbacks.MarkProgress()
 	}
-}
-
-func (a *sender) awaitPubsubResult(ctx context.Context, result PublishResult) (string, error) {
-	defer a.markProgress()
 
 	waitCtx, cancel := withTimeout(ctx, a.cfg.PublishTimeout+a.cfg.PublishResultGrace)
 	defer cancel()
