@@ -216,8 +216,8 @@ func TestLocalEmulatorE2ETwoOutboxersPreserveOrderedPubSub(t *testing.T) {
 		"EVENT_PAYLOAD":             "payload",
 		"EVENT_ID":                  "id",
 		"EVENT_TIMESTAMP":           "timestamp",
-		"DEFAULT_SQS_QUEUE_URL":     "",
-		"AWS_WEB_IDENTITY_PROVIDER": "",
+		"DEFAULT_SQS_QUEUE_URL":     "disabled",
+		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	}
 	first := startOutboxer(t, ctx, binary, table, overrides)
 	second := startOutboxer(t, ctx, binary, table, overrides)
@@ -299,16 +299,16 @@ func TestLocalEmulatorE2ETwoOutboxersSplitByTargetOnSameTable(t *testing.T) {
 		"PUBLISH_TIMEOUT_MS":        "5000",
 		"PUBLISH_RESULT_GRACE_MS":   "500",
 		"WATCHDOG_INTERVAL_MS":      "60000",
-		"AWS_WEB_IDENTITY_PROVIDER": "",
+		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	}
 	pubsubOverrides := copyStringMap(commonOverrides)
 	pubsubOverrides["PUBSUB_ENABLED"] = "true"
 	pubsubOverrides["SQS_ENABLED"] = "false"
-	pubsubOverrides["DEFAULT_SQS_QUEUE_URL"] = ""
+	pubsubOverrides["DEFAULT_SQS_QUEUE_URL"] = "disabled"
 	sqsOverrides := copyStringMap(commonOverrides)
 	sqsOverrides["PUBSUB_ENABLED"] = "false"
 	sqsOverrides["SQS_ENABLED"] = "true"
-	sqsOverrides["DEFAULT_PUBSUB_TOPIC"] = ""
+	sqsOverrides["DEFAULT_PUBSUB_TOPIC"] = "disabled"
 
 	pubsubProcess := startOutboxer(t, ctx, binary, table, pubsubOverrides)
 	sqsProcess := startOutboxer(t, ctx, binary, table, sqsOverrides)
@@ -373,14 +373,14 @@ func TestLocalEmulatorE2ETwoOutboxersSplitByPubSubDestination(t *testing.T) {
 	commonOverrides := map[string]string{
 		"PUBSUB_ENABLED":            "true",
 		"SQS_ENABLED":               "false",
-		"DEFAULT_SQS_QUEUE_URL":     "",
+		"DEFAULT_SQS_QUEUE_URL":     "disabled",
 		"COLLECT_BATCH_TARGET":      "5",
 		"POLL_INTERVAL_MS":          "10",
 		"ERROR_COOLDOWN_MS":         "50",
 		"PUBLISH_TIMEOUT_MS":        "5000",
 		"PUBLISH_RESULT_GRACE_MS":   "500",
 		"WATCHDOG_INTERVAL_MS":      "60000",
-		"AWS_WEB_IDENTITY_PROVIDER": "",
+		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	}
 	overridesA := copyStringMap(commonOverrides)
 	overridesA["PUBSUB_DESTINATIONS"] = topicA
@@ -443,14 +443,14 @@ func TestLocalEmulatorE2ETwoOutboxersSplitBySQSDestination(t *testing.T) {
 	commonOverrides := map[string]string{
 		"PUBSUB_ENABLED":            "false",
 		"SQS_ENABLED":               "true",
-		"DEFAULT_PUBSUB_TOPIC":      "",
+		"DEFAULT_PUBSUB_TOPIC":      "disabled",
 		"COLLECT_BATCH_TARGET":      "5",
 		"POLL_INTERVAL_MS":          "10",
 		"ERROR_COOLDOWN_MS":         "50",
 		"PUBLISH_TIMEOUT_MS":        "5000",
 		"PUBLISH_RESULT_GRACE_MS":   "500",
 		"WATCHDOG_INTERVAL_MS":      "60000",
-		"AWS_WEB_IDENTITY_PROVIDER": "",
+		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	}
 	overridesA := copyStringMap(commonOverrides)
 	overridesA["SQS_DESTINATIONS"] = queueA
@@ -530,7 +530,7 @@ func TestLocalEmulatorE2ERouteBrokenDestinationDoesNotBlockHealthyRoute(t *testi
 		"ERROR_COOLDOWN_MS":         "50",
 		"POLL_INTERVAL_MS":          "50",
 		"WATCHDOG_INTERVAL_MS":      "60000",
-		"AWS_WEB_IDENTITY_PROVIDER": "",
+		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	})
 
 	messages := receivePubSubMessages(t, ctx, pubsubClient, subscription, 3)
@@ -582,7 +582,7 @@ func TestLocalEmulatorE2EDeadLettersSQSPoisonEvent(t *testing.T) {
 	process := startOutboxer(t, ctx, binary, table, map[string]string{
 		"PUBSUB_ENABLED":            "false",
 		"SQS_ENABLED":               "true",
-		"DEFAULT_PUBSUB_TOPIC":      "",
+		"DEFAULT_PUBSUB_TOPIC":      "disabled",
 		"DEFAULT_SQS_QUEUE_URL":     queue,
 		"DLQ_TABLE":                 dlqTable,
 		"COLLECT_BATCH_TARGET":      "10",
@@ -591,7 +591,7 @@ func TestLocalEmulatorE2EDeadLettersSQSPoisonEvent(t *testing.T) {
 		"PUBLISH_TIMEOUT_MS":        "5000",
 		"PUBLISH_RESULT_GRACE_MS":   "500",
 		"WATCHDOG_INTERVAL_MS":      "60000",
-		"AWS_WEB_IDENTITY_PROVIDER": "",
+		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	})
 
 	messages := receiveSQSMessages(t, ctx, sqsClient, queue, 1)

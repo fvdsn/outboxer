@@ -9,24 +9,35 @@ import (
 
 var errMalformedOptions = errors.New("malformed event options")
 
+type backend int
+
+const (
+	backendNone backend = iota
+	backendPubSub
+	backendSQS
+)
+
+type eventRoute struct {
+	// The selection query resolves defaults and ownership filters. Senders use
+	// this route directly so dispatch cannot disagree with collection.
+	backend     backend
+	destination string
+}
+
 type event struct {
 	columns map[string]any
+	route   eventRoute
 }
 
 func eventValue(evt event, column string) any {
 	return evt.columns[column]
 }
 
-func eventOptionalString(evt event, column string) string {
-	value := eventString(evt, column)
-	if value == "" {
-		return ""
-	}
-	return value
+func eventString(evt event, column string) string {
+	return valueString(eventValue(evt, column))
 }
 
-func eventString(evt event, column string) string {
-	value := eventValue(evt, column)
+func valueString(value any) string {
 	switch typed := value.(type) {
 	case nil:
 		return ""
@@ -89,8 +100,6 @@ func eventOptionsObject(evt event, column string) (map[string]any, error) {
 		return nil, nil
 	case map[string]any:
 		return typed, nil
-	case map[string]string:
-		return stringMapToAnyMap(typed), nil
 	case []byte:
 		return parseOptionsJSON(typed)
 	case string:
@@ -150,19 +159,9 @@ func normalizeObject(value any) (map[string]any, bool) {
 	switch typed := value.(type) {
 	case map[string]any:
 		return typed, true
-	case map[string]string:
-		return stringMapToAnyMap(typed), true
 	default:
 		return nil, false
 	}
-}
-
-func stringMapToAnyMap(value map[string]string) map[string]any {
-	out := make(map[string]any, len(value))
-	for key, item := range value {
-		out[key] = item
-	}
-	return out
 }
 
 func eventLatency(value any) any {

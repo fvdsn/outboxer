@@ -90,70 +90,67 @@ type cliOption struct {
 const disableSentinel = "disabled"
 
 func loadConfig(args []string, output io.Writer) (appConfig, error) {
-	loadDotEnv(".env")
-	cfg := defaultConfig()
-
-	flags := flag.NewFlagSet("outboxer", flag.ContinueOnError)
-	flags.SetOutput(output)
-	options := []cliOption{}
-	flags.Usage = func() {
-		printUsage(output, options)
-	}
-
-	finalize := bindConfigFlags(flags, &cfg, &options)
-
-	if err := applyEnv(flags, options); err != nil {
+	parser := newConfigParser("outboxer", output)
+	if err := parser.parse(args); err != nil {
 		return appConfig{}, err
 	}
-	if err := flags.Parse(args); err != nil {
-		return appConfig{}, err
-	}
-	finalize()
-	if flags.NArg() > 0 {
-		return appConfig{}, fmt.Errorf("unexpected argument: %q", flags.Arg(0))
-	}
-
-	return cfg, nil
+	return parser.cfg, nil
 }
 
 // loadInitConfig parses the init command's arguments. It reuses every relay
 // flag/env so a single configuration drives both verbs, and adds the
 // provisioning-only flags (--apply and the PG_INIT_*/PG_PRODUCER_ROLES settings).
 func loadInitConfig(args []string, output io.Writer) (appConfig, bool, error) {
-	loadDotEnv(".env")
-	cfg := defaultConfig()
-
-	flags := flag.NewFlagSet("outboxer init", flag.ContinueOnError)
-	flags.SetOutput(output)
-	options := []cliOption{}
-	flags.Usage = func() {
-		printUsage(output, options)
-	}
-
-	finalize := bindConfigFlags(flags, &cfg, &options)
+	parser := newConfigParser("outboxer init", output)
 
 	var apply bool
-	flags.BoolVar(&apply, "apply", false, "Execute the generated SQL against the database instead of printing it to stdout.")
-	options = append(options, cliOption{category: "Provisioning", name: "apply", usage: "Execute the generated SQL against the database instead of printing it to stdout."})
+	parser.flags.BoolVar(&apply, "apply", false, "Execute the generated SQL against the database instead of printing it to stdout.")
+	parser.options = append(parser.options, cliOption{category: "Provisioning", name: "apply", usage: "Execute the generated SQL against the database instead of printing it to stdout."})
 
-	addStringFlag(flags, &options, "Provisioning", &cfg.PGInitUser, "pg-init-user", cfg.PGInitUser, "Provisioning role to connect as for --apply. When set, init also creates and grants to the run role.", "PG_INIT_USER")
-	addValueFlag(flags, &options, "Provisioning", newSecretStringValue(&cfg.PGInitPassword), "pg-init-password", "Password for the provisioning role.", "PG_INIT_PASSWORD", redactDefault(cfg.PGInitPassword))
-	producerRoles := strings.Join(cfg.PGProducerRoles, ",")
-	addStringFlag(flags, &options, "Provisioning", &producerRoles, "pg-producer-roles", producerRoles, "Comma-separated existing roles granted SELECT, INSERT on the event table.", "PG_PRODUCER_ROLES")
+	addStringFlag(parser.flags, &parser.options, "Provisioning", &parser.cfg.PGInitUser, "pg-init-user", parser.cfg.PGInitUser, "Provisioning role to connect as for --apply. When set, init also creates and grants to the run role.", "PG_INIT_USER")
+	addValueFlag(parser.flags, &parser.options, "Provisioning", newSecretStringValue(&parser.cfg.PGInitPassword), "pg-init-password", "Password for the provisioning role.", "PG_INIT_PASSWORD", redactDefault(parser.cfg.PGInitPassword))
+	producerRoles := strings.Join(parser.cfg.PGProducerRoles, ",")
+	addStringFlag(parser.flags, &parser.options, "Provisioning", &producerRoles, "pg-producer-roles", producerRoles, "Comma-separated existing roles granted SELECT, INSERT on the event table.", "PG_PRODUCER_ROLES")
 
-	if err := applyEnv(flags, options); err != nil {
+	if err := parser.parse(args); err != nil {
 		return appConfig{}, false, err
 	}
-	if err := flags.Parse(args); err != nil {
-		return appConfig{}, false, err
-	}
-	finalize()
-	cfg.PGProducerRoles = parseStringList(producerRoles)
-	if flags.NArg() > 0 {
-		return appConfig{}, false, fmt.Errorf("unexpected argument: %q", flags.Arg(0))
-	}
+	parser.cfg.PGProducerRoles = parseStringList(producerRoles)
+	return parser.cfg, apply, nil
+}
 
-	return cfg, apply, nil
+type configParser struct {
+	cfg      appConfig
+	flags    *flag.FlagSet
+	options  []cliOption
+	finalize func()
+}
+
+func newConfigParser(name string, output io.Writer) *configParser {
+	loadDotEnv(".env")
+	parser := &configParser{cfg: defaultConfig()}
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	flags.SetOutput(output)
+	flags.Usage = func() {
+		printUsage(output, parser.options)
+	}
+	parser.flags = flags
+	parser.finalize = bindConfigFlags(flags, &parser.cfg, &parser.options)
+	return parser
+}
+
+func (p *configParser) parse(args []string) error {
+	if err := applyEnv(p.flags, p.options); err != nil {
+		return err
+	}
+	if err := p.flags.Parse(args); err != nil {
+		return err
+	}
+	p.finalize()
+	if p.flags.NArg() > 0 {
+		return fmt.Errorf("unexpected argument: %q", p.flags.Arg(0))
+	}
+	return nil
 }
 
 // bindConfigFlags registers every relay configuration flag on the flag set and
@@ -213,13 +210,13 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 	addIntFlag(flags, options, "PostgreSQL", &pgQueryTimeoutMS, "pg-query-timeout-ms", pgQueryTimeoutMS, "Timeout for a single database query in milliseconds. 0 disables the timeout.", "PG_QUERY_TIMEOUT_MS")
 
 	addBoolFlag(flags, options, "Google Pub/Sub", &cfg.PubSubEnabled, "pubsub-enabled", cfg.PubSubEnabled, "Enable publishing to Google Pub/Sub.", "PUBSUB_ENABLED")
-	addStringFlag(flags, options, "Google Pub/Sub", &cfg.DefaultPubSubTopic, "default-pubsub-topic", cfg.DefaultPubSubTopic, "Pub/Sub topic used when an event has no destination.", "DEFAULT_PUBSUB_TOPIC")
+	addDisableableFlag(flags, options, "Google Pub/Sub", &cfg.DefaultPubSubTopic, "default-pubsub-topic", cfg.DefaultPubSubTopic, "Pub/Sub topic used when an event has no destination.", "DEFAULT_PUBSUB_TOPIC")
 	addStringFlag(flags, options, "Google Pub/Sub", &pubsubDestinations, "pubsub-destinations", pubsubDestinations, "Comma-separated Pub/Sub destinations this process owns. Empty means all Pub/Sub destinations.", "PUBSUB_DESTINATIONS")
 	addStringFlag(flags, options, "Google Pub/Sub", &cfg.PubSubProjectID, "pubsub-project-id", cfg.PubSubProjectID, "Google Cloud project for Pub/Sub. Detected from ADC when empty.", "PUBSUB_PROJECT_ID")
 	addStringFlag(flags, options, "Google Pub/Sub", &cfg.PubSubAPIEndpoint, "pubsub-api-endpoint", cfg.PubSubAPIEndpoint, "Optional Pub/Sub API endpoint override.", "PUBSUB_API_ENDPOINT")
 
 	addBoolFlag(flags, options, "AWS SQS", &cfg.SQSEnabled, "sqs-enabled", cfg.SQSEnabled, "Enable publishing to AWS SQS.", "SQS_ENABLED")
-	addStringFlag(flags, options, "AWS SQS", &cfg.DefaultSQSQueueURL, "default-sqs-queue-url", cfg.DefaultSQSQueueURL, "SQS queue URL used when an event has no destination.", "DEFAULT_SQS_QUEUE_URL")
+	addDisableableFlag(flags, options, "AWS SQS", &cfg.DefaultSQSQueueURL, "default-sqs-queue-url", cfg.DefaultSQSQueueURL, "SQS queue URL used when an event has no destination.", "DEFAULT_SQS_QUEUE_URL")
 	addStringFlag(flags, options, "AWS SQS", &sqsDestinations, "sqs-destinations", sqsDestinations, "Comma-separated SQS destinations this process owns. Empty means all SQS destinations.", "SQS_DESTINATIONS")
 	addStringFlag(flags, options, "AWS SQS", &cfg.SQSAPIEndpoint, "sqs-api-endpoint", cfg.SQSAPIEndpoint, "Optional SQS API endpoint override.", "SQS_API_ENDPOINT")
 	addStringFlag(flags, options, "AWS SQS", &cfg.AWSRegion, "aws-region", cfg.AWSRegion, "AWS region for SQS and STS.", "AWS_REGION")
@@ -227,7 +224,7 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 	addStringFlag(flags, options, "AWS SQS", &cfg.AWSRoleSessionName, "aws-role-session-name", cfg.AWSRoleSessionName, "AWS assume-role session name.", "AWS_ROLE_SESSION_NAME")
 	addIntFlag(flags, options, "AWS SQS", &awsRoleDurationSeconds, "aws-role-duration-seconds", awsRoleDurationSeconds, "AWS assumed-role duration in seconds.", "AWS_ROLE_DURATION_SECONDS")
 	addIntFlag(flags, options, "AWS SQS", &awsCredentialRefreshWindowMS, "aws-credential-refresh-window-ms", awsCredentialRefreshWindowMS, "Refresh assumed credentials before expiry in milliseconds.", "AWS_CREDENTIAL_REFRESH_WINDOW_MS")
-	addStringFlag(flags, options, "AWS SQS", &cfg.AWSWebIdentityProvider, "aws-web-identity-provider", cfg.AWSWebIdentityProvider, "Set to 'google' to assume the AWS role with a Google OIDC token (GCP to AWS).", "AWS_WEB_IDENTITY_PROVIDER")
+	addDisableableFlag(flags, options, "AWS SQS", &cfg.AWSWebIdentityProvider, "aws-web-identity-provider", cfg.AWSWebIdentityProvider, "Set to 'google' to assume the AWS role with a Google OIDC token (GCP to AWS).", "AWS_WEB_IDENTITY_PROVIDER")
 	addStringFlag(flags, options, "AWS SQS", &cfg.AWSWebIdentityAudience, "aws-web-identity-audience", cfg.AWSWebIdentityAudience, "Audience for the web identity token, matching the AWS IAM OIDC provider.", "AWS_WEB_IDENTITY_AUDIENCE")
 
 	return func() {
@@ -486,7 +483,7 @@ func addStringFlag(flags *flag.FlagSet, options *[]cliOption, category string, d
 	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseEnvVars(envVar)})
 }
 
-// addDisableableFlag registers an optional column or table whose value may be the
+// addDisableableFlag registers an optional string setting whose value may be the
 // disableSentinel ("disabled") to omit it. An empty value is rejected.
 func addDisableableFlag(flags *flag.FlagSet, options *[]cliOption, category string, destination *string, name string, value string, description string, envVar string) {
 	*destination = value

@@ -189,16 +189,12 @@ func (a *app) insertDeadLetters(ctx context.Context, tx *sql.Tx, poison []poison
 }
 
 func (a *app) deadLetterPayload(poisoned poisonEvent) map[string]any {
-	route := a.classifyRoute(poisoned.evt)
 	target := ""
-	destination := ""
-	switch route.backend {
+	switch poisoned.evt.route.backend {
 	case backendPubSub:
 		target = eventTargetPubSub
-		destination = a.destinationForBackend(poisoned.evt, backendPubSub)
 	case backendSQS:
 		target = eventTargetSQS
-		destination = a.destinationForBackend(poisoned.evt, backendSQS)
 	}
 
 	payload := map[string]any{
@@ -206,7 +202,7 @@ func (a *app) deadLetterPayload(poisoned poisonEvent) map[string]any {
 		"source_table":     a.cfg.EventTable,
 		"dead_lettered_at": time.Now().UTC().Format(time.RFC3339Nano),
 		"target":           target,
-		"destination":      destination,
+		"destination":      poisoned.evt.route.destination,
 		"original_event":   originalEventJSON(poisoned.evt),
 	}
 	if poisoned.error != "" {

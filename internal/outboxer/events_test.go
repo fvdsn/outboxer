@@ -136,7 +136,7 @@ func TestLegacyMetadataColumnsAreIgnored(t *testing.T) {
 		"attributes":   []byte(`{"legacy":"ignored"}`),
 	}}
 
-	if err := a.sendPubsubEvent(context.Background(), evt, func(any) {}); err != nil {
+	if err := a.sendPubsubEventForTest(context.Background(), evt, func(any) {}); err != nil {
 		t.Fatalf("sendPubsubEvent returned error: %v", err)
 	}
 	if len(pubsub.messages) != 1 {

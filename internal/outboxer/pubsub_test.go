@@ -21,7 +21,7 @@ func TestSendPubsubEventRespectsPublishTimeout(t *testing.T) {
 	evt := event{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "p"}}
 
 	start := time.Now()
-	err := a.sendPubsubEvent(context.Background(), evt, func(any) {})
+	err := a.sendPubsubEventForTest(context.Background(), evt, func(any) {})
 	if err == nil {
 		t.Fatal("expected a timeout error from a blocked publish")
 	}
@@ -42,7 +42,7 @@ func TestSendPubsubEventsUnorderedHundredOneTopic(t *testing.T) {
 	}
 
 	deleted := []any{}
-	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	if err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendPubsubEvents returned error: %v", err)
@@ -72,7 +72,7 @@ func TestSendPubsubEventsUnorderedHundredAcrossTenTopics(t *testing.T) {
 	}
 
 	deleted := []any{}
-	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	if err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendPubsubEvents returned error: %v", err)
@@ -113,7 +113,7 @@ func TestSendPubsubEventsUsesDefaultTopicForHundredEvents(t *testing.T) {
 	}
 
 	deleted := []any{}
-	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	if err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendPubsubEvents returned error: %v", err)
@@ -148,7 +148,7 @@ func TestSendPubsubEventsMixedOrderedAndUnorderedAcrossTopics(t *testing.T) {
 
 	var deletedMu sync.Mutex
 	deleted := []any{}
-	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	if err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deletedMu.Lock()
 		defer deletedMu.Unlock()
 		deleted = append(deleted, id)
@@ -260,7 +260,7 @@ func TestSendPubsubEventUsesDefaultTopicAndSanitizesAttributes(t *testing.T) {
 		"options": []byte(`{"pubsub":{"attributes":{"keep":"yes","drop":42}}}`),
 	}}
 
-	err := a.sendPubsubEvent(context.Background(), evt, func(id any) {
+	err := a.sendPubsubEventForTest(context.Background(), evt, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if err != nil {
@@ -290,7 +290,6 @@ func TestCloudPubSubPublisherReusesCachedPublisherPerTopic(t *testing.T) {
 	created := map[string]int{}
 	publishers := map[string]*fakeTopicPublisher{}
 	publisher := &cloudPubSubPublisher{
-		cfg:        testConfig(),
 		publishers: map[string]pubsubTopicPublisher{},
 	}
 	publisher.newPublisher = func(topic string) pubsubTopicPublisher {
@@ -319,7 +318,6 @@ func TestCloudPubSubPublisherReusesCachedPublisherPerTopic(t *testing.T) {
 func TestCloudPubSubPublisherCloseStopsCachedPublishers(t *testing.T) {
 	publishers := map[string]*fakeTopicPublisher{}
 	publisher := &cloudPubSubPublisher{
-		cfg:        testConfig(),
 		publishers: map[string]pubsubTopicPublisher{},
 	}
 	publisher.newPublisher = func(topic string) pubsubTopicPublisher {
@@ -352,7 +350,7 @@ func TestSendPubsubEventReturnsPublisherError(t *testing.T) {
 		"payload":     "payload",
 	}}
 
-	err := a.sendPubsubEvent(context.Background(), evt, func(any) {})
+	err := a.sendPubsubEventForTest(context.Background(), evt, func(any) {})
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected publisher error, got %v", err)
 	}
@@ -370,7 +368,7 @@ func TestSendPubsubEventKeepsSyntacticallyValidMissingTopic(t *testing.T) {
 		"payload":     "payload",
 	}}
 
-	err := a.sendPubsubEvent(context.Background(), evt, func(id any) {
+	err := a.sendPubsubEventForTest(context.Background(), evt, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if !errors.Is(err, expectedErr) {
@@ -392,7 +390,7 @@ func TestSendPubsubEventsFlushesUnorderedBatch(t *testing.T) {
 		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two"}},
 	}
 
-	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	if err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendPubsubEvents returned error: %v", err)
@@ -420,7 +418,7 @@ func TestSendPubsubEventsFlushesEachUnorderedTopic(t *testing.T) {
 		{columns: map[string]any{"id": "event-2", "destination": "topic-2", "payload": "two"}},
 	}
 
-	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	if err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendPubsubEvents returned error: %v", err)
@@ -447,7 +445,7 @@ func TestSendPubsubEventsOrderedKeySuccessIsSequential(t *testing.T) {
 		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "options": combinedOrderingOptions("key-a")}},
 	}
 
-	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	if err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendPubsubEvents returned error: %v", err)
@@ -479,14 +477,14 @@ func TestSendPubsubEventsOrderedKeyPreservesOrderAcrossBatches(t *testing.T) {
 		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "options": combinedOrderingOptions("key-a")}},
 		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "options": combinedOrderingOptions("key-a")}},
 	}
-	if err := a.sendPubsubEvents(context.Background(), firstBatch, func(any) {}); err != nil {
+	if err := a.sendPubsubEventsForTest(context.Background(), firstBatch, func(any) {}); err != nil {
 		t.Fatalf("first sendPubsubEvents returned error: %v", err)
 	}
 
 	secondBatch := []event{
 		{columns: map[string]any{"id": "event-4", "destination": "topic-1", "payload": "four", "options": combinedOrderingOptions("key-a")}},
 	}
-	if err := a.sendPubsubEvents(context.Background(), secondBatch, func(any) {}); err != nil {
+	if err := a.sendPubsubEventsForTest(context.Background(), secondBatch, func(any) {}); err != nil {
 		t.Fatalf("second sendPubsubEvents returned error: %v", err)
 	}
 
@@ -514,7 +512,7 @@ func TestSendPubsubEventsOrderedKeysProgressConcurrently(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- a.sendPubsubEvents(context.Background(), events, func(any) {})
+		done <- a.sendPubsubEventsForTest(context.Background(), events, func(any) {})
 	}()
 
 	started := []string{}
@@ -549,7 +547,7 @@ func TestSendPubsubEventsMixedOrderedAndUnorderedSuccess(t *testing.T) {
 		{columns: map[string]any{"id": "unordered-1", "destination": "topic-1", "payload": "unordered"}},
 	}
 
-	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	if err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendPubsubEvents returned error: %v", err)
@@ -576,7 +574,7 @@ func TestSendPubsubEventsUnorderedUnknownResultIsKept(t *testing.T) {
 		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two"}},
 	}
 
-	err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -599,7 +597,7 @@ func TestSendPubsubEventsWaitsThroughPublishResultGrace(t *testing.T) {
 		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one"}},
 	}
 
-	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	if err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendPubsubEvents returned error: %v", err)
@@ -622,7 +620,7 @@ func TestSendPubsubEventsCanceledResultIsKept(t *testing.T) {
 		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one"}},
 	}
 
-	err := a.sendPubsubEvents(ctx, events, func(id any) {
+	err := a.sendPubsubEventsForTest(ctx, events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if !errors.Is(err, context.Canceled) {
@@ -643,7 +641,7 @@ func TestSendPubsubEventsDoesNotPoisonMultiEventPublishLimits(t *testing.T) {
 		{columns: map[string]any{"id": "large-1", "destination": "topic-1", "payload": strings.Repeat("a", 6_000_000)}},
 		{columns: map[string]any{"id": "large-2", "destination": "topic-1", "payload": strings.Repeat("b", 6_000_000)}},
 	}
-	if err := a.sendPubsubEvents(context.Background(), largeEvents, func(id any) {
+	if err := a.sendPubsubEventsForTest(context.Background(), largeEvents, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendPubsubEvents for large events returned error: %v", err)
@@ -661,7 +659,7 @@ func TestSendPubsubEventsDoesNotPoisonMultiEventPublishLimits(t *testing.T) {
 		}}
 	}
 	deleted = nil
-	if err := a.sendPubsubEvents(context.Background(), manyEvents, func(id any) {
+	if err := a.sendPubsubEventsForTest(context.Background(), manyEvents, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendPubsubEvents for many events returned error: %v", err)
@@ -688,7 +686,7 @@ func TestSendPubsubEventsDropsLocalPoisonWithoutProviderCall(t *testing.T) {
 		{columns: map[string]any{"id": "topic", "destination": "1-bad-topic", "payload": "body"}},
 	}
 
-	if err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	if err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendPubsubEvents returned error: %v", err)
@@ -712,7 +710,7 @@ func TestSendPubsubEventsIsolatesPermanentUnorderedFailure(t *testing.T) {
 		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "payload"}},
 	}
 
-	err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if err != nil {
@@ -746,7 +744,7 @@ func TestSendPubsubEventsIsolatesPermanentBadEventAndValidEvent(t *testing.T) {
 		{columns: map[string]any{"id": "valid", "destination": "topic-1", "payload": "valid"}},
 	}
 
-	err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if err != nil {
@@ -770,17 +768,17 @@ func TestSendPubsubEventsOrderedRetryableFailureResumesAndStopsKey(t *testing.T)
 
 	events := []event{
 		{columns: map[string]any{"id": "event-1", "destination": "topic-1", "payload": "one", "options": combinedOrderingOptions("key-a")}},
-		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "options": combinedOrderingOptions("key-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "options": map[string]any{"pubsub": map[string]any{"orderingKey": "key-a", "attributes": 42}}}},
 	}
 
-	err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected retryable error, got %v", err)
 	}
 	if len(deleted) != 0 {
-		t.Fatalf("unexpected deleted ids: %#v", deleted)
+		t.Fatalf("later malformed event must remain after an earlier retryable failure, got deleted ids %#v", deleted)
 	}
 	if len(pubsub.messages) != 1 {
 		t.Fatalf("expected only first key event to be published, got %#v", pubsub.messages)
@@ -803,7 +801,7 @@ func TestSendPubsubEventsOrderedFailureAfterSuccessKeepsRemainder(t *testing.T) 
 		{columns: map[string]any{"id": "event-3", "destination": "topic-1", "payload": "three", "options": combinedOrderingOptions("key-a")}},
 	}
 
-	err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if !errors.Is(err, expectedErr) {
@@ -832,7 +830,7 @@ func TestSendPubsubEventsOrderedIsolationStopsAtFirstNonDone(t *testing.T) {
 		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "options": combinedOrderingOptions("key-a")}},
 	}
 
-	err := a.sendPubsubEvents(context.Background(), events, func(id any) {
+	err := a.sendPubsubEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if !errors.Is(err, expectedErr) {
@@ -863,7 +861,7 @@ func TestSendPubsubEventsOrderedUnknownResultIsFatalAfterCommit(t *testing.T) {
 		{columns: map[string]any{"id": "event-2", "destination": "topic-1", "payload": "two", "options": combinedOrderingOptions("key-a")}},
 	}
 
-	err := a.sendPubsubEvents(context.Background(), events, func(any) {})
+	err := a.sendPubsubEventsForTest(context.Background(), events, func(any) {})
 	if !errors.Is(err, errFatalAfterCommit) {
 		t.Fatalf("expected fatal-after-commit error, got %v", err)
 	}

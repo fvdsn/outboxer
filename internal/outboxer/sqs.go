@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -53,6 +52,35 @@ type sqsBatchEntry struct {
 	DeduplicationID    string
 	DelaySeconds       *int32
 	AWSXRayTraceHeader string
+}
+
+type sqsCandidateEvent struct {
+	evt         event
+	options     backendOptions
+	id          any
+	orderingKey string
+}
+
+func (evt sqsCandidateEvent) fifoGroupID() string {
+	if evt.orderingKey != "" {
+		return evt.orderingKey
+	}
+	return syntheticFIFOGroupID(fmt.Sprint(evt.id))
+}
+
+type sqsPreparedEvent struct {
+	id          any
+	timestamp   any
+	latency     any
+	payloadLen  int
+	messageSize int
+	orderingKey string
+	entry       sqsBatchEntry
+}
+
+type sqsQueueEvents struct {
+	queue  string
+	events []event
 }
 
 type sqsBatchResponse struct {
@@ -195,71 +223,72 @@ func (p *awsSQSPublisher) SendBatch(ctx context.Context, queueURL string, entrie
 func (a *app) sendSQSEventsWithCallbacks(ctx context.Context, events []event, callbacks senderCallbacks) error {
 	eventsByQueue := map[string][]event{}
 	for _, evt := range events {
-		queue := a.destinationForBackend(evt, backendSQS)
+		queue := evt.route.destination
 		eventsByQueue[queue] = append(eventsByQueue[queue], evt)
 	}
 
-	sem := make(chan struct{}, a.cfg.SQSSendConcurrency)
-	errs := make(chan error, len(eventsByQueue))
-	var wg sync.WaitGroup
+	queueGroups := make([]sqsQueueEvents, 0, len(eventsByQueue))
 	for queue, queueEvents := range eventsByQueue {
-		queue := queue
-		queueEvents := append([]event(nil), queueEvents...)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var err error
-			if strings.HasSuffix(queue, ".fifo") {
-				err = a.sendSQSFIFOEvents(ctx, sem, queue, queueEvents, callbacks)
-			} else {
-				err = a.sendSQSStandardEvents(ctx, sem, queue, queueEvents, callbacks)
-			}
-			if err != nil {
-				errs <- err
-			}
-		}()
+		queueGroups = append(queueGroups, sqsQueueEvents{queue: queue, events: append([]event(nil), queueEvents...)})
 	}
-	wg.Wait()
-	close(errs)
 
-	var joined error
-	for err := range errs {
-		joined = errors.Join(joined, err)
-	}
-	return joined
+	sem := make(chan struct{}, a.cfg.SQSSendConcurrency)
+	return runConcurrent(queueGroups, func(group sqsQueueEvents) error {
+		return a.sendSQSQueueEvents(ctx, sem, group.queue, group.events, callbacks)
+	})
 }
 
-func (a *app) sendSQSStandardEvents(ctx context.Context, sem chan struct{}, queue string, queueEvents []event, callbacks senderCallbacks) error {
-	chunks := chunkSQSStandardEvents(queueEvents, a.cfg)
-	errs := make(chan error, len(chunks))
-	var wg sync.WaitGroup
-	for _, chunk := range chunks {
-		chunk := append([]event(nil), chunk...)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if _, err := a.sendSQSBatchWithSemaphore(ctx, sem, queue, chunk, false, callbacks); err != nil {
-				errs <- err
-			}
-		}()
+func (a *app) sendSQSQueueEvents(ctx context.Context, sem chan struct{}, queue string, events []event, callbacks senderCallbacks) error {
+	if !validSQSQueueURL(queue) {
+		for _, evt := range events {
+			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), "SQS queue URL is syntactically invalid")
+		}
+		a.logFailure(ctx, "Failed to send event batch",
+			fmt.Sprintf("sqs|%s|invalid-queue-url", queue),
+			"event_destination", queue,
+			"error", "SQS queue URL is syntactically invalid",
+		)
+		return nil
 	}
-	wg.Wait()
-	close(errs)
 
-	var joined error
-	for err := range errs {
-		joined = errors.Join(joined, err)
+	candidates := make([]sqsCandidateEvent, 0, len(events))
+	for _, evt := range events {
+		candidate, ok := a.parseSQSCandidate(ctx, evt, queue, callbacks)
+		if ok {
+			candidates = append(candidates, candidate)
+		}
 	}
-	return joined
+
+	if strings.HasSuffix(queue, ".fifo") {
+		return a.sendSQSFIFOEvents(ctx, sem, queue, candidates, callbacks)
+	}
+
+	prepared := make([]sqsPreparedEvent, 0, len(candidates))
+	for _, candidate := range candidates {
+		evt, ok := a.prepareSQSEvent(ctx, candidate, queue, false, callbacks)
+		if ok {
+			prepared = append(prepared, evt)
+		}
+	}
+	return a.sendSQSStandardEvents(ctx, sem, queue, prepared, callbacks)
 }
 
-func chunkSQSStandardEvents(events []event, cfg appConfig) [][]event {
-	chunks := [][]event{}
-	current := []event{}
+func (a *app) sendSQSStandardEvents(ctx context.Context, sem chan struct{}, queue string, queueEvents []sqsPreparedEvent, callbacks senderCallbacks) error {
+	chunks := chunkSQSStandardEvents(queueEvents)
+	return runConcurrent(chunks, func(chunk []sqsPreparedEvent) error {
+		batch := append([]sqsPreparedEvent(nil), chunk...)
+		_, err := a.sendSQSBatchWithSemaphore(ctx, sem, queue, batch, callbacks)
+		return err
+	})
+}
+
+func chunkSQSStandardEvents(events []sqsPreparedEvent) [][]sqsPreparedEvent {
+	chunks := [][]sqsPreparedEvent{}
+	current := []sqsPreparedEvent{}
 	currentSize := 0
 
 	for _, evt := range events {
-		size := sqsEventMessageSize(evt, cfg)
+		size := evt.messageSize
 		if len(current) > 0 && (len(current) >= sqsEventBatchSize || currentSize+size > sqsEventMaxSizeByte) {
 			chunks = append(chunks, current)
 			current = nil
@@ -275,207 +304,157 @@ func chunkSQSStandardEvents(events []event, cfg appConfig) [][]event {
 	return chunks
 }
 
-func (a *app) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue string, queueEvents []event, callbacks senderCallbacks) error {
-	groups := map[string][]event{}
+func (a *app) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue string, queueEvents []sqsCandidateEvent, callbacks senderCallbacks) error {
+	groups := map[string][]sqsCandidateEvent{}
 	groupOrder := []string{}
 	for _, evt := range queueEvents {
-		groupID, err := a.sqsMessageGroupID(ctx, evt, queue, callbacks)
-		if err != nil {
-			continue
-		}
+		groupID := evt.fifoGroupID()
 		if _, ok := groups[groupID]; !ok {
 			groupOrder = append(groupOrder, groupID)
 		}
 		groups[groupID] = append(groups[groupID], evt)
 	}
 
-	errs := make(chan error, len(groupOrder))
-	var wg sync.WaitGroup
-	for _, groupID := range groupOrder {
-		groupEvents := append([]event(nil), groups[groupID]...)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for _, evt := range groupEvents {
-				done, err := a.sendSQSBatchWithSemaphore(ctx, sem, queue, []event{evt}, true, callbacks)
-				if err != nil {
-					errs <- err
-					return
-				}
-				if !done {
-					return
-				}
+	return runConcurrent(groupOrder, func(groupID string) error {
+		groupEvents := append([]sqsCandidateEvent(nil), groups[groupID]...)
+		for _, candidate := range groupEvents {
+			prepared, ok := a.prepareSQSEvent(ctx, candidate, queue, true, callbacks)
+			if !ok {
+				continue
 			}
-		}()
-	}
-	wg.Wait()
-	close(errs)
-
-	var joined error
-	for err := range errs {
-		joined = errors.Join(joined, err)
-	}
-	return joined
+			done, err := a.sendSQSBatchWithSemaphore(ctx, sem, queue, []sqsPreparedEvent{prepared}, callbacks)
+			if err != nil {
+				return err
+			}
+			if !done {
+				return nil
+			}
+		}
+		return nil
+	})
 }
 
-func (a *app) sendSQSBatchWithSemaphore(ctx context.Context, sem chan struct{}, queue string, events []event, isFIFO bool, callbacks senderCallbacks) (bool, error) {
+func (a *app) parseSQSCandidate(ctx context.Context, evt event, queueURL string, callbacks senderCallbacks) (sqsCandidateEvent, bool) {
+	options, err := eventSQSOptions(evt, a.cfg)
+	if err != nil {
+		a.rejectMalformedOptions(ctx, evt, eventTargetSQS, queueURL, "", err, callbacks)
+		return sqsCandidateEvent{}, false
+	}
+	orderingKey, err := options.stringValue("messageGroupId")
+	if err != nil {
+		a.rejectMalformedOptions(ctx, evt, eventTargetSQS, queueURL, "messageGroupId", err, callbacks)
+		return sqsCandidateEvent{}, false
+	}
+
+	id := eventValue(evt, a.cfg.EventID)
+	return sqsCandidateEvent{
+		evt:         evt,
+		options:     options,
+		id:          id,
+		orderingKey: orderingKey,
+	}, true
+}
+
+func (a *app) prepareSQSEvent(ctx context.Context, candidate sqsCandidateEvent, queueURL string, isFIFO bool, callbacks senderCallbacks) (sqsPreparedEvent, bool) {
+	attributes, err := sqsAttributes(candidate.options)
+	if err != nil {
+		a.rejectMalformedOptions(ctx, candidate.evt, eventTargetSQS, queueURL, "attributes", err, callbacks)
+		return sqsPreparedEvent{}, false
+	}
+	deduplicationID, err := candidate.options.stringValue("messageDeduplicationId")
+	if err != nil {
+		a.rejectMalformedOptions(ctx, candidate.evt, eventTargetSQS, queueURL, "messageDeduplicationId", err, callbacks)
+		return sqsPreparedEvent{}, false
+	}
+	delaySeconds, err := sqsDelaySeconds(candidate.options)
+	if err != nil {
+		a.rejectMalformedOptions(ctx, candidate.evt, eventTargetSQS, queueURL, "delaySeconds", err, callbacks)
+		return sqsPreparedEvent{}, false
+	}
+	traceHeader, err := sqsAWSTraceHeader(candidate.options)
+	if err != nil {
+		a.rejectMalformedOptions(ctx, candidate.evt, eventTargetSQS, queueURL, "messageSystemAttributes", err, callbacks)
+		return sqsPreparedEvent{}, false
+	}
+
+	timestamp := eventValue(candidate.evt, a.cfg.EventTimestamp)
+	eventID := fmt.Sprint(candidate.id)
+	entryID := providerSafeID(eventID, sqsBatchEntryIDPattern)
+	data := eventBytes(candidate.evt, a.cfg.EventPayload)
+	latency := eventLatency(timestamp)
+	if isSQSPoison(data, attributes, candidate.orderingKey, deduplicationID, delaySeconds) {
+		callbacks.addPoisonID(candidate.id, "Event is invalid for SQS")
+		a.logFailure(ctx, "Failed to send event",
+			fmt.Sprintf("sqs|%s|%s|local-poison", queueURL, candidate.orderingKey),
+			"event_id", candidate.id,
+			"event_destination", queueURL,
+			"error", "Event is invalid for SQS",
+		)
+		return sqsPreparedEvent{}, false
+	}
+
+	entry := sqsBatchEntry{
+		ID:                 entryID,
+		MessageBody:        string(data),
+		Attributes:         attributes,
+		AWSXRayTraceHeader: traceHeader,
+	}
+	if isFIFO {
+		entry.MessageGroupID = candidate.fifoGroupID()
+		if deduplicationID != "" {
+			entry.DeduplicationID = deduplicationID
+		} else {
+			entry.DeduplicationID = providerSafeID(eventID, sqsFIFOIDPattern)
+		}
+	} else {
+		entry.DelaySeconds = delaySeconds
+		entry.MessageGroupID = candidate.orderingKey
+	}
+
+	return sqsPreparedEvent{
+		id:          candidate.id,
+		timestamp:   timestamp,
+		latency:     latency,
+		payloadLen:  len(data),
+		messageSize: sqsMessageSize(data, attributes),
+		orderingKey: candidate.orderingKey,
+		entry:       entry,
+	}, true
+}
+
+func (a *app) sendSQSBatchWithSemaphore(ctx context.Context, sem chan struct{}, queue string, events []sqsPreparedEvent, callbacks senderCallbacks) (bool, error) {
 	select {
 	case sem <- struct{}{}:
 		defer func() { <-sem }()
 	case <-ctx.Done():
 		return false, ctx.Err()
 	}
-	return a.sendSQSBatch(ctx, queue, events, isFIFO, callbacks)
+	return a.sendSQSBatch(ctx, queue, events, callbacks)
 }
 
-func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event, isFIFO bool, callbacks senderCallbacks) (bool, error) {
+func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []sqsPreparedEvent, callbacks senderCallbacks) (bool, error) {
 	if len(events) == 0 {
 		return false, nil
 	}
 	defer markProcessorProgress()
 
-	if !validSQSQueueURL(queueURL) {
-		for _, evt := range events {
-			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), "SQS queue URL is syntactically invalid")
-		}
-		a.logFailure(ctx, "Failed to send event batch",
-			fmt.Sprintf("sqs|%s|invalid-queue-url", queueURL),
-			"event_destination", queueURL,
-			"error", "SQS queue URL is syntactically invalid",
-		)
-		return true, nil
-	}
-
 	start := time.Now()
-	entries := []sqsBatchEntry{}
+	entries := make([]sqsBatchEntry, 0, len(events))
 	idsByEntryID := map[string]any{}
 
 	for _, evt := range events {
-		options, err := eventSQSOptions(evt, a.cfg)
-		if err != nil {
-			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-			a.logFailure(ctx, "Failed to send event",
-				fmt.Sprintf("sqs|%s|malformed-options", queueURL),
-				"event_id", eventValue(evt, a.cfg.EventID),
-				"event_destination", queueURL,
-				"error", err.Error(),
-			)
-			continue
-		}
-		orderingKey, err := options.stringValue("messageGroupId")
-		if err != nil {
-			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-			a.logFailure(ctx, "Failed to send event",
-				fmt.Sprintf("sqs|%s|messageGroupId|malformed-options", queueURL),
-				"event_id", eventValue(evt, a.cfg.EventID),
-				"event_destination", queueURL,
-				"error", err.Error(),
-			)
-			continue
-		}
-		attributes, err := sqsAttributes(options)
-		if err != nil {
-			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-			a.logFailure(ctx, "Failed to send event",
-				fmt.Sprintf("sqs|%s|attributes|malformed-options", queueURL),
-				"event_id", eventValue(evt, a.cfg.EventID),
-				"event_destination", queueURL,
-				"error", err.Error(),
-			)
-			continue
-		}
-		deduplicationID, err := options.stringValue("messageDeduplicationId")
-		if err != nil {
-			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-			a.logFailure(ctx, "Failed to send event",
-				fmt.Sprintf("sqs|%s|messageDeduplicationId|malformed-options", queueURL),
-				"event_id", eventValue(evt, a.cfg.EventID),
-				"event_destination", queueURL,
-				"error", err.Error(),
-			)
-			continue
-		}
-		delaySeconds, err := sqsDelaySeconds(options)
-		if err != nil {
-			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-			a.logFailure(ctx, "Failed to send event",
-				fmt.Sprintf("sqs|%s|delaySeconds|malformed-options", queueURL),
-				"event_id", eventValue(evt, a.cfg.EventID),
-				"event_destination", queueURL,
-				"error", err.Error(),
-			)
-			continue
-		}
-		traceHeader, err := sqsAWSTraceHeader(options)
-		if err != nil {
-			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-			a.logFailure(ctx, "Failed to send event",
-				fmt.Sprintf("sqs|%s|messageSystemAttributes|malformed-options", queueURL),
-				"event_id", eventValue(evt, a.cfg.EventID),
-				"event_destination", queueURL,
-				"error", err.Error(),
-			)
-			continue
-		}
-		timestamp := eventValue(evt, a.cfg.EventTimestamp)
-		id := eventValue(evt, a.cfg.EventID)
-		eventID := fmt.Sprint(id)
-		entryID := providerSafeID(eventID, sqsBatchEntryIDPattern)
-		data := eventBytes(evt, a.cfg.EventPayload)
-		latency := eventLatency(timestamp)
-		if isSQSPoison(data, attributes, orderingKey, deduplicationID, delaySeconds) {
-			callbacks.addPoisonID(id, "Event is invalid for SQS")
-			a.logFailure(ctx, "Failed to send event",
-				fmt.Sprintf("sqs|%s|%s|local-poison", queueURL, orderingKey),
-				"event_id", id,
-				"event_destination", queueURL,
-				"error", "Event is invalid for SQS",
-			)
-			continue
-		}
-
 		slog.Debug("Sending event",
-			"event_id", id,
-			"event_timestamp", timestamp,
-			"event_latency", latency,
-			"event_payload_size", len(data),
-			"event_ordering_key", orderingKey,
-			"event_attributes", attributes,
+			"event_id", evt.id,
+			"event_timestamp", evt.timestamp,
+			"event_latency", evt.latency,
+			"event_payload_size", evt.payloadLen,
+			"event_ordering_key", evt.orderingKey,
+			"event_attributes", evt.entry.Attributes,
 			"event_target", eventTargetSQS,
 			"event_destination", queueURL,
 		)
-
-		entry := sqsBatchEntry{
-			ID:                 entryID,
-			MessageBody:        string(data),
-			Attributes:         attributes,
-			AWSXRayTraceHeader: traceHeader,
-		}
-		if !isFIFO {
-			entry.DelaySeconds = delaySeconds
-		}
-		if orderingKey != "" {
-			entry.MessageGroupID = orderingKey
-		}
-		if isFIFO {
-			groupID := orderingKey
-			if groupID == "" {
-				groupID = syntheticFIFOGroupID(eventID)
-			}
-			entry.MessageGroupID = groupID
-			if deduplicationID != "" {
-				entry.DeduplicationID = deduplicationID
-			} else {
-				entry.DeduplicationID = providerSafeID(eventID, sqsFIFOIDPattern)
-			}
-		}
-
-		entries = append(entries, entry)
-		idsByEntryID[entryID] = id
-	}
-
-	if len(entries) == 0 {
-		return true, nil
+		entries = append(entries, evt.entry)
+		idsByEntryID[evt.entry.ID] = evt.id
 	}
 
 	sendCtx, cancel := withTimeout(ctx, a.cfg.PublishTimeout)
@@ -484,16 +463,16 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 	if err != nil {
 		if isSQSPermanentRequestError(err) {
 			if len(events) == 1 {
-				callbacks.addPoisonID(eventValue(events[0], a.cfg.EventID), err.Error())
+				callbacks.addPoisonID(events[0].id, err.Error())
 				a.logFailure(ctx, "Failed to send event",
 					fmt.Sprintf("sqs|%s|%s", queueURL, err.Error()),
-					"event_id", eventValue(events[0], a.cfg.EventID),
+					"event_id", events[0].id,
 					"event_destination", queueURL,
 					"error", err.Error(),
 				)
 				return true, nil
 			}
-			return a.sendSQSBatchIsolated(ctx, queueURL, events, isFIFO, callbacks)
+			return a.sendSQSBatchIsolated(ctx, queueURL, events, callbacks)
 		}
 		a.logFailure(ctx, "Failed to send event batch",
 			fmt.Sprintf("sqs|%s|%s", queueURL, err.Error()),
@@ -533,11 +512,11 @@ func (a *app) sendSQSBatch(ctx context.Context, queueURL string, events []event,
 	return anyDone, nil
 }
 
-func (a *app) sendSQSBatchIsolated(ctx context.Context, queueURL string, events []event, isFIFO bool, callbacks senderCallbacks) (bool, error) {
+func (a *app) sendSQSBatchIsolated(ctx context.Context, queueURL string, events []sqsPreparedEvent, callbacks senderCallbacks) (bool, error) {
 	anyDone := false
 	var joined error
 	for _, evt := range events {
-		done, err := a.sendSQSBatch(ctx, queueURL, []event{evt}, isFIFO, callbacks)
+		done, err := a.sendSQSBatch(ctx, queueURL, []sqsPreparedEvent{evt}, callbacks)
 		if done {
 			anyDone = true
 		}
@@ -643,18 +622,6 @@ func sqsMessageSize(body []byte, attributes map[string]sqsMessageAttribute) int 
 		}
 	}
 	return size
-}
-
-func sqsEventMessageSize(evt event, cfg appConfig) int {
-	options, err := eventSQSOptions(evt, cfg)
-	if err != nil {
-		return len(eventBytes(evt, cfg.EventPayload))
-	}
-	attributes, err := sqsAttributes(options)
-	if err != nil {
-		return len(eventBytes(evt, cfg.EventPayload))
-	}
-	return sqsMessageSize(eventBytes(evt, cfg.EventPayload), attributes)
 }
 
 func sqsAttributes(options backendOptions) (map[string]sqsMessageAttribute, error) {
@@ -869,36 +836,6 @@ func sqsAllowedUnicodeBytes(value []byte) bool {
 		return false
 	}
 	return true
-}
-
-func (a *app) sqsMessageGroupID(ctx context.Context, evt event, queueURL string, callbacks senderCallbacks) (string, error) {
-	eventID := fmt.Sprint(eventValue(evt, a.cfg.EventID))
-	options, err := eventSQSOptions(evt, a.cfg)
-	if err != nil {
-		callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-		a.logFailure(ctx, "Failed to send event",
-			fmt.Sprintf("sqs|%s|malformed-options", queueURL),
-			"event_id", eventValue(evt, a.cfg.EventID),
-			"event_destination", queueURL,
-			"error", err.Error(),
-		)
-		return "", err
-	}
-	orderingKey, err := options.stringValue("messageGroupId")
-	if err != nil {
-		callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-		a.logFailure(ctx, "Failed to send event",
-			fmt.Sprintf("sqs|%s|messageGroupId|malformed-options", queueURL),
-			"event_id", eventValue(evt, a.cfg.EventID),
-			"event_destination", queueURL,
-			"error", err.Error(),
-		)
-		return "", err
-	}
-	if orderingKey != "" {
-		return orderingKey, nil
-	}
-	return syntheticFIFOGroupID(eventID), nil
 }
 
 func syntheticFIFOGroupID(eventID string) string {

@@ -38,30 +38,9 @@ type batchResult struct {
 	stats    batchStats
 }
 
-type sender interface {
-	Send(ctx context.Context, events []event) (senderOutput, error)
-	Close() error
-}
-
 type senderOutput struct {
 	confirmed []event
 	poison    []poisonEvent
-}
-
-type appSender struct {
-	send  func(ctx context.Context, events []event) (senderOutput, error)
-	close func() error
-}
-
-func (s appSender) Send(ctx context.Context, events []event) (senderOutput, error) {
-	return s.send(ctx, events)
-}
-
-func (s appSender) Close() error {
-	if s.close == nil {
-		return nil
-	}
-	return s.close()
 }
 
 type senderResult struct {
@@ -72,6 +51,20 @@ type senderResult struct {
 type senderCallbacks struct {
 	addConfirmedID func(any)
 	addPoisonID    func(any, string)
+}
+
+func (a *app) rejectMalformedOptions(ctx context.Context, evt event, provider string, destination string, field string, err error, callbacks senderCallbacks) {
+	signature := fmt.Sprintf("%s|%s|malformed-options", provider, destination)
+	if field != "" {
+		signature = fmt.Sprintf("%s|%s|%s|malformed-options", provider, destination, field)
+	}
+	callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
+	a.logFailure(ctx, "Failed to send event",
+		signature,
+		"event_id", eventValue(evt, a.cfg.EventID),
+		"event_destination", destination,
+		"error", err.Error(),
+	)
 }
 
 func startDeadlockDetector(interval time.Duration) {
@@ -224,22 +217,14 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 			continue
 		}
 
-		route := a.classifyRoute(evt)
 		markProcessorProgress()
-		switch route.backend {
+		switch evt.route.backend {
 		case backendPubSub:
 			pubsubEvents = append(pubsubEvents, evt)
 		case backendSQS:
 			sqsEvents = append(sqsEvents, evt)
 		default:
-			a.logFailure(ctx, "Event cannot be routed, leaving it in the table",
-				fmt.Sprintf("route|%s|%s|pubsub=%t|sqs=%t", route.failure, eventOptionalString(evt, a.cfg.EventTarget), a.cfg.PubSubEnabled, a.cfg.SQSEnabled),
-				"event_id", eventValue(evt, a.cfg.EventID),
-				"event_target", eventOptionalString(evt, a.cfg.EventTarget),
-				"routing_failure", route.failure,
-				"pubsub_enabled", a.cfg.PubSubEnabled,
-				"sqs_enabled", a.cfg.SQSEnabled,
-			)
+			return result, fmtDBError(fmt.Errorf("selected event %v has no resolved route", eventValue(evt, a.cfg.EventID)))
 		}
 	}
 
@@ -250,7 +235,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			output, err := a.pubsubSender().Send(ctx, pubsubEvents)
+			output, err := a.collectPubsubOutput(ctx, pubsubEvents)
 			results <- senderResult{output: output, err: err}
 		}()
 	}
@@ -259,7 +244,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			output, err := a.sqsSender().Send(ctx, sqsEvents)
+			output, err := a.collectSQSOutput(ctx, sqsEvents)
 			results <- senderResult{output: output, err: err}
 		}()
 	}
@@ -344,90 +329,92 @@ func (a *app) isExpiredEvent(evt event, now time.Time) bool {
 	return now.Sub(timestamp) > a.cfg.MaxEventAge
 }
 
-func (a *app) pubsubSender() sender {
-	return appSender{
-		send: func(ctx context.Context, events []event) (senderOutput, error) {
-			return a.collectSenderOutput(ctx, events, func(callbacks senderCallbacks) error {
-				return a.sendPubsubEventsWithCallbacks(ctx, events, callbacks)
-			})
-		},
-		close: func() error {
-			if a.pubsub == nil {
-				return nil
-			}
-			return a.pubsub.Close()
-		},
+func (a *app) collectPubsubOutput(ctx context.Context, events []event) (senderOutput, error) {
+	return a.collectSenderOutput(ctx, events, func(callbacks senderCallbacks) error {
+		return a.sendPubsubEventsWithCallbacks(ctx, events, callbacks)
+	})
+}
+
+func (a *app) collectSQSOutput(ctx context.Context, events []event) (senderOutput, error) {
+	return a.collectSenderOutput(ctx, events, func(callbacks senderCallbacks) error {
+		return a.sendSQSEventsWithCallbacks(ctx, events, callbacks)
+	})
+}
+
+type senderCollector struct {
+	app        *app
+	ctx        context.Context
+	eventsByID map[string]event
+
+	mu     sync.Mutex
+	seen   map[string]struct{}
+	output senderOutput
+}
+
+func newSenderCollector(a *app, ctx context.Context, events []event) *senderCollector {
+	eventsByID := make(map[string]event, len(events))
+	for _, evt := range events {
+		eventsByID[eventIDKey(eventValue(evt, a.cfg.EventID))] = evt
+	}
+	return &senderCollector{
+		app:        a,
+		ctx:        ctx,
+		eventsByID: eventsByID,
+		seen:       map[string]struct{}{},
 	}
 }
 
-func (a *app) sqsSender() sender {
-	return appSender{
-		send: func(ctx context.Context, events []event) (senderOutput, error) {
-			return a.collectSenderOutput(ctx, events, func(callbacks senderCallbacks) error {
-				return a.sendSQSEventsWithCallbacks(ctx, events, callbacks)
-			})
-		},
+func (c *senderCollector) record(id any, reason string, poisoned bool) {
+	markProcessorProgress()
+	key := eventIDKey(id)
+
+	c.mu.Lock()
+	evt, ok := c.eventsByID[key]
+	if !ok {
+		c.mu.Unlock()
+		c.app.logFailure(c.ctx, "Sender reported an ID outside the selected batch, ignoring it",
+			fmt.Sprintf("sender-outside-selection|%s", key),
+			"event_id", id,
+		)
+		return
+	}
+	if _, ok := c.seen[key]; ok {
+		c.mu.Unlock()
+		return
+	}
+	c.seen[key] = struct{}{}
+	if poisoned {
+		c.output.poison = append(c.output.poison, poisonEvent{evt: evt, error: reason})
+	} else {
+		c.output.confirmed = append(c.output.confirmed, evt)
+	}
+	c.mu.Unlock()
+}
+
+func (c *senderCollector) confirm(id any) {
+	c.record(id, "", false)
+}
+
+func (c *senderCollector) poison(id any, reason string) {
+	c.record(id, reason, true)
+}
+
+func (c *senderCollector) snapshot() senderOutput {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return senderOutput{
+		confirmed: append([]event(nil), c.output.confirmed...),
+		poison:    append([]poisonEvent(nil), c.output.poison...),
 	}
 }
 
 func (a *app) collectSenderOutput(ctx context.Context, events []event, send func(senderCallbacks) error) (senderOutput, error) {
-	eventsByID := map[string]event{}
-	for _, evt := range events {
-		eventsByID[eventIDKey(eventValue(evt, a.cfg.EventID))] = evt
-	}
-
-	seen := map[string]struct{}{}
-	output := senderOutput{}
-	var doneMu sync.Mutex
-	addConfirmedID := func(id any) {
-		markProcessorProgress()
-		key := eventIDKey(id)
-
-		doneMu.Lock()
-		defer doneMu.Unlock()
-		evt, ok := eventsByID[key]
-		if !ok {
-			a.logFailure(ctx, "Sender reported an ID outside the selected batch, ignoring it",
-				fmt.Sprintf("sender-outside-selection|%s", key),
-				"event_id", id,
-			)
-			return
-		}
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		output.confirmed = append(output.confirmed, evt)
-	}
-	addPoisonID := func(id any, reason string) {
-		markProcessorProgress()
-		key := eventIDKey(id)
-
-		doneMu.Lock()
-		defer doneMu.Unlock()
-		evt, ok := eventsByID[key]
-		if !ok {
-			a.logFailure(ctx, "Sender reported an ID outside the selected batch, ignoring it",
-				fmt.Sprintf("sender-outside-selection|%s", key),
-				"event_id", id,
-			)
-			return
-		}
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		output.poison = append(output.poison, poisonEvent{evt: evt, error: reason})
-	}
-
-	err := send(senderCallbacks{addConfirmedID: addConfirmedID, addPoisonID: addPoisonID})
-	doneMu.Lock()
-	copiedOutput := senderOutput{
-		confirmed: append([]event(nil), output.confirmed...),
-		poison:    append([]poisonEvent(nil), output.poison...),
-	}
-	doneMu.Unlock()
-	return copiedOutput, err
+	collector := newSenderCollector(a, ctx, events)
+	err := send(senderCallbacks{
+		addConfirmedID: collector.confirm,
+		addPoisonID:    collector.poison,
+	})
+	return collector.snapshot(), err
 }
 
 func fmtDBError(err error) error {
@@ -436,76 +423,6 @@ func fmtDBError(err error) error {
 
 func eventIDKey(id any) string {
 	return fmt.Sprintf("%T:%v", id, id)
-}
-
-type backend int
-
-const (
-	backendNone backend = iota
-	backendPubSub
-	backendSQS
-)
-
-type routingFailure string
-
-const (
-	routingFailureNone          routingFailure = ""
-	routingFailureDisabled      routingFailure = "R7"
-	routingFailureUnsupported   routingFailure = "R10"
-	routingFailureAmbiguous     routingFailure = "R11"
-	routingFailureNoDestination routingFailure = "R12"
-)
-
-type routeResult struct {
-	backend backend
-	failure routingFailure
-}
-
-func (a *app) classifyRoute(evt event) routeResult {
-	target := eventOptionalString(evt, a.cfg.EventTarget)
-	switch target {
-	case eventTargetPubSub:
-		if a.cfg.PubSubEnabled {
-			return a.routeToBackend(evt, backendPubSub)
-		}
-		return routeResult{failure: routingFailureDisabled}
-	case eventTargetSQS:
-		if a.cfg.SQSEnabled {
-			return a.routeToBackend(evt, backendSQS)
-		}
-		return routeResult{failure: routingFailureDisabled}
-	case "":
-		if a.cfg.PubSubEnabled && !a.cfg.SQSEnabled {
-			return a.routeToBackend(evt, backendPubSub)
-		}
-		if a.cfg.SQSEnabled && !a.cfg.PubSubEnabled {
-			return a.routeToBackend(evt, backendSQS)
-		}
-		return routeResult{failure: routingFailureAmbiguous}
-	}
-	return routeResult{failure: routingFailureUnsupported}
-}
-
-func (a *app) routeToBackend(evt event, selected backend) routeResult {
-	if a.destinationForBackend(evt, selected) == "" {
-		return routeResult{failure: routingFailureNoDestination}
-	}
-	return routeResult{backend: selected}
-}
-
-func (a *app) destinationForBackend(evt event, selected backend) string {
-	destination := eventString(evt, a.cfg.EventDestination)
-	if destination != "" {
-		return destination
-	}
-	switch selected {
-	case backendPubSub:
-		return a.cfg.DefaultPubSubTopic
-	case backendSQS:
-		return a.cfg.DefaultSQSQueueURL
-	default:
-		return ""
-	}
 }
 
 func randomInt63() int64 {

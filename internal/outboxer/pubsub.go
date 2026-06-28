@@ -47,9 +47,6 @@ type pubsubMessage struct {
 }
 
 type cloudPubSubPublisher struct {
-	client *pubsub.Client
-	cfg    appConfig
-
 	mu           sync.Mutex
 	publishers   map[string]pubsubTopicPublisher
 	newPublisher func(topic string) pubsubTopicPublisher
@@ -76,8 +73,6 @@ func newPubSubClient(ctx context.Context, cfg appConfig) (*pubsub.Client, error)
 
 func newCloudPubSubPublisher(client *pubsub.Client, cfg appConfig) *cloudPubSubPublisher {
 	p := &cloudPubSubPublisher{
-		client:     client,
-		cfg:        cfg,
 		publishers: map[string]pubsubTopicPublisher{},
 	}
 	p.newPublisher = func(topic string) pubsubTopicPublisher {
@@ -144,81 +139,46 @@ func (r cloudPubSubPublishResult) Get(ctx context.Context) (string, error) {
 }
 
 func (a *app) sendPubsubEventsWithCallbacks(ctx context.Context, events []event, callbacks senderCallbacks) error {
-	unordered := []event{}
-	orderedByGroup := map[string][]event{}
+	unordered := []pubsubCandidateEvent{}
+	orderedByGroup := map[string][]pubsubCandidateEvent{}
 	groupOrder := []string{}
 
 	for _, evt := range events {
-		options, err := eventPubSubOptions(evt, a.cfg)
-		if err != nil {
-			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-			a.logFailure(ctx, "Failed to send event",
-				fmt.Sprintf("pubsub|%s|malformed-options", a.destinationForBackend(evt, backendPubSub)),
-				"event_id", eventValue(evt, a.cfg.EventID),
-				"event_destination", a.destinationForBackend(evt, backendPubSub),
-				"error", err.Error(),
-			)
+		candidate, ok := a.parsePubsubCandidate(ctx, evt, callbacks)
+		if !ok {
 			continue
 		}
-		orderingKey, err := options.stringValue("orderingKey")
-		if err != nil {
-			callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-			a.logFailure(ctx, "Failed to send event",
-				fmt.Sprintf("pubsub|%s|orderingKey|malformed-options", a.destinationForBackend(evt, backendPubSub)),
-				"event_id", eventValue(evt, a.cfg.EventID),
-				"event_destination", a.destinationForBackend(evt, backendPubSub),
-				"error", err.Error(),
-			)
-			continue
-		}
+		orderingKey := candidate.orderingKey
 		if orderingKey == "" {
-			unordered = append(unordered, evt)
+			unordered = append(unordered, candidate)
 			continue
 		}
 
-		topic := a.destinationForBackend(evt, backendPubSub)
+		topic := candidate.topic
 		groupID := topic + "\x00" + orderingKey
 		if _, ok := orderedByGroup[groupID]; !ok {
 			groupOrder = append(groupOrder, groupID)
 		}
-		orderedByGroup[groupID] = append(orderedByGroup[groupID], evt)
+		orderedByGroup[groupID] = append(orderedByGroup[groupID], candidate)
 	}
 
-	var joined error
-	if err := a.sendPubsubUnorderedEvents(ctx, unordered, callbacks); err != nil {
-		joined = errors.Join(joined, err)
-	}
-
-	errs := make(chan error, len(groupOrder))
-	var wg sync.WaitGroup
-	for _, groupID := range groupOrder {
-		groupEvents := append([]event(nil), orderedByGroup[groupID]...)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := a.sendPubsubOrderedGroup(ctx, groupEvents, callbacks); err != nil {
-				errs <- err
-			}
-		}()
-	}
-	wg.Wait()
-	close(errs)
-
-	for err := range errs {
-		joined = errors.Join(joined, err)
-	}
-	return joined
+	unorderedErr := a.sendPubsubUnorderedEvents(ctx, unordered, callbacks)
+	orderedErr := runConcurrent(groupOrder, func(groupID string) error {
+		groupEvents := append([]pubsubCandidateEvent(nil), orderedByGroup[groupID]...)
+		return a.sendPubsubOrderedGroup(ctx, groupEvents, callbacks)
+	})
+	return errors.Join(unorderedErr, orderedErr)
 }
 
-func (a *app) sendPubsubUnorderedEvents(ctx context.Context, events []event, callbacks senderCallbacks) error {
+func (a *app) sendPubsubUnorderedEvents(ctx context.Context, events []pubsubCandidateEvent, callbacks senderCallbacks) error {
 	pending := []pubsubPendingPublish{}
 	topics := map[string]struct{}{}
-	for _, evt := range events {
-		prepared, ok := a.preparePubsubEvent(ctx, evt, false, callbacks)
+	for _, candidate := range events {
+		prepared, ok := a.preparePubsubEvent(ctx, candidate, callbacks)
 		if !ok {
 			continue
 		}
-		result := a.pubsub.Publish(ctx, prepared.message)
+		prepared, result := a.publishPubsubEvent(ctx, prepared)
 		pending = append(pending, pubsubPendingPublish{prepared: prepared, result: result})
 		topics[prepared.message.Topic] = struct{}{}
 	}
@@ -237,7 +197,7 @@ func (a *app) sendPubsubUnorderedEvents(ctx context.Context, events []event, cal
 			joined = errors.Join(joined, err)
 			a.logPubsubFailure(ctx, pendingPublish.prepared, err)
 		case isPubSubPermanentBackendError(err):
-			done, isolateErr := a.sendPubsubIsolated(ctx, pendingPublish.prepared.evt, false, callbacks)
+			done, isolateErr := a.sendPubsubIsolated(ctx, pendingPublish.prepared, false, callbacks)
 			if !done {
 				joined = errors.Join(joined, err)
 			}
@@ -250,14 +210,13 @@ func (a *app) sendPubsubUnorderedEvents(ctx context.Context, events []event, cal
 	return joined
 }
 
-func (a *app) sendPubsubOrderedGroup(ctx context.Context, events []event, callbacks senderCallbacks) error {
-	for _, evt := range events {
-		prepared, ok := a.preparePubsubEvent(ctx, evt, true, callbacks)
+func (a *app) sendPubsubOrderedGroup(ctx context.Context, events []pubsubCandidateEvent, callbacks senderCallbacks) error {
+	for _, candidate := range events {
+		prepared, ok := a.preparePubsubEvent(ctx, candidate, callbacks)
 		if !ok {
 			continue
 		}
-
-		result := a.pubsub.Publish(ctx, prepared.message)
+		prepared, result := a.publishPubsubEvent(ctx, prepared)
 		a.pubsub.Flush(prepared.message.Topic)
 
 		messageID, err := a.awaitPubsubResult(ctx, result)
@@ -269,7 +228,7 @@ func (a *app) sendPubsubOrderedGroup(ctx context.Context, events []event, callba
 			return errors.Join(errFatalAfterCommit, err)
 		case isPubSubPermanentBackendError(err):
 			a.pubsub.ResumePublish(prepared.message.Topic, prepared.message.OrderingKey)
-			done, isolateErr := a.sendPubsubIsolated(ctx, evt, true, callbacks)
+			done, isolateErr := a.sendPubsubIsolated(ctx, prepared, true, callbacks)
 			if isolateErr != nil {
 				return isolateErr
 			}
@@ -285,13 +244,8 @@ func (a *app) sendPubsubOrderedGroup(ctx context.Context, events []event, callba
 	return nil
 }
 
-func (a *app) sendPubsubIsolated(ctx context.Context, evt event, ordered bool, callbacks senderCallbacks) (bool, error) {
-	prepared, ok := a.preparePubsubEvent(ctx, evt, ordered, callbacks)
-	if !ok {
-		return true, nil
-	}
-
-	result := a.pubsub.Publish(ctx, prepared.message)
+func (a *app) sendPubsubIsolated(ctx context.Context, prepared pubsubPreparedEvent, ordered bool, callbacks senderCallbacks) (bool, error) {
+	prepared, result := a.publishPubsubEvent(ctx, prepared)
 	a.pubsub.Flush(prepared.message.Topic)
 	messageID, err := a.awaitPubsubResult(ctx, result)
 	if err != nil && ordered && !errors.Is(err, context.DeadlineExceeded) {
@@ -315,7 +269,6 @@ func (a *app) sendPubsubIsolated(ctx context.Context, evt event, ordered bool, c
 }
 
 type pubsubPreparedEvent struct {
-	evt        event
 	id         any
 	timestamp  any
 	latency    any
@@ -325,76 +278,65 @@ type pubsubPreparedEvent struct {
 	payloadLen int
 }
 
+type pubsubCandidateEvent struct {
+	evt         event
+	options     backendOptions
+	topic       string
+	orderingKey string
+}
+
 type pubsubPendingPublish struct {
 	prepared pubsubPreparedEvent
 	result   pubsubPublishResult
 }
 
-func (a *app) preparePubsubEvent(ctx context.Context, evt event, ordered bool, callbacks senderCallbacks) (pubsubPreparedEvent, bool) {
-	target := eventOptionalString(evt, a.cfg.EventTarget)
-	topicName := a.destinationForBackend(evt, backendPubSub)
+func (a *app) parsePubsubCandidate(ctx context.Context, evt event, callbacks senderCallbacks) (pubsubCandidateEvent, bool) {
+	topicName := evt.route.destination
 	options, err := eventPubSubOptions(evt, a.cfg)
 	if err != nil {
-		callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-		a.logFailure(ctx, "Failed to send event",
-			fmt.Sprintf("pubsub|%s|malformed-options", topicName),
-			"event_id", eventValue(evt, a.cfg.EventID),
-			"event_destination", topicName,
-			"error", err.Error(),
-		)
-		return pubsubPreparedEvent{}, false
+		a.rejectMalformedOptions(ctx, evt, eventTargetPubSub, topicName, "", err, callbacks)
+		return pubsubCandidateEvent{}, false
 	}
 	orderingKey, err := options.stringValue("orderingKey")
 	if err != nil {
-		callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-		a.logFailure(ctx, "Failed to send event",
-			fmt.Sprintf("pubsub|%s|orderingKey|malformed-options", topicName),
-			"event_id", eventValue(evt, a.cfg.EventID),
-			"event_destination", topicName,
-			"error", err.Error(),
-		)
-		return pubsubPreparedEvent{}, false
+		a.rejectMalformedOptions(ctx, evt, eventTargetPubSub, topicName, "orderingKey", err, callbacks)
+		return pubsubCandidateEvent{}, false
 	}
-	if !ordered {
-		orderingKey = ""
-	}
-	attributes, err := options.attributesValue("attributes")
+	return pubsubCandidateEvent{evt: evt, options: options, topic: topicName, orderingKey: orderingKey}, true
+}
+
+func (a *app) preparePubsubEvent(ctx context.Context, candidate pubsubCandidateEvent, callbacks senderCallbacks) (pubsubPreparedEvent, bool) {
+	evt := candidate.evt
+	attributes, err := candidate.options.attributesValue("attributes")
 	if err != nil {
-		callbacks.addPoisonID(eventValue(evt, a.cfg.EventID), err.Error())
-		a.logFailure(ctx, "Failed to send event",
-			fmt.Sprintf("pubsub|%s|attributes|malformed-options", topicName),
-			"event_id", eventValue(evt, a.cfg.EventID),
-			"event_destination", topicName,
-			"error", err.Error(),
-		)
+		a.rejectMalformedOptions(ctx, evt, eventTargetPubSub, candidate.topic, "attributes", err, callbacks)
 		return pubsubPreparedEvent{}, false
 	}
 	timestamp := eventValue(evt, a.cfg.EventTimestamp)
 	id := eventValue(evt, a.cfg.EventID)
 	data := eventBytes(evt, a.cfg.EventPayload)
 	latency := eventLatency(timestamp)
+	target := eventString(evt, a.cfg.EventTarget)
 
 	stringAttributes, deletedAttributes := sanitizeStringAttributes(attributes)
 	if len(deletedAttributes) != 0 {
 		slog.Warn("Some attributes were dropped",
 			"event_id", id,
-			"event_destination", topicName,
+			"event_destination", candidate.topic,
 			"dropped_attributes", deletedAttributes,
 		)
 	}
 
 	prepared := pubsubPreparedEvent{
-		evt:        evt,
 		id:         id,
 		timestamp:  timestamp,
 		latency:    latency,
 		target:     target,
-		startedAt:  time.Now(),
 		payloadLen: len(data),
 		message: pubsubMessage{
-			Topic:       topicName,
+			Topic:       candidate.topic,
 			Data:        data,
-			OrderingKey: orderingKey,
+			OrderingKey: candidate.orderingKey,
 			Attributes:  stringAttributes,
 		},
 	}
@@ -403,24 +345,28 @@ func (a *app) preparePubsubEvent(ctx context.Context, evt event, ordered bool, c
 		callbacks.addPoisonID(id, reason)
 		slog.Error("Failed to send event",
 			"event_id", id,
-			"event_destination", topicName,
+			"event_destination", candidate.topic,
 			"error", reason,
 		)
 		return prepared, false
 	}
 
-	slog.Debug("Sending event",
-		"event_id", id,
-		"event_timestamp", timestamp,
-		"event_latency", latency,
-		"event_payload_size", len(data),
-		"event_ordering_key", orderingKey,
-		"event_attributes", stringAttributes,
-		"event_target", target,
-		"event_destination", topicName,
-	)
-
 	return prepared, true
+}
+
+func (a *app) publishPubsubEvent(ctx context.Context, prepared pubsubPreparedEvent) (pubsubPreparedEvent, pubsubPublishResult) {
+	prepared.startedAt = time.Now()
+	slog.Debug("Sending event",
+		"event_id", prepared.id,
+		"event_timestamp", prepared.timestamp,
+		"event_latency", prepared.latency,
+		"event_payload_size", prepared.payloadLen,
+		"event_ordering_key", prepared.message.OrderingKey,
+		"event_attributes", prepared.message.Attributes,
+		"event_target", prepared.target,
+		"event_destination", prepared.message.Topic,
+	)
+	return prepared, a.pubsub.Publish(ctx, prepared.message)
 }
 
 func (a *app) markPubsubDone(prepared pubsubPreparedEvent, messageID string, callbacks senderCallbacks) {

@@ -64,6 +64,7 @@ func buildInitStatements(cfg appConfig, redactSecrets bool) []initStatement {
 	if cfg.DLQTable != "" {
 		stmts = append(stmts, initStatement{sql: createDLQTableSQL(cfg)})
 	}
+	// FIXME: we should always create the trigger in case the operator changes the poll interval later on
 	if cfg.PollInterval > 0 {
 		stmts = append(stmts, notifyFunctionStatement(cfg))
 		stmts = append(stmts, notifyTriggerStatements(cfg)...)
@@ -259,8 +260,7 @@ func validateProvisionedSchema(ctx context.Context, tx *sql.Tx, cfg appConfig) e
 		return err
 	}
 
-	checker := &app{cfg: cfg}
-	if err := checker.checkRequiredColumns(columns); err != nil {
+	if err := validateEventColumns(cfg, columns); err != nil {
 		return err
 	}
 

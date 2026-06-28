@@ -375,11 +375,16 @@ func newMockProcessorApp(t *testing.T, cfg appConfig) (*app, sqlmock.Sqlmock, fu
 }
 
 func mockEventRows() *sqlmock.Rows {
-	return sqlmock.NewRows([]string{"id", "target", "destination", "payload", "options"})
+	return sqlmock.NewRows([]string{"resolved_target", "resolved_destination", "id", "target", "destination", "payload", "options"})
 }
 
 func mockEventRowsWithTimestamp() *sqlmock.Rows {
-	return sqlmock.NewRows([]string{"id", "target", "destination", "payload", "options", "timestamp"})
+	return sqlmock.NewRows([]string{"resolved_target", "resolved_destination", "id", "target", "destination", "payload", "options", "timestamp"})
+}
+
+func mockEventRow(id driver.Value, target string, destination string, payload driver.Value, options driver.Value, extra ...driver.Value) []driver.Value {
+	values := []driver.Value{target, destination, id, target, destination, payload, options}
+	return append(values, extra...)
 }
 
 func testEvent(id, target, destination, payload, orderingKey string) event {
@@ -417,18 +422,44 @@ func pubsubOptions(orderingKey string, attributes map[string]any) map[string]any
 	return map[string]any{"pubsub": section}
 }
 
-func mockRowsForEvents(events []event) *sqlmock.Rows {
+func mockRowsForEvents(cfg appConfig, events []event) *sqlmock.Rows {
 	rows := mockEventRows()
 	for _, evt := range events {
+		target, destination := resolvedTestRoute(cfg, evt)
 		rows.AddRow(
+			target,
+			destination,
 			eventValue(evt, "id"),
-			eventValue(evt, "target"),
-			eventValue(evt, "destination"),
+			eventString(evt, "target"),
+			eventString(evt, "destination"),
 			eventValue(evt, "payload"),
 			mockDBValue(eventValue(evt, "options")),
 		)
 	}
 	return rows
+}
+
+func resolvedTestRoute(cfg appConfig, evt event) (string, string) {
+	target := eventString(evt, "target")
+	if target == "" {
+		switch {
+		case cfg.PubSubEnabled && !cfg.SQSEnabled:
+			target = eventTargetPubSub
+		case cfg.SQSEnabled && !cfg.PubSubEnabled:
+			target = eventTargetSQS
+		}
+	}
+
+	destination := eventString(evt, "destination")
+	if destination == "" {
+		switch target {
+		case eventTargetPubSub:
+			destination = cfg.DefaultPubSubTopic
+		case eventTargetSQS:
+			destination = cfg.DefaultSQSQueueURL
+		}
+	}
+	return target, destination
 }
 
 func mockDBValue(value any) any {

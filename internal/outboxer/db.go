@@ -80,28 +80,28 @@ func (a *app) checkDBWorks(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return a.checkRequiredColumns(columns)
+	return validateEventColumns(a.cfg, columns)
 }
 
-// checkRequiredColumns verifies that the event table exposes every column the
+// validateEventColumns verifies that the event table exposes every column the
 // current configuration depends on. Optional columns (timestamp, options, and any
 // column covered by a default) may be absent.
-func (a *app) checkRequiredColumns(columns []string) error {
+func validateEventColumns(cfg appConfig, columns []string) error {
 	present := map[string]bool{}
 	for _, column := range columns {
 		present[column] = true
 	}
 
-	required := []string{a.cfg.EventID, a.cfg.EventPayload}
-	if a.cfg.MaxEventAge > 0 {
-		required = append(required, a.cfg.EventTimestamp)
+	required := []string{cfg.EventID, cfg.EventPayload}
+	if cfg.MaxEventAge > 0 {
+		required = append(required, cfg.EventTimestamp)
 	}
-	if a.cfg.PubSubEnabled && a.cfg.SQSEnabled {
-		required = append(required, a.cfg.EventTarget)
+	if cfg.PubSubEnabled && cfg.SQSEnabled {
+		required = append(required, cfg.EventTarget)
 	}
-	if (a.cfg.PubSubEnabled && a.cfg.DefaultPubSubTopic == "") ||
-		(a.cfg.SQSEnabled && a.cfg.DefaultSQSQueueURL == "") {
-		required = append(required, a.cfg.EventDestination)
+	if (cfg.PubSubEnabled && cfg.DefaultPubSubTopic == "") ||
+		(cfg.SQSEnabled && cfg.DefaultSQSQueueURL == "") {
+		required = append(required, cfg.EventDestination)
 	}
 
 	missing := []string{}
@@ -111,7 +111,7 @@ func (a *app) checkRequiredColumns(columns []string) error {
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("event table %s is missing required columns: %s", a.cfg.EventTable, strings.Join(missing, ", "))
+		return fmt.Errorf("event table %s is missing required columns: %s", cfg.EventTable, strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -158,7 +158,7 @@ func (a *app) selectEventsQuerySQL() string {
 			`FROM %s AS %s WHERE %s`+
 			`) AS resolved_routes`+
 			`), selected AS (`+
-			`SELECT picked.%s AS id `+
+			`SELECT picked.%s AS id, routes.resolved_target, routes.resolved_destination `+
 			`FROM routes `+
 			`CROSS JOIN LATERAL (`+
 			`SELECT %s.%s `+
@@ -167,7 +167,7 @@ func (a *app) selectEventsQuerySQL() string {
 			`ORDER BY %s.%s `+
 			`LIMIT GREATEST(1, (($1::bigint + routes.route_count - 1) / routes.route_count))`+
 			`) AS picked`+
-			`) SELECT %s.* FROM %s AS %s JOIN selected ON %s.%s = selected.id ORDER BY %s.%s FOR UPDATE`,
+			`) SELECT selected.resolved_target, selected.resolved_destination, %s.* FROM %s AS %s JOIN selected ON %s.%s = selected.id ORDER BY %s.%s FOR UPDATE`,
 		sourceTargetExpr,
 		sourceDestinationExpr,
 		table,
@@ -323,10 +323,12 @@ func (a *app) routeOwnershipSQL(targetExpr string, destinationExpr string) strin
 }
 
 func scanEvents(rows *sql.Rows) ([]event, error) {
-
 	columns, err := rows.Columns()
 	if err != nil {
 		return nil, err
+	}
+	if len(columns) < 2 || columns[0] != "resolved_target" || columns[1] != "resolved_destination" {
+		return nil, fmt.Errorf("selected event query did not return resolved route columns")
 	}
 
 	events := []event{}
@@ -341,9 +343,27 @@ func scanEvents(rows *sql.Rows) ([]event, error) {
 			return nil, err
 		}
 
-		evt := event{columns: map[string]any{}}
-		for i, column := range columns {
-			evt.columns[column] = normalizeDBValue(values[i])
+		target := valueString(normalizeDBValue(values[0]))
+		routeBackend := backendNone
+		switch target {
+		case eventTargetPubSub:
+			routeBackend = backendPubSub
+		case eventTargetSQS:
+			routeBackend = backendSQS
+		default:
+			return nil, fmt.Errorf("selected event has unsupported resolved target %q", target)
+		}
+		destination := valueString(normalizeDBValue(values[1]))
+		if destination == "" {
+			return nil, fmt.Errorf("selected event has empty resolved destination")
+		}
+
+		evt := event{
+			columns: map[string]any{},
+			route:   eventRoute{backend: routeBackend, destination: destination},
+		}
+		for i, column := range columns[2:] {
+			evt.columns[column] = normalizeDBValue(values[i+2])
 		}
 		events = append(events, evt)
 	}

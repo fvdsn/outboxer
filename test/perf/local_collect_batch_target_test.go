@@ -509,7 +509,7 @@ func startOutboxer(t *testing.T, ctx context.Context, binary string, table strin
 		"AWS_REGION":                perfAWSRegion,
 		"AWS_ACCESS_KEY_ID":         "test",
 		"AWS_SECRET_ACCESS_KEY":     "test",
-		"AWS_WEB_IDENTITY_PROVIDER": "",
+		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	}
 	switch backend {
 	case "pubsub":

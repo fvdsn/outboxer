@@ -28,7 +28,7 @@ func TestSendSQSEventsUsesDefaultQueueURL(t *testing.T) {
 		{columns: map[string]any{"id": "event-1", "payload": "one"}},
 	}
 
-	if err := a.sendSQSEvents(context.Background(), events, func(id any) { deleted = append(deleted, id) }); err != nil {
+	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) { deleted = append(deleted, id) }); err != nil {
 		t.Fatalf("sendSQSEvents returned error: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestSendSQSEventsStandardSendsHundredAsTenBatches(t *testing.T) {
 
 	var deletedMu sync.Mutex
 	deleted := []any{}
-	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deletedMu.Lock()
 		defer deletedMu.Unlock()
 		deleted = append(deleted, id)
@@ -99,7 +99,7 @@ func TestSendSQSEventsStandardGroupsHundredAcrossTenQueues(t *testing.T) {
 
 	var deletedMu sync.Mutex
 	deleted := []any{}
-	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deletedMu.Lock()
 		defer deletedMu.Unlock()
 		deleted = append(deleted, id)
@@ -144,7 +144,7 @@ func TestSendSQSEventsUsesDefaultQueueForHundredEvents(t *testing.T) {
 
 	var deletedMu sync.Mutex
 	deleted := []any{}
-	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deletedMu.Lock()
 		defer deletedMu.Unlock()
 		deleted = append(deleted, id)
@@ -183,7 +183,7 @@ func TestSendSQSEventsMixedStandardAndFIFOHappyPath(t *testing.T) {
 
 	var deletedMu sync.Mutex
 	deleted := []any{}
-	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deletedMu.Lock()
 		defer deletedMu.Unlock()
 		deleted = append(deleted, id)
@@ -229,7 +229,7 @@ func TestSendSQS10EventsRespectsPublishTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	err := a.sendSQS10Events(context.Background(), "queue-a", events, func(any) {})
+	err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(any) {})
 	if err == nil {
 		t.Fatal("expected a timeout error from a blocked SendBatch")
 	}
@@ -325,11 +325,11 @@ func TestSendSQS10EventsHandlesStandardPartialResponses(t *testing.T) {
 		{columns: map[string]any{"id": "event-3", "destination": "queue-a", "payload": "three"}},
 	}
 
-	err := a.sendSQS10Events(context.Background(), "queue-a", events, func(id any) {
+	err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if err != nil {
-		t.Fatalf("sendSQS10Events returned error: %v", err)
+		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 	}
 
 	if !reflect.DeepEqual(deleted, []any{"event-1", "event-2"}) {
@@ -358,8 +358,8 @@ func TestSendSQS10EventsSendsNativeTypedAttributes(t *testing.T) {
 		}}}`),
 	}}}
 
-	if err := a.sendSQS10Events(context.Background(), "queue-a", events, func(any) {}); err != nil {
-		t.Fatalf("sendSQS10Events returned error: %v", err)
+	if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 	}
 
 	attributes := sqs.requests[0].entries[0].Attributes
@@ -398,8 +398,8 @@ func TestSendSQS10EventsRejectsInvalidNativeAttributes(t *testing.T) {
 				"options":     []byte(fmt.Sprintf(`{"sqs":{"attributes":{"bad":%s}}}`, tt.attribute)),
 			}}}
 
-			if err := a.sendSQS10Events(context.Background(), "queue-a", events, func(id any) { deleted = append(deleted, id) }); err != nil {
-				t.Fatalf("sendSQS10Events returned error: %v", err)
+			if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(id any) { deleted = append(deleted, id) }); err != nil {
+				t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 			}
 			if !reflect.DeepEqual(deleted, []any{"event-1"}) {
 				t.Fatalf("expected invalid attributes to be poison, got %#v", deleted)
@@ -428,10 +428,10 @@ func TestSendSQS10EventsIsolatesPermanentBatchRequestError(t *testing.T) {
 		{columns: map[string]any{"id": "event-2", "destination": "queue-a", "payload": "two"}},
 	}
 
-	if err := a.sendSQS10Events(context.Background(), "queue-a", events, func(id any) {
+	if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
-		t.Fatalf("sendSQS10Events returned error: %v", err)
+		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 	}
 
 	if !reflect.DeepEqual(deleted, []any{"event-1", "event-2"}) {
@@ -456,7 +456,7 @@ func TestSendSQS10EventsRetryableRequestErrorKeepsEvents(t *testing.T) {
 		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one"}},
 	}
 
-	err := a.sendSQS10Events(context.Background(), "queue-a", events, func(id any) {
+	err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if !errors.Is(err, expectedErr) {
@@ -479,7 +479,7 @@ func TestSendSQS10EventsCanceledContextKeepsEvents(t *testing.T) {
 		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "payload"}},
 	}
 
-	err := a.sendSQS10Events(ctx, "queue-a", events, func(id any) {
+	err := a.sendSQSBatchForTest(ctx, "queue-a", events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if !errors.Is(err, context.Canceled) {
@@ -512,7 +512,7 @@ func TestSendSQSEventsStandardUsesConcurrencyLimit(t *testing.T) {
 	deleted := []any{}
 	done := make(chan error, 1)
 	go func() {
-		done <- a.sendSQSEvents(context.Background(), events, func(id any) {
+		done <- a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 			deletedMu.Lock()
 			defer deletedMu.Unlock()
 			deleted = append(deleted, id)
@@ -575,7 +575,7 @@ func TestSendSQSEventsStandardSplitsByBatchSize(t *testing.T) {
 
 	var deletedMu sync.Mutex
 	deleted := []any{}
-	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deletedMu.Lock()
 		defer deletedMu.Unlock()
 		deleted = append(deleted, id)
@@ -610,7 +610,7 @@ func TestSendSQSEventsStandardSplitsByCount(t *testing.T) {
 		}}
 	}
 
-	if err := a.sendSQSEvents(context.Background(), events, func(any) {}); err != nil {
+	if err := a.sendSQSEventsForTest(context.Background(), events, func(any) {}); err != nil {
 		t.Fatalf("sendSQSEvents returned error: %v", err)
 	}
 
@@ -638,7 +638,7 @@ func TestSendSQSEventsStandardSendsTenInOneBatch(t *testing.T) {
 		}}
 	}
 
-	if err := a.sendSQSEvents(context.Background(), events, func(any) {}); err != nil {
+	if err := a.sendSQSEventsForTest(context.Background(), events, func(any) {}); err != nil {
 		t.Fatalf("sendSQSEvents returned error: %v", err)
 	}
 	if len(sqs.requests) != 1 {
@@ -664,7 +664,7 @@ func TestSendSQSEventsFIFOStopsGroupAfterRetryableFailure(t *testing.T) {
 		{columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "options": combinedOrderingOptions("group-a")}},
 	}
 
-	err := a.sendSQSEvents(context.Background(), events, func(id any) {
+	err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if err != nil {
@@ -703,7 +703,7 @@ func TestSendSQSEventsFIFOOneGroupAllSuccessUsesSingleMessageRequests(t *testing
 		{columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "options": combinedOrderingOptions("group-a")}},
 	}
 
-	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendSQSEvents returned error: %v", err)
@@ -737,7 +737,7 @@ func TestSendSQSEventsFIFOProcessesDifferentGroups(t *testing.T) {
 		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-b")}},
 	}
 
-	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deletedMu.Lock()
 		defer deletedMu.Unlock()
 		deleted = append(deleted, id)
@@ -774,7 +774,7 @@ func TestSendSQSEventsFIFOProcessesWholeSelectedGroup(t *testing.T) {
 		{columns: map[string]any{"id": "event-3", "destination": "queue-a.fifo", "payload": "three", "options": combinedOrderingOptions("group-a")}},
 	}
 
-	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendSQSEvents returned error: %v", err)
@@ -803,7 +803,7 @@ func TestSendSQSEventsFIFODifferentGroupCanSucceedWhenOneFails(t *testing.T) {
 		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-b")}},
 	}
 
-	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deletedMu.Lock()
 		defer deletedMu.Unlock()
 		deleted = append(deleted, id)
@@ -829,7 +829,7 @@ func TestSendSQSEventsFIFOContinuesAfterContentPoison(t *testing.T) {
 		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}},
 	}
 
-	if err := a.sendSQSEvents(context.Background(), events, func(id any) {
+	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
 		t.Fatalf("sendSQSEvents returned error: %v", err)
@@ -855,17 +855,17 @@ func TestSendSQSEventsFIFOTimeoutStopsSameGroup(t *testing.T) {
 
 	events := []event{
 		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
-		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-a")}},
+		{columns: map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": map[string]any{"sqs": map[string]any{"messageGroupId": "group-a", "delaySeconds": "invalid"}}}},
 	}
 
-	err := a.sendSQSEvents(context.Background(), events, func(id any) {
+	err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
 	if len(deleted) != 0 {
-		t.Fatalf("unexpected deleted ids: %#v", deleted)
+		t.Fatalf("later malformed event must remain after an earlier timeout, got deleted ids %#v", deleted)
 	}
 	sqs.mu.Lock()
 	requests := append([]fakeSQSRequest(nil), sqs.requests...)
@@ -887,8 +887,8 @@ func TestSendSQS10EventsStandardQueueSendsFairQueueGroup(t *testing.T) {
 		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": combinedOrderingOptions("group-a")}},
 	}
 
-	if err := a.sendSQS10Events(context.Background(), "queue-a", events, func(any) {}); err != nil {
-		t.Fatalf("sendSQS10Events returned error: %v", err)
+	if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 	}
 
 	entry := sqs.requests[0].entries[0]
@@ -909,8 +909,8 @@ func TestSendSQS10EventsFIFOUsesExplicitDeduplicationID(t *testing.T) {
 		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": map[string]any{"sqs": map[string]any{"messageGroupId": "group-a", "messageDeduplicationId": "custom-dedup"}}}},
 	}
 
-	if err := a.sendSQS10Events(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
-		t.Fatalf("sendSQS10Events returned error: %v", err)
+	if err := a.sendSQSBatchForTest(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 	}
 
 	entry := sqs.requests[0].entries[0]
@@ -928,8 +928,8 @@ func TestSendSQS10EventsSendsDelayAndTraceHeader(t *testing.T) {
 		{columns: map[string]any{"id": "event-1", "destination": "queue-a", "payload": "one", "options": map[string]any{"sqs": map[string]any{"delaySeconds": 30, "messageSystemAttributes": map[string]any{"AWSTraceHeader": "Root=1-67891233-abcdef012345678912345678"}}}}},
 	}
 
-	if err := a.sendSQS10Events(context.Background(), "queue-a", events, func(any) {}); err != nil {
-		t.Fatalf("sendSQS10Events returned error: %v", err)
+	if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 	}
 
 	entry := sqs.requests[0].entries[0]
@@ -950,8 +950,8 @@ func TestSendSQS10EventsOmitsDelayForFIFO(t *testing.T) {
 		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": map[string]any{"sqs": map[string]any{"messageGroupId": "group-a", "delaySeconds": 30}}}},
 	}
 
-	if err := a.sendSQS10Events(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
-		t.Fatalf("sendSQS10Events returned error: %v", err)
+	if err := a.sendSQSBatchForTest(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 	}
 
 	if sqs.requests[0].entries[0].DelaySeconds != nil {
@@ -979,8 +979,8 @@ func TestSendSQS10EventsDropsInvalidProviderOptionsAsPoison(t *testing.T) {
 			var deleted []any
 
 			events := []event{{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one", "options": tt.options}}}
-			if err := a.sendSQS10Events(context.Background(), "queue-a.fifo", events, func(id any) { deleted = append(deleted, id) }); err != nil {
-				t.Fatalf("sendSQS10Events returned error: %v", err)
+			if err := a.sendSQSBatchForTest(context.Background(), "queue-a.fifo", events, func(id any) { deleted = append(deleted, id) }); err != nil {
+				t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 			}
 			if !reflect.DeepEqual(deleted, []any{"event-1"}) {
 				t.Fatalf("expected invalid option to be deleted as poison, got %#v", deleted)
@@ -1001,8 +1001,8 @@ func TestSendSQS10EventsFIFOWithoutOrderingKeyGetsFallbackGroup(t *testing.T) {
 		{columns: map[string]any{"id": "event-1", "destination": "queue-a.fifo", "payload": "one"}},
 	}
 
-	if err := a.sendSQS10Events(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
-		t.Fatalf("sendSQS10Events returned error: %v", err)
+	if err := a.sendSQSBatchForTest(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 	}
 
 	entry := sqs.requests[0].entries[0]
@@ -1027,8 +1027,8 @@ func TestSendSQS10EventsFIFODerivesSafeDedupID(t *testing.T) {
 		{columns: map[string]any{"id": rawID, "destination": "queue-a.fifo", "payload": "one", "options": combinedOrderingOptions("group-a")}},
 	}
 
-	if err := a.sendSQS10Events(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
-		t.Fatalf("sendSQS10Events returned error: %v", err)
+	if err := a.sendSQSBatchForTest(context.Background(), "queue-a.fifo", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 	}
 
 	entry := sqs.requests[0].entries[0]
@@ -1053,8 +1053,8 @@ func TestSendSQS10EventsStandardDerivesSafeBatchEntryID(t *testing.T) {
 		{columns: map[string]any{"id": rawID, "destination": "queue-a", "payload": "one"}},
 	}
 
-	if err := a.sendSQS10Events(context.Background(), "queue-a", events, func(any) {}); err != nil {
-		t.Fatalf("sendSQS10Events returned error: %v", err)
+	if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(any) {}); err != nil {
+		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 	}
 
 	entry := sqs.requests[0].entries[0]
@@ -1077,10 +1077,10 @@ func TestSendSQS10EventsDropsLocalPoisonWithoutProviderCall(t *testing.T) {
 		{columns: map[string]any{"id": "large", "destination": "queue-a", "payload": strings.Repeat("x", sqsEventMaxSizeByte+1)}},
 	}
 
-	if err := a.sendSQS10Events(context.Background(), "queue-a", events, func(id any) {
+	if err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
-		t.Fatalf("sendSQS10Events returned error: %v", err)
+		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 	}
 
 	if !reflect.DeepEqual(deleted, []any{"empty", "large"}) {
@@ -1101,10 +1101,10 @@ func TestSendSQS10EventsDropsInvalidQueueURLWithoutProviderCall(t *testing.T) {
 		{columns: map[string]any{"id": "event-1", "destination": "bad queue url", "payload": "payload"}},
 	}
 
-	if err := a.sendSQS10Events(context.Background(), "bad queue url", events, func(id any) {
+	if err := a.sendSQSBatchForTest(context.Background(), "bad queue url", events, func(id any) {
 		deleted = append(deleted, id)
 	}); err != nil {
-		t.Fatalf("sendSQS10Events returned error: %v", err)
+		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
 	}
 
 	if !reflect.DeepEqual(deleted, []any{"event-1"}) {
@@ -1126,7 +1126,7 @@ func TestSendSQS10EventsKeepsSyntacticallyValidMissingQueue(t *testing.T) {
 		{columns: map[string]any{"id": "event-1", "destination": "https://sqs.us-east-1.amazonaws.com/123456789012/missing", "payload": "payload"}},
 	}
 
-	err := a.sendSQS10Events(context.Background(), "https://sqs.us-east-1.amazonaws.com/123456789012/missing", events, func(id any) {
+	err := a.sendSQSBatchForTest(context.Background(), "https://sqs.us-east-1.amazonaws.com/123456789012/missing", events, func(id any) {
 		deleted = append(deleted, id)
 	})
 	if !errors.Is(err, expectedErr) {
@@ -1153,7 +1153,7 @@ func TestSendSQS10EventsKeepsRetryableProviderErrors(t *testing.T) {
 				{columns: map[string]any{"id": "event-1", "destination": "https://sqs.us-east-1.amazonaws.com/123456789012/queue", "payload": "payload"}},
 			}
 
-			err := a.sendSQS10Events(context.Background(), "https://sqs.us-east-1.amazonaws.com/123456789012/queue", events, func(id any) {
+			err := a.sendSQSBatchForTest(context.Background(), "https://sqs.us-east-1.amazonaws.com/123456789012/queue", events, func(id any) {
 				deleted = append(deleted, id)
 			})
 			if !errors.Is(err, expectedErr) {

@@ -423,9 +423,12 @@ func TestLoadConfigRejectsInvalidEnv(t *testing.T) {
 	}
 }
 
-func TestLoadConfigDisablesColumnWithSentinel(t *testing.T) {
+func TestLoadConfigDisablesOptionalSettingsWithSentinel(t *testing.T) {
 	t.Setenv("EVENT_OPTIONS", "disabled")
 	t.Setenv("EVENT_TARGET", "DISABLED")
+	t.Setenv("DEFAULT_PUBSUB_TOPIC", "disabled")
+	t.Setenv("DEFAULT_SQS_QUEUE_URL", "disabled")
+	t.Setenv("AWS_WEB_IDENTITY_PROVIDER", "disabled")
 
 	cfg, err := loadConfig(nil, io.Discard)
 	if err != nil {
@@ -436,6 +439,12 @@ func TestLoadConfigDisablesColumnWithSentinel(t *testing.T) {
 	}
 	if cfg.EventTarget != "" {
 		t.Fatalf("expected EVENT_TARGET=DISABLED to omit the column, got %q", cfg.EventTarget)
+	}
+	if cfg.DefaultPubSubTopic != "" || cfg.DefaultSQSQueueURL != "" {
+		t.Fatalf("expected disabled default destinations to be empty, got Pub/Sub %q and SQS %q", cfg.DefaultPubSubTopic, cfg.DefaultSQSQueueURL)
+	}
+	if cfg.AWSWebIdentityProvider != "" {
+		t.Fatalf("expected AWS_WEB_IDENTITY_PROVIDER=disabled to omit the provider, got %q", cfg.AWSWebIdentityProvider)
 	}
 }
 
@@ -600,8 +609,7 @@ func TestCheckRequiredColumns(t *testing.T) {
 			if tc.mutate != nil {
 				tc.mutate(&cfg)
 			}
-			a := &app{cfg: cfg}
-			err := a.checkRequiredColumns(tc.columns)
+			err := validateEventColumns(cfg, tc.columns)
 			if tc.wantErr && err == nil {
 				t.Fatal("expected error, got nil")
 			}
