@@ -235,10 +235,13 @@ func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandida
 		a.rejectMalformedOptions(ctx, evt, candidate.topic, "attributes", err, callbacks)
 		return pubsubPreparedEvent{}, false
 	}
-	timestamp := evt.Timestamp
 	id := evt.ID
 	data := evt.Payload
-	latency := provider.Latency(timestamp)
+	latency := provider.Latency(evt.Timestamp)
+	var timestamp any
+	if !evt.Timestamp.IsZero() {
+		timestamp = evt.Timestamp
+	}
 
 	stringAttributes, deletedAttributes := sanitizeStringAttributes(attributes)
 	if len(deletedAttributes) != 0 {

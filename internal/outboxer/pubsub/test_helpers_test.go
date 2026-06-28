@@ -62,11 +62,14 @@ func (a *app) routeTestEvents(events []provider.Event) []provider.Event {
 // fromColumns resolves a raw outbox row into the typed provider.Event the relay
 // core hands to senders, mirroring the production providerEvent resolution.
 func fromColumns(columns map[string]any) provider.Event {
+	payload, _ := columns["payload"].(string)
+	destination, _ := columns["destination"].(string)
+	timestamp, _ := columns["timestamp"].(time.Time)
 	return provider.Event{
 		ID:          columns["id"],
-		Payload:     provider.ValueBytes(columns["payload"]),
-		Timestamp:   columns["timestamp"],
-		Destination: provider.ValueString(columns["destination"]),
+		Payload:     []byte(payload),
+		Timestamp:   timestamp,
+		Destination: destination,
 		Options:     columns["options"],
 	}
 }

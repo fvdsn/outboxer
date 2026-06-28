@@ -287,11 +287,14 @@ func (a *sender) prepareSQSEvent(ctx context.Context, candidate sqsCandidateEven
 		return sqsPreparedEvent{}, false
 	}
 
-	timestamp := candidate.evt.Timestamp
 	eventID := fmt.Sprint(candidate.id)
 	entryID := providerSafeID(eventID, sqsBatchEntryIDPattern)
 	data := candidate.evt.Payload
-	latency := provider.Latency(timestamp)
+	latency := provider.Latency(candidate.evt.Timestamp)
+	var timestamp any
+	if !candidate.evt.Timestamp.IsZero() {
+		timestamp = candidate.evt.Timestamp
+	}
 	if isSQSPoison(data, attributes, candidate.orderingKey, deduplicationID, delaySeconds) {
 		callbacks.AddPoisonID(candidate.id, "Event is invalid for SQS")
 		logFailure(ctx, callbacks, "Failed to send event",

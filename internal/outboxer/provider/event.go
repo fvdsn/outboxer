@@ -12,44 +12,15 @@ var ErrMalformedOptions = errors.New("malformed event options")
 
 // Event is the provider-facing view of a selected outbox row. The relay core
 // resolves each configured column into a role before dispatch, so providers
-// never deal with column names; Destination is the route already resolved by
-// the collection query, and Options is the raw value of the options column.
+// never deal with raw database values or column names; Destination is the route
+// already resolved by the collection query, Options is the raw value of the
+// options column, and Timestamp is zero when the event has no timestamp.
 type Event struct {
 	ID          any
 	Payload     []byte
-	Timestamp   any
+	Timestamp   time.Time
 	Destination string
 	Options     any
-}
-
-// ValueString converts a database value to its string representation.
-func ValueString(value any) string {
-	switch typed := value.(type) {
-	case nil:
-		return ""
-	case string:
-		return typed
-	case []byte:
-		return string(typed)
-	case time.Time:
-		return typed.Format(time.RFC3339Nano)
-	default:
-		return fmt.Sprint(typed)
-	}
-}
-
-// ValueBytes converts a database value to its byte representation.
-func ValueBytes(value any) []byte {
-	switch typed := value.(type) {
-	case nil:
-		return nil
-	case []byte:
-		return typed
-	case string:
-		return []byte(typed)
-	default:
-		return []byte(fmt.Sprint(typed))
-	}
 }
 
 // Options contains one provider's section of the event options object.
@@ -106,29 +77,13 @@ func Object(value any) (map[string]any, bool) {
 	return object, ok
 }
 
-// Latency returns the number of seconds since a timestamp-like value.
-func Latency(value any) any {
-	timestamp, ok := Timestamp(value)
-	if !ok {
+// Latency returns the number of seconds elapsed since the event's timestamp,
+// measured at the moment of the call, or nil when the event has no timestamp.
+func Latency(timestamp time.Time) any {
+	if timestamp.IsZero() {
 		return nil
 	}
 	return time.Since(timestamp).Seconds()
-}
-
-// Timestamp parses a supported database timestamp value and normalizes it to UTC.
-func Timestamp(value any) (time.Time, bool) {
-	switch typed := value.(type) {
-	case nil:
-		return time.Time{}, false
-	case time.Time:
-		return typed.UTC(), true
-	case string:
-		return parseTimestampString(typed)
-	case []byte:
-		return parseTimestampString(string(typed))
-	default:
-		return time.Time{}, false
-	}
 }
 
 func optionsObject(value any) (map[string]any, error) {
@@ -162,20 +117,4 @@ func parseOptionsJSON(content []byte) (map[string]any, error) {
 		return nil, fmt.Errorf("%w: options column must be an object", ErrMalformedOptions)
 	}
 	return options, nil
-}
-
-func parseTimestampString(value string) (time.Time, bool) {
-	if value == "" {
-		return time.Time{}, false
-	}
-	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
-		return parsed.UTC(), true
-	}
-	if parsed, err := time.ParseInLocation("2006-01-02 15:04:05.999999999", value, time.UTC); err == nil {
-		return parsed.UTC(), true
-	}
-	if parsed, err := time.ParseInLocation("2006-01-02 15:04:05", value, time.UTC); err == nil {
-		return parsed.UTC(), true
-	}
-	return time.Time{}, false
 }
