@@ -9,13 +9,19 @@ import (
 // ErrMalformedOptions identifies invalid provider-specific event options.
 var ErrMalformedOptions = errors.New("malformed event options")
 
+// EventID is an outbox row's identifier as its raw database value (int64 for a
+// bigint column, string for uuid/text, and so on). It is opaque to providers:
+// report it back through the callbacks exactly as received, without converting
+// or inspecting it, so the relay can match the outcome to its row.
+type EventID = any
+
 // Event is the provider-facing view of a selected outbox row. The relay core
 // resolves each configured column into a role before dispatch, so providers
 // never deal with raw database values or column names: Destination is the route
 // resolved by the collection query, Timestamp is zero when the event has none,
 // and Options is this provider's already-parsed section of the options column.
 type Event struct {
-	ID          any
+	ID          EventID
 	Payload     []byte
 	Timestamp   time.Time
 	Destination string

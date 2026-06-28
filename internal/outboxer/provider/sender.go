@@ -15,8 +15,8 @@ type Sender interface {
 
 // Callbacks reports per-event outcomes and publishing progress to the relay.
 type Callbacks struct {
-	AddConfirmedID func(any)
-	AddPoisonID    func(any, string)
+	AddConfirmedID func(EventID)
+	AddPoisonID    func(EventID, string)
 	MarkProgress   func()
 	LogFailure     func(context.Context, string, string, ...any)
 }
