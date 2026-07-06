@@ -70,10 +70,13 @@ options.
 | CLI flag | Env var | Default | Description |
 | --- | --- | --- | --- |
 | `--health-port` | `HEALTH_PORT`, `PORT` | `PORT` or `0` | HTTP health server port. `0` disables the server. |
+| `--health-stale-after-ms` | `HEALTH_STALE_AFTER_MS` | `300000` | `/healthz` reports `503` after this long without a committed batch, in milliseconds. Must be at least 10x `POLL_INTERVAL_MS` so an idle relay cannot flap. `0` always reports healthy. |
 
 The HTTP server starts only when `HEALTH_PORT`, `PORT`, or `--health-port` is set
-to a positive port. It returns `200 all good` for any request. Successful health
-checks are logged at debug level.
+to a positive port. It serves `/healthz` (batch-staleness health), `/metrics`
+(Prometheus), and `200 all good` for any other path as a pure liveness signal.
+See [Observability](observability.md). Successful health checks are logged at
+debug level.
 
 ## Logging
 

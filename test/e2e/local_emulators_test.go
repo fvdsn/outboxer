@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -658,15 +660,35 @@ func TestLocalEmulatorE2EDeadLettersBatchAcrossTargets(t *testing.T) {
 		{id: "pubsub-healthy-00", target: "pubsub", destination: topic, payload: "pubsub-healthy-00", attributes: `null`},
 	})
 
+	const healthPort = "18099"
 	process := startOutboxer(t, ctx, binary, table, map[string]string{
 		"DLQ_TABLE":                 dlqTable,
 		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
+		"HEALTH_PORT":               healthPort,
 	})
 
 	pubsubMessages := receivePubSubMessages(t, ctx, pubsubClient, subscription, 1)
 	sqsMessages := receiveSQSMessages(t, ctx, sqsClient, queue, 1)
 	waitForEmptyTable(t, ctx, db, table)
 	deadLetters := readDLQEvents(t, ctx, db, dlqTable, 3)
+
+	// The live process serves scrapeable metrics and a healthy /healthz while
+	// batches commit.
+	metricsBody := httpGetBody(t, ctx, "http://localhost:"+healthPort+"/metrics")
+	for _, needle := range []string{
+		"outboxer_events_sent_total 2",
+		"outboxer_events_dlq_total 3",
+		"outboxer_oldest_event_age_seconds",
+	} {
+		if !strings.Contains(metricsBody, needle) {
+			t.Fatalf("expected /metrics to contain %q, got:\n%s", needle, metricsBody)
+		}
+	}
+	healthBody := httpGetBody(t, ctx, "http://localhost:"+healthPort+"/healthz")
+	if !strings.HasPrefix(healthBody, "ok") {
+		t.Fatalf("expected healthy /healthz, got %q", healthBody)
+	}
+
 	stopOutboxer(t, process)
 
 	assertBodies(t, pubsubMessages, "pubsub-healthy-", 1)
@@ -801,6 +823,32 @@ func TestLocalEmulatorE2ECrashMidBatchRedeliversWithoutLoss(t *testing.T) {
 		t.Fatalf("received messages for unknown events: %#v", counts)
 	}
 	t.Logf("crash redelivery: %d events delivered, %d duplicate deliveries (FIFO dedup absorbs re-sends within its window)", total, duplicates)
+}
+
+func httpGetBody(t *testing.T, ctx context.Context, url string) string {
+	t.Helper()
+	var body string
+	waitUntil(t, ctx, "GET "+url, func(ctx context.Context) error {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		content, err := io.ReadAll(response.Body)
+		if err != nil {
+			return err
+		}
+		if response.StatusCode != http.StatusOK {
+			return fmt.Errorf("status %d: %s", response.StatusCode, content)
+		}
+		body = string(content)
+		return nil
+	})
+	return body
 }
 
 // killOutboxer terminates the relay with SIGKILL, simulating a crash: no

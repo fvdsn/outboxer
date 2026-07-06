@@ -3,10 +3,14 @@ package outboxer
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
+// appStats holds cumulative processing counters plus last-batch gauges. The
+// counters only grow, so /metrics can expose them as Prometheus counters; the
+// periodic log line reports per-interval deltas via intervalSnapshot.
 type appStats struct {
 	selected               atomic.Int64
 	sent                   atomic.Int64
@@ -17,6 +21,28 @@ type appStats struct {
 	batchErrors            atomic.Int64
 	senderErrors           atomic.Int64
 	fatalAfterCommitErrors atomic.Int64
+
+	// Last committed batch gauges. oldestEventAgeMillis is the age of the
+	// oldest event the batch selected (0 when the outbox was empty or the
+	// timestamp column is not configured), observed with no extra database
+	// work because batches select in id order.
+	lastBatchSelected     atomic.Int64
+	lastBatchKeptForRetry atomic.Int64
+	oldestEventAgeMillis  atomic.Int64
+	lastSuccessUnixMilli  atomic.Int64
+
+	// lastLogged is the baseline for the periodic log line's deltas, shared by
+	// the ticker goroutine and the final shutdown flush.
+	mu         sync.Mutex
+	lastLogged statsSnapshot
+}
+
+// newAppStats seeds the last-success gauge with the startup time, so /healthz
+// grants a fresh relay one full staleness window before demanding a batch.
+func newAppStats(now time.Time) *appStats {
+	stats := &appStats{}
+	stats.lastSuccessUnixMilli.Store(now.UnixMilli())
+	return stats
 }
 
 type batchStats struct {
@@ -27,6 +53,7 @@ type batchStats struct {
 	keptForRetry           int
 	senderErrors           int
 	fatalAfterCommitErrors int
+	oldestEventAge         time.Duration
 }
 
 type statsSnapshot struct {
@@ -41,7 +68,21 @@ type statsSnapshot struct {
 	fatalAfterCommitErrors int64
 }
 
-func (s *appStats) addCommittedBatch(batch batchStats) {
+func (s statsSnapshot) sub(other statsSnapshot) statsSnapshot {
+	return statsSnapshot{
+		selected:               s.selected - other.selected,
+		sent:                   s.sent - other.sent,
+		poison:                 s.poison - other.poison,
+		dlq:                    s.dlq - other.dlq,
+		keptForRetry:           s.keptForRetry - other.keptForRetry,
+		batchesProcessed:       s.batchesProcessed - other.batchesProcessed,
+		batchErrors:            s.batchErrors - other.batchErrors,
+		senderErrors:           s.senderErrors - other.senderErrors,
+		fatalAfterCommitErrors: s.fatalAfterCommitErrors - other.fatalAfterCommitErrors,
+	}
+}
+
+func (s *appStats) addCommittedBatch(batch batchStats, now time.Time) {
 	if s == nil {
 		return
 	}
@@ -53,6 +94,11 @@ func (s *appStats) addCommittedBatch(batch batchStats) {
 	s.senderErrors.Add(int64(batch.senderErrors))
 	s.fatalAfterCommitErrors.Add(int64(batch.fatalAfterCommitErrors))
 	s.batchesProcessed.Add(1)
+
+	s.lastBatchSelected.Store(int64(batch.selected))
+	s.lastBatchKeptForRetry.Store(int64(batch.keptForRetry))
+	s.oldestEventAgeMillis.Store(batch.oldestEventAge.Milliseconds())
+	s.lastSuccessUnixMilli.Store(now.UnixMilli())
 }
 
 func (s *appStats) addBatchError() {
@@ -62,21 +108,51 @@ func (s *appStats) addBatchError() {
 	s.batchErrors.Add(1)
 }
 
-func (s *appStats) snapshotAndReset() statsSnapshot {
+func (s *appStats) snapshot() statsSnapshot {
 	if s == nil {
 		return statsSnapshot{}
 	}
 	return statsSnapshot{
-		selected:               s.selected.Swap(0),
-		sent:                   s.sent.Swap(0),
-		poison:                 s.poison.Swap(0),
-		dlq:                    s.dlq.Swap(0),
-		keptForRetry:           s.keptForRetry.Swap(0),
-		batchesProcessed:       s.batchesProcessed.Swap(0),
-		batchErrors:            s.batchErrors.Swap(0),
-		senderErrors:           s.senderErrors.Swap(0),
-		fatalAfterCommitErrors: s.fatalAfterCommitErrors.Swap(0),
+		selected:               s.selected.Load(),
+		sent:                   s.sent.Load(),
+		poison:                 s.poison.Load(),
+		dlq:                    s.dlq.Load(),
+		keptForRetry:           s.keptForRetry.Load(),
+		batchesProcessed:       s.batchesProcessed.Load(),
+		batchErrors:            s.batchErrors.Load(),
+		senderErrors:           s.senderErrors.Load(),
+		fatalAfterCommitErrors: s.fatalAfterCommitErrors.Load(),
 	}
+}
+
+// intervalSnapshot returns the change since the previous call and advances the
+// baseline, so consecutive calls partition the cumulative counters into
+// non-overlapping intervals.
+func (s *appStats) intervalSnapshot() statsSnapshot {
+	if s == nil {
+		return statsSnapshot{}
+	}
+	current := s.snapshot()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delta := current.sub(s.lastLogged)
+	s.lastLogged = current
+	return delta
+}
+
+// lastSuccess returns the time of the last committed batch (or startup for a
+// relay that has not committed one yet). The zero time means the stats were
+// never seeded.
+func (s *appStats) lastSuccess() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	millis := s.lastSuccessUnixMilli.Load()
+	if millis == 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(millis)
 }
 
 func (a *app) startStatsLogger(ctx context.Context) {
@@ -101,7 +177,7 @@ func (a *app) logStats(ctx context.Context) {
 	if ctx.Err() != nil || a.stats == nil {
 		return
 	}
-	snapshot := a.stats.snapshotAndReset()
+	snapshot := a.stats.intervalSnapshot()
 	attrs := []any{
 		"stats_interval_ms", int(a.cfg.StatsInterval / time.Millisecond),
 		"events_selected", snapshot.selected,

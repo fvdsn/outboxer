@@ -138,6 +138,7 @@ the outbox table for a later retry. See [`docs/dlq.md`](docs/dlq.md).
  - [Configuration](docs/configuration.md) — full environment variable and flag reference
  - [Notifications](docs/notifications.md) — optional `LISTEN`/`NOTIFY` trigger for low-latency wake-ups
  - [Logging](docs/logs.md) — log catalog, levels, and the periodic statistics fields
+ - [Observability](docs/observability.md) — Prometheus metrics, outbox lag, and the `/healthz` endpoint
  - [Dead Letter Queue](docs/dlq.md) — poison handling and the DLQ table
  - [Authentication](docs/auth.md) — credentials and cross-cloud workload identity
  - [Deployment](docs/deployment.md) — Cloud Run, GKE, ECS Fargate, and EKS examples

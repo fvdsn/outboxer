@@ -82,7 +82,7 @@ func runRelay(ctx context.Context, args []string) error {
 		senders:       senders,
 		shutdown:      cancel,
 		failureLogger: newFailureLogger(failureLogWindow),
-		stats:         &appStats{},
+		stats:         newAppStats(time.Now()),
 		watchdog:      wd,
 	}
 

@@ -76,6 +76,7 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 	var publishResultGraceMS = int(cfg.PublishResultGrace / time.Millisecond)
 	var maxEventAgeMS = int(cfg.MaxEventAge / time.Millisecond)
 	var statsIntervalMS = int(cfg.StatsInterval / time.Millisecond)
+	var healthStaleAfterMS = int(cfg.HealthStaleAfter / time.Millisecond)
 	var pgTimeoutMS = int(cfg.PGConnectTimeout / time.Millisecond)
 	var pgQueryTimeoutMS = int(cfg.PGQueryTimeout / time.Millisecond)
 	var awsRoleDurationSeconds = int(cfg.AWSRoleDuration / time.Second)
@@ -93,6 +94,7 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 	addStringFlag(flags, options, "Batch processing", &cfg.NotifyChannel, "notify-channel", cfg.NotifyChannel, "PostgreSQL channel for the new-event notification trigger that init provisions; the relay also LISTENs on it when POLL_INTERVAL_MS > 0.", "NOTIFY_CHANNEL")
 
 	addIntFlag(flags, options, "HTTP / health", &cfg.HealthPort, "health-port", cfg.HealthPort, "HTTP health server port. Set to 0 to disable.", "HEALTH_PORT, PORT")
+	addIntFlag(flags, options, "HTTP / health", &healthStaleAfterMS, "health-stale-after-ms", healthStaleAfterMS, "Report /healthz unhealthy after this long without a committed batch, in milliseconds. 0 always reports healthy.", "HEALTH_STALE_AFTER_MS")
 
 	addStringFlag(flags, options, "Logging", &cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug, info, warn, or error.", "LOG_LEVEL")
 	addStringFlag(flags, options, "Logging", &cfg.LogFormat, "log-format", cfg.LogFormat, "Log format: text or json.", "LOG_FORMAT")
@@ -129,6 +131,7 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 
 	return func() {
 		cfg.WatchdogInterval = time.Duration(watchdogIntervalMS) * time.Millisecond
+		cfg.HealthStaleAfter = time.Duration(healthStaleAfterMS) * time.Millisecond
 		cfg.ErrorCooldown = time.Duration(errorCooldownMS) * time.Millisecond
 		cfg.PollInterval = time.Duration(pollIntervalMS) * time.Millisecond
 		cfg.PublishTimeout = time.Duration(publishTimeoutMS) * time.Millisecond

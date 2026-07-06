@@ -25,6 +25,7 @@ type appConfig struct {
 
 	WatchdogInterval   time.Duration
 	HealthPort         int
+	HealthStaleAfter   time.Duration
 	PubSubEnabled      bool
 	SQSEnabled         bool
 	DefaultPubSubTopic string
@@ -127,6 +128,7 @@ func defaultConfig() appConfig {
 
 		WatchdogInterval:   10 * time.Minute,
 		HealthPort:         0,
+		HealthStaleAfter:   5 * time.Minute,
 		PubSubEnabled:      false,
 		SQSEnabled:         false,
 		DefaultPubSubTopic: "default",

@@ -125,7 +125,7 @@ func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 		return result, fmtDBError(err)
 	}
 	a.markProgress()
-	a.stats.addCommittedBatch(result.stats)
+	a.stats.addCommittedBatch(result.stats, time.Now())
 
 	return result, batchErr
 }
@@ -186,6 +186,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 	a.markProgress()
 	result := batchResult{selected: len(events)}
 	result.stats.selected = len(events)
+	result.stats.oldestEventAge = a.oldestEventAge(events)
 	if len(events) > 0 {
 		slog.Info("Processing batch", "count", len(events))
 	}
@@ -281,6 +282,20 @@ func countJoinedErrors(err error) int {
 		return count
 	}
 	return 1
+}
+
+// oldestEventAge observes the outbox lag from the batch itself: events are
+// selected in id order, so the first one is the oldest pending. It is 0 when
+// the outbox was empty or the event carries no usable timestamp.
+func (a *app) oldestEventAge(events []event) time.Duration {
+	if len(events) == 0 || a.cfg.EventTimestamp == "" {
+		return 0
+	}
+	timestamp, ok := eventTimestamp(eventValue(events[0], a.cfg.EventTimestamp))
+	if !ok {
+		return 0
+	}
+	return max(0, time.Since(timestamp))
 }
 
 func (a *app) isExpiredEvent(evt event, now time.Time) bool {

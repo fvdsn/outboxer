@@ -28,21 +28,48 @@ func (a *app) serveHTTPRequests() (*http.Server, error) {
 }
 
 func (a *app) newHTTPServer() *http.Server {
-	// The timeouts bound slow or stalled clients so they cannot pin health-server
-	// connections open indefinitely.
-	server := &http.Server{
-		Addr:              fmt.Sprintf(":%d", a.cfg.HealthPort),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-
-	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/metrics", a.handleMetrics)
+	mux.HandleFunc("/healthz", a.handleHealthz)
+	// Every other path answers 200 as a pure liveness signal, matching the
+	// original single-endpoint behavior.
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("all good"))
 		slog.Debug("Healthcheck request answered")
 	})
 
-	return server
+	// The timeouts bound slow or stalled clients so they cannot pin health-server
+	// connections open indefinitely.
+	return &http.Server{
+		Addr:              fmt.Sprintf(":%d", a.cfg.HealthPort),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+}
+
+// handleHealthz reports 503 when no batch has committed within the configured
+// staleness window. Batches with sender errors still commit, so provider
+// failures never flip health — only the relay's own loop breaking does. A
+// fresh relay's window starts at startup (see newAppStats).
+func (a *app) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	threshold := a.cfg.HealthStaleAfter
+	if threshold <= 0 {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok (staleness check disabled)"))
+		return
+	}
+
+	last := a.stats.lastSuccess()
+	age := time.Since(last)
+	if last.IsZero() || age > threshold {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = fmt.Fprintf(w, "unhealthy: no committed batch for %s (threshold %s)", age.Round(time.Second), threshold)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintf(w, "ok: last committed batch %s ago", age.Round(time.Second))
 }

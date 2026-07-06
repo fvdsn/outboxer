@@ -685,6 +685,32 @@ func TestValidateWatchdogMustExceedPollInterval(t *testing.T) {
 	}
 }
 
+func TestValidateHealthStaleAfter(t *testing.T) {
+	cfg := testConfig()
+	cfg.HealthStaleAfter = -time.Second
+	if err := cfg.validate(configValidationRelay); err == nil {
+		t.Fatal("expected error when the health staleness threshold is negative")
+	}
+
+	cfg.PollInterval = time.Minute
+	cfg.WatchdogInterval = time.Hour
+	cfg.HealthStaleAfter = 5 * time.Minute
+	if err := cfg.validate(configValidationRelay); err == nil {
+		t.Fatal("expected error when the health staleness threshold is less than 10x the poll interval")
+	}
+
+	cfg.HealthStaleAfter = 10 * time.Minute
+	if err := cfg.validate(configValidationRelay); err != nil {
+		t.Fatalf("expected threshold of exactly 10x poll interval to be valid, got %v", err)
+	}
+
+	// Zero disables the staleness check entirely.
+	cfg.HealthStaleAfter = 0
+	if err := cfg.validate(configValidationRelay); err != nil {
+		t.Fatalf("expected zero threshold to be valid, got %v", err)
+	}
+}
+
 func TestValidateNotifyChannelRequiredWhenPolling(t *testing.T) {
 	cfg := testConfig()
 	cfg.PollInterval = time.Minute

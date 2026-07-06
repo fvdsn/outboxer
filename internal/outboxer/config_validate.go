@@ -116,6 +116,12 @@ func (cfg appConfig) validateRuntime() error {
 	if cfg.PollInterval > 0 && cfg.WatchdogInterval < 10*cfg.PollInterval {
 		return fmt.Errorf("watchdog interval (%s) must be at least 10x the poll interval (%s) to avoid false deadlocks: increase WATCHDOG_INTERVAL_MS or decrease POLL_INTERVAL_MS", cfg.WatchdogInterval, cfg.PollInterval)
 	}
+	if cfg.HealthStaleAfter < 0 {
+		return fmt.Errorf("health staleness threshold (%s) must not be negative: set HEALTH_STALE_AFTER_MS", cfg.HealthStaleAfter)
+	}
+	if cfg.HealthStaleAfter > 0 && cfg.PollInterval > 0 && cfg.HealthStaleAfter < 10*cfg.PollInterval {
+		return fmt.Errorf("health staleness threshold (%s) must be at least 10x the poll interval (%s) so an idle relay cannot flap unhealthy: increase HEALTH_STALE_AFTER_MS or decrease POLL_INTERVAL_MS", cfg.HealthStaleAfter, cfg.PollInterval)
+	}
 	if cfg.AWSWebIdentityProvider != "" {
 		if cfg.AWSWebIdentityProvider != awsWebIdentityProviderGoogle {
 			return fmt.Errorf("unsupported AWS_WEB_IDENTITY_PROVIDER %q: the only supported value is %q", cfg.AWSWebIdentityProvider, awsWebIdentityProviderGoogle)
