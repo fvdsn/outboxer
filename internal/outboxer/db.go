@@ -38,8 +38,12 @@ func openDB(cfg appConfig) (*sql.DB, error) {
 	}
 
 	db := stdlib.OpenDB(*pgConfig)
+	// One connection, kept idle for reuse: batches and the idle listener share
+	// it sequentially, so the relay does not open a fresh connection (TCP, TLS,
+	// auth, backend fork) per batch. The listener removes its LISTEN state
+	// before releasing the connection (see notifyListener.close).
 	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(0)
+	db.SetMaxIdleConns(1)
 	return db, nil
 }
 

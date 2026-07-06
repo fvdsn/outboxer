@@ -3,11 +3,16 @@ package outboxer
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 )
+
+// unlistenTimeout bounds the subscription cleanup when the listener releases
+// its connection back to the pool.
+const unlistenTimeout = time.Second
 
 // notifyListener borrows a PostgreSQL connection for one idle cycle: it LISTENs
 // on the configured channel and blocks until a notification arrives or the wait
@@ -34,10 +39,20 @@ func (a *app) startListener(ctx context.Context) (*notifyListener, error) {
 	return &notifyListener{conn: conn}, nil
 }
 
-// close releases the listener connection. It is safe to call on a nil listener.
+// close releases the listener connection back to the pool for the next batch
+// to reuse, removing the subscription first so pooled reuse does not carry
+// LISTEN state. If the cleanup fails the connection is in an unknown state and
+// is discarded instead of reused. It is safe to call on a nil listener.
 func (l *notifyListener) close() {
 	if l == nil || l.conn == nil {
 		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), unlistenTimeout)
+	defer cancel()
+	if _, err := l.conn.ExecContext(ctx, "UNLISTEN *"); err != nil {
+		// Returning driver.ErrBadConn from Raw marks the connection bad, so the
+		// pool destroys it on Close instead of handing it to the next batch.
+		_ = l.conn.Raw(func(any) error { return driver.ErrBadConn })
 	}
 	_ = l.conn.Close()
 }
