@@ -104,8 +104,16 @@ func runRelay(ctx context.Context, args []string) error {
 	}
 	a.startStatsLogger(ctx)
 
-	if err := a.processEvents(ctx); err != nil {
-		return fmt.Errorf("process events: %w", err)
+	processErr := a.processEvents(ctx)
+
+	// The periodic stats logger stops with the context; flush the final partial
+	// interval so shutdown accounting is complete.
+	if a.cfg.StatsInterval > 0 {
+		a.logStats(context.Background())
+	}
+
+	if processErr != nil {
+		return fmt.Errorf("process events: %w", processErr)
 	}
 	slog.Info("Graceful shutdown")
 	return nil

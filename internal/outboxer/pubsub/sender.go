@@ -17,8 +17,8 @@ const Target = "pubsub"
 
 // Config contains the relay settings needed by the Pub/Sub provider.
 type Config struct {
-	PubSubProjectID    string
-	PubSubAPIEndpoint  string
+	ProjectID          string
+	APIEndpoint        string
 	PublishTimeout     time.Duration
 	PublishResultGrace time.Duration
 }

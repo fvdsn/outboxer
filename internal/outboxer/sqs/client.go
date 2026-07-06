@@ -54,9 +54,9 @@ func NewClient(ctx context.Context, cfg Config) (*sqs.Client, error) {
 	}
 
 	clientOptions := []func(*sqs.Options){}
-	if cfg.SQSAPIEndpoint != "" {
+	if cfg.APIEndpoint != "" {
 		clientOptions = append(clientOptions, func(options *sqs.Options) {
-			options.BaseEndpoint = aws.String(cfg.SQSAPIEndpoint)
+			options.BaseEndpoint = aws.String(cfg.APIEndpoint)
 		})
 	}
 

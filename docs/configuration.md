@@ -53,7 +53,7 @@ options.
 
 | CLI flag | Env var | Default | Description |
 | --- | --- | --- | --- |
-| `--collect-batch-target` | `COLLECT_BATCH_TARGET` | `5000` | Approximate target rows selected per batch, spread across eligible routes. Must be positive. |
+| `--collect-batch-target` | `COLLECT_BATCH_TARGET` | `5000` | Approximate target rows selected per batch. Must be positive. Every eligible route (distinct target and destination pair with pending events) gets an even share of the target, at least one row; a busy route does not borrow an idle route's share within a batch. |
 | `--sqs-send-concurrency` | `SQS_SEND_CONCURRENCY` | `8` | Maximum concurrent SQS send requests. |
 | `--dlq-table` | `DLQ_TABLE` | `disabled` | Dead letter table for poison events. Defaults to `disabled`; set a table name to enable. See [Dead Letter Queue](dlq.md). |
 | `--max-event-age-ms` | `MAX_EVENT_AGE_MS` | `0` | Maximum selected event age in milliseconds. `0` disables age-based poison. Requires `EVENT_TIMESTAMP`. |

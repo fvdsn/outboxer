@@ -28,24 +28,6 @@ type Event struct {
 	Options     Options
 }
 
-// Latency returns the number of seconds elapsed since the event's timestamp,
-// measured at the moment of the call, or nil when the event has no timestamp.
-func (e Event) Latency() any {
-	if e.Timestamp.IsZero() {
-		return nil
-	}
-	return time.Since(e.Timestamp).Seconds()
-}
-
-// TimestampValue returns the timestamp for structured logging, or nil when the
-// event has none.
-func (e Event) TimestampValue() any {
-	if e.Timestamp.IsZero() {
-		return nil
-	}
-	return e.Timestamp
-}
-
 // Options is one provider's section of the event options object, already parsed
 // and extracted by the relay core.
 type Options struct {

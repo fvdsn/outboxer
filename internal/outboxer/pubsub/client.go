@@ -29,10 +29,10 @@ type pubsubTopicPublisher interface {
 // NewClient creates a configured Google Cloud Pub/Sub client.
 func NewClient(ctx context.Context, cfg Config) (*pubsub.Client, error) {
 	options := []option.ClientOption{}
-	if cfg.PubSubAPIEndpoint != "" {
-		options = append(options, option.WithEndpoint(cfg.PubSubAPIEndpoint))
+	if cfg.APIEndpoint != "" {
+		options = append(options, option.WithEndpoint(cfg.APIEndpoint))
 	}
-	return pubsub.NewClient(ctx, cfg.PubSubProjectID, options...)
+	return pubsub.NewClient(ctx, cfg.ProjectID, options...)
 }
 
 // NewCloudPublisher creates a topic-caching Pub/Sub publisher.

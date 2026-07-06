@@ -2,6 +2,7 @@ package provider
 
 import (
 	"log/slog"
+	"time"
 )
 
 // PublishLog carries the identifying fields a provider logs for each publish,
@@ -21,14 +22,18 @@ type PublishLog struct {
 // NewPublishLog captures the shared logging fields of one event; the caller
 // fills in its provider-specific ordering key and attributes.
 func NewPublishLog(evt Event, target string) PublishLog {
-	return PublishLog{
+	log := PublishLog{
 		ID:          evt.ID,
-		Timestamp:   evt.TimestampValue(),
-		Latency:     evt.Latency(),
 		PayloadSize: len(evt.Payload),
 		Target:      target,
 		Destination: evt.Destination,
 	}
+	// An absent timestamp logs as nil rather than the zero time.
+	if !evt.Timestamp.IsZero() {
+		log.Timestamp = evt.Timestamp
+		log.Latency = time.Since(evt.Timestamp).Seconds()
+	}
+	return log
 }
 
 func (l PublishLog) attrs() []any {

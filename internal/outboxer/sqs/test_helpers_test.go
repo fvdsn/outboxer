@@ -26,8 +26,8 @@ type app struct {
 func testConfig() appConfig {
 	return appConfig{
 		Config: Config{
-			SQSSendConcurrency: 8,
-			PublishTimeout:     30 * time.Second,
+			SendConcurrency: 8,
+			PublishTimeout:  30 * time.Second,
 		},
 		DefaultSQSQueueURL: "",
 		PubSubEnabled:      true,
@@ -56,7 +56,7 @@ func (a *app) sendSQSBatchForTest(ctx context.Context, queueURL string, events [
 	callbacks := a.callbacks(addIDToDelete)
 	s := newSender(a.cfg.Config, a.sqs)
 	if !validSQSQueueURL(queueURL) {
-		return s.sendSQSQueueEvents(ctx, make(chan struct{}, a.cfg.SQSSendConcurrency), queueURL, events, callbacks)
+		return s.sendSQSQueueEvents(ctx, make(chan struct{}, a.cfg.SendConcurrency), queueURL, events, callbacks)
 	}
 	prepared := make([]sqsPreparedEvent, 0, len(events))
 	for _, evt := range events {

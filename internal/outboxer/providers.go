@@ -124,8 +124,8 @@ func buildSQSSender(ctx context.Context, cfg appConfig) (provider.Sender, func()
 
 func pubsubConfig(cfg appConfig) outboxpubsub.Config {
 	return outboxpubsub.Config{
-		PubSubProjectID:    cfg.PubSubProjectID,
-		PubSubAPIEndpoint:  cfg.PubSubAPIEndpoint,
+		ProjectID:          cfg.PubSubProjectID,
+		APIEndpoint:        cfg.PubSubAPIEndpoint,
 		PublishTimeout:     cfg.PublishTimeout,
 		PublishResultGrace: cfg.PublishResultGrace,
 	}
@@ -133,9 +133,9 @@ func pubsubConfig(cfg appConfig) outboxpubsub.Config {
 
 func sqsConfig(cfg appConfig) outboxsqs.Config {
 	return outboxsqs.Config{
-		SQSSendConcurrency:         cfg.SQSSendConcurrency,
+		SendConcurrency:            cfg.SQSSendConcurrency,
 		PublishTimeout:             cfg.PublishTimeout,
-		SQSAPIEndpoint:             cfg.SQSAPIEndpoint,
+		APIEndpoint:                cfg.SQSAPIEndpoint,
 		AWSRegion:                  cfg.AWSRegion,
 		AWSRoleARN:                 cfg.AWSRoleARN,
 		AWSRoleSessionName:         cfg.AWSRoleSessionName,

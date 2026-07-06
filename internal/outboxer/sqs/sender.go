@@ -34,9 +34,9 @@ var (
 
 // Config contains the relay settings needed by the SQS provider.
 type Config struct {
-	SQSSendConcurrency         int
+	SendConcurrency            int
 	PublishTimeout             time.Duration
-	SQSAPIEndpoint             string
+	APIEndpoint                string
 	AWSRegion                  string
 	AWSRoleARN                 string
 	AWSRoleSessionName         string
@@ -135,7 +135,7 @@ func (a *sender) sendSQSEventsWithCallbacks(ctx context.Context, events []provid
 		queueGroups = append(queueGroups, sqsQueueEvents{queue: queue, events: append([]provider.Event(nil), queueEvents...)})
 	}
 
-	sem := make(chan struct{}, a.cfg.SQSSendConcurrency)
+	sem := make(chan struct{}, a.cfg.SendConcurrency)
 	return provider.RunConcurrent(queueGroups, func(group sqsQueueEvents) error {
 		return a.sendSQSQueueEvents(ctx, sem, group.queue, group.events, callbacks)
 	})

@@ -44,7 +44,7 @@ func TestSendSQSEventsUsesDefaultQueueURL(t *testing.T) {
 
 func TestSendSQSEventsStandardSendsHundredAsTenBatches(t *testing.T) {
 	cfg := testConfig()
-	cfg.SQSSendConcurrency = 16
+	cfg.SendConcurrency = 16
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a := &app{cfg: cfg, sqs: sqs}
 
@@ -89,7 +89,7 @@ func TestSendSQSEventsStandardSendsHundredAsTenBatches(t *testing.T) {
 
 func TestSendSQSEventsStandardGroupsHundredAcrossTenQueues(t *testing.T) {
 	cfg := testConfig()
-	cfg.SQSSendConcurrency = 16
+	cfg.SendConcurrency = 16
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a := &app{cfg: cfg, sqs: sqs}
 
@@ -133,7 +133,7 @@ func TestSendSQSEventsUsesDefaultQueueForHundredEvents(t *testing.T) {
 	cfg := testConfig()
 	cfg.PubSubEnabled = false
 	cfg.DefaultSQSQueueURL = "https://sqs.example/default"
-	cfg.SQSSendConcurrency = 16
+	cfg.SendConcurrency = 16
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a := &app{cfg: cfg, sqs: sqs}
 
@@ -168,7 +168,7 @@ func TestSendSQSEventsUsesDefaultQueueForHundredEvents(t *testing.T) {
 
 func TestSendSQSEventsMixedStandardAndFIFOHappyPath(t *testing.T) {
 	cfg := testConfig()
-	cfg.SQSSendConcurrency = 16
+	cfg.SendConcurrency = 16
 	sqs := &fakeSQSPublisher{autoReply: true}
 	a := &app{cfg: cfg, sqs: sqs}
 
@@ -492,7 +492,7 @@ func TestSendSQSBatchCanceledContextKeepsEvents(t *testing.T) {
 
 func TestSendSQSEventsStandardUsesConcurrencyLimit(t *testing.T) {
 	cfg := testConfig()
-	cfg.SQSSendConcurrency = 2
+	cfg.SendConcurrency = 2
 	sqs := &trackingSQSPublisher{
 		started: make(chan struct{}, 3),
 		release: make(chan struct{}, 3),
