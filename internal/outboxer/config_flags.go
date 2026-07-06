@@ -66,6 +66,7 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 	addDisableableFlag(flags, options, "Event table", &cfg.EventOptions, "event-options", cfg.EventOptions, "Backend-specific JSON options column.", "EVENT_OPTIONS")
 
 	addIntFlag(flags, options, "Batch processing", &cfg.CollectBatchTarget, "collect-batch-target", cfg.CollectBatchTarget, "Approximate target rows selected per batch, spread evenly across eligible routes.", "COLLECT_BATCH_TARGET")
+	addIntFlag(flags, options, "Batch processing", &cfg.BacklogCountLimit, "backlog-count-limit", cfg.BacklogCountLimit, "Scan cap for the backlog depth probe behind the outboxer_backlog_events metric. 0 disables the probe.", "BACKLOG_COUNT_LIMIT")
 	addIntFlag(flags, options, "Batch processing", &cfg.SQSSendConcurrency, "sqs-send-concurrency", cfg.SQSSendConcurrency, "Maximum concurrent SQS send requests.", "SQS_SEND_CONCURRENCY")
 	addDisableableFlag(flags, options, "Batch processing", &cfg.DLQTable, "dlq-table", cfg.DLQTable, "Dead letter table for poison events.", "DLQ_TABLE")
 

@@ -19,7 +19,10 @@ var (
 
 type batchResult struct {
 	selected int
-	stats    batchStats
+	// drained means every route the batch saw was fully collected, so the
+	// events kept for retry are the relay's entire remaining backlog.
+	drained bool
+	stats   batchStats
 }
 
 type senderOutput struct {
@@ -54,6 +57,7 @@ func (a *app) processEvents(ctx context.Context) error {
 			}
 			continue
 		}
+		a.updateBacklog(ctx, result)
 
 		if result.selected == 0 && a.cfg.PollInterval > 0 {
 			a.waitForEvents(ctx)
@@ -184,7 +188,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		return batchResult{}, fmtDBError(err)
 	}
 	a.markProgress()
-	result := batchResult{selected: len(events)}
+	result := batchResult{selected: len(events), drained: batchDrained(events, a.cfg.CollectBatchTarget)}
 	result.stats.selected = len(events)
 	result.stats.oldestEventAge = a.oldestEventAge(events)
 	if len(events) > 0 {

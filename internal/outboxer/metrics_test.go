@@ -59,6 +59,8 @@ func TestMetricsEndpointServesValidPrometheusExposition(t *testing.T) {
 		"outboxer_last_batch_selected_events":  12,
 		"outboxer_events_pending_retry":        1,
 		"outboxer_oldest_event_age_seconds":    2.5,
+		"outboxer_backlog_events":              0,
+		"outboxer_backlog_floor":               1,
 	}
 	for name, want := range wantValues {
 		family, ok := families[name]

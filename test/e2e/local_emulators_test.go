@@ -679,6 +679,8 @@ func TestLocalEmulatorE2EDeadLettersBatchAcrossTargets(t *testing.T) {
 		"outboxer_events_sent_total 2",
 		"outboxer_events_dlq_total 3",
 		"outboxer_oldest_event_age_seconds",
+		"outboxer_backlog_events 0",
+		"outboxer_backlog_floor 0",
 	} {
 		if !strings.Contains(metricsBody, needle) {
 			t.Fatalf("expected /metrics to contain %q, got:\n%s", needle, metricsBody)

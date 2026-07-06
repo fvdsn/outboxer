@@ -92,6 +92,9 @@ func (cfg appConfig) validateRuntime() error {
 	if cfg.CollectBatchTarget <= 0 {
 		return fmt.Errorf("batch collection target (%d) must be positive: set COLLECT_BATCH_TARGET", cfg.CollectBatchTarget)
 	}
+	if cfg.BacklogCountLimit < 0 {
+		return fmt.Errorf("backlog count limit (%d) must not be negative: set BACKLOG_COUNT_LIMIT", cfg.BacklogCountLimit)
+	}
 	if cfg.PublishTimeout <= 0 {
 		return fmt.Errorf("publish timeout (%s) must be positive: set PUBLISH_TIMEOUT_MS", cfg.PublishTimeout)
 	}

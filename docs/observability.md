@@ -25,6 +25,8 @@ Counters are cumulative since process start.
 | `outboxer_last_batch_selected_events` | gauge | Events selected by the most recent committed batch. |
 | `outboxer_events_pending_retry` | gauge | Events that failed to send in the most recent batch and remain pending. |
 | `outboxer_oldest_event_age_seconds` | gauge | **Outbox lag**: age of the oldest event selected by the most recent batch; `0` when the outbox was empty. Only exposed when `EVENT_TIMESTAMP` is configured. |
+| `outboxer_backlog_events` | gauge | **Backlog depth**: this relay's pending events after the last committed batch. See below. |
+| `outboxer_backlog_floor` | gauge | `1` when `outboxer_backlog_events` is only a lower bound. |
 | `outboxer_last_successful_batch_timestamp_seconds` | gauge | Unix time of the last committed batch (startup time until the first one). |
 
 ### What to alert on
@@ -39,13 +41,31 @@ Counters are cumulative since process start.
   failing; the affected events remain pending and visible in
   `outboxer_events_pending_retry`.
 
-### Saturation
+### Backlog depth
 
-`outboxer_last_batch_selected_events` equal to `outboxer_collect_batch_target`
-means the relay is selecting as much as it is allowed per batch. Sustained
-saturation with growing lag means throughput is the bottleneck. Because the
-relay only observes what it selects, it cannot report the absolute backlog
-depth while saturated — lag is the reliable signal.
+`outboxer_backlog_events` is exact whenever a batch **drains** — collects
+everything pending for every route it saw — because the events kept for retry
+are then the entire remaining backlog, known with no extra query. Only a
+truncated batch (some route filled its share of `COLLECT_BATCH_TARGET`) leaves
+the depth unknown; the relay then runs a bounded probe:
+
+- The probe scans the oldest `BACKLOG_COUNT_LIMIT` rows (default `100000`) by
+  id and counts the ones matching **this relay's** routing predicate — the same
+  predicate the collection query uses, so with destination-sharded relays each
+  instance reports its own backlog, never another relay's. The scan is bounded
+  by the limit regardless of table size or sharding ratio: no `COUNT(*)`, no
+  planner statistics.
+- It runs at most once per `STATS_INTERVAL_MS` (10s when stats are disabled),
+  only after truncated batches, between batches on the relay's own connection.
+  A relay with truncated batches never sits in the idle `LISTEN` wait, so the
+  probe cannot delay a notification wake-up. `BACKLOG_COUNT_LIMIT=0` disables
+  probing entirely.
+
+`outboxer_backlog_floor` is `1` when the reported depth is only a lower bound:
+the probe hit its scan cap, probing is disabled while batches are truncated, or
+no batch has committed yet. Sustained saturation
+(`outboxer_last_batch_selected_events` at the target) with growing lag means
+throughput is the bottleneck.
 
 ## Health
 

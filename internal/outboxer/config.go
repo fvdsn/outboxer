@@ -16,6 +16,7 @@ type appConfig struct {
 	EventOptions     string
 
 	CollectBatchTarget int
+	BacklogCountLimit  int
 	SQSSendConcurrency int
 	DLQTable           string
 	NotifyChannel      string
@@ -119,6 +120,7 @@ func defaultConfig() appConfig {
 		EventOptions:     "options",
 
 		CollectBatchTarget: 5000,
+		BacklogCountLimit:  100000,
 		SQSSendConcurrency: 8,
 		DLQTable:           "",
 		NotifyChannel:      "outboxer_events",

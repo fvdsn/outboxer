@@ -31,6 +31,12 @@ type appStats struct {
 	oldestEventAgeMillis  atomic.Int64
 	lastSuccessUnixMilli  atomic.Int64
 
+	// backlogEvents is this relay's pending-event depth after the last
+	// committed batch; backlogFloor is 1 when that value is only a lower bound
+	// (probe capped, probe disabled while truncated, or no batch yet).
+	backlogEvents atomic.Int64
+	backlogFloor  atomic.Int64
+
 	// lastLogged is the baseline for the periodic log line's deltas, shared by
 	// the ticker goroutine and the final shutdown flush.
 	mu         sync.Mutex
@@ -38,11 +44,27 @@ type appStats struct {
 }
 
 // newAppStats seeds the last-success gauge with the startup time, so /healthz
-// grants a fresh relay one full staleness window before demanding a batch.
+// grants a fresh relay one full staleness window before demanding a batch. The
+// backlog starts as a floor of 0: unknown until the first batch commits.
 func newAppStats(now time.Time) *appStats {
 	stats := &appStats{}
 	stats.lastSuccessUnixMilli.Store(now.UnixMilli())
+	stats.backlogFloor.Store(1)
 	return stats
+}
+
+// setBacklog records the relay's pending-event depth; floor marks the value as
+// a lower bound rather than an exact count.
+func (s *appStats) setBacklog(events int64, floor bool) {
+	if s == nil {
+		return
+	}
+	s.backlogEvents.Store(events)
+	if floor {
+		s.backlogFloor.Store(1)
+	} else {
+		s.backlogFloor.Store(0)
+	}
 }
 
 type batchStats struct {
