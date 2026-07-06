@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -700,6 +701,172 @@ func TestLocalEmulatorE2EDeadLettersBatchAcrossTargets(t *testing.T) {
 			t.Fatalf("expected a dead-letter error for %s: %#v", id, deadLetter)
 		}
 	}
+}
+
+// TestLocalEmulatorE2ECrashMidBatchRedeliversWithoutLoss exercises the
+// at-least-once guarantee across a crash. The relay is killed with SIGKILL
+// after some of a batch's events have been published but before the batch
+// transaction commits, so its deletes roll back. A restarted relay must select
+// the same rows again and re-send them: every event arrives at least once,
+// duplicates of the pre-crash publishes are acceptable, loss is not.
+func TestLocalEmulatorE2ECrashMidBatchRedeliversWithoutLoss(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	root := repoRoot(t)
+	binary := buildOutboxer(t, root)
+	runID := strings.ReplaceAll(fmt.Sprintf("e2e-%d", time.Now().UnixNano()), "-", "_")
+
+	db := openE2EDB(t, ctx)
+	defer db.Close()
+	table := "outboxer_" + runID
+	createEventsTable(t, ctx, db, table)
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
+	})
+
+	sqsClient := newSQSClient(t, ctx)
+	queue := createSQSQueue(t, ctx, sqsClient, "crash-"+runID+".fifo", true)
+
+	// A single FIFO message group forces strictly sequential sends (one request
+	// per event), keeping the batch in flight long enough to kill the relay
+	// deterministically between the first publishes and the commit.
+	const total = 300
+	events := make([]eventRow, 0, total)
+	for i := 0; i < total; i++ {
+		id := fmt.Sprintf("crash-%03d", i)
+		events = append(events, eventRow{
+			id:          id,
+			target:      "sqs",
+			destination: queue,
+			orderingKey: "crash",
+			payload:     id,
+		})
+	}
+	insertEvents(t, ctx, db, table, events)
+
+	overrides := map[string]string{
+		"PUBSUB_ENABLED":            "false",
+		"DEFAULT_PUBSUB_TOPIC":      "disabled",
+		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
+	}
+	process := startOutboxer(t, ctx, binary, table, overrides)
+
+	// Poll tightly (the shared waitUntil's 250ms tick could overshoot the send
+	// phase) and crash the relay as soon as the batch is demonstrably mid-flight.
+	killDeadline := time.Now().Add(30 * time.Second)
+	for {
+		depth, err := sqsQueueDepth(ctx, sqsClient, queue)
+		if err == nil && depth >= 5 {
+			break
+		}
+		if time.Now().After(killDeadline) {
+			t.Fatalf("batch never became observable in flight: depth error %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	killOutboxer(t, process)
+
+	// The batch transaction never committed, so the crash must have rolled
+	// back every delete: all rows are still pending. If this fails, the kill
+	// landed after the commit and the test needs a larger event count.
+	var remaining int
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT count(*) FROM %s", ident(table))).Scan(&remaining); err != nil {
+		t.Fatalf("count events after crash: %v", err)
+	}
+	if remaining != total {
+		t.Fatalf("expected all %d events pending after the crash, got %d", total, remaining)
+	}
+
+	restarted := startOutboxer(t, ctx, binary, table, overrides)
+	waitForEmptyTable(t, ctx, db, table)
+	stopOutboxer(t, restarted)
+
+	received := drainSQSMessages(t, ctx, sqsClient, queue)
+
+	counts := map[string]int{}
+	for _, msg := range received {
+		counts[msg.body]++
+	}
+	duplicates := 0
+	for _, evt := range events {
+		n, ok := counts[evt.id]
+		if !ok {
+			t.Fatalf("event %s was lost across the crash; received %d distinct bodies", evt.id, len(counts))
+		}
+		duplicates += n - 1
+		delete(counts, evt.id)
+	}
+	if len(counts) != 0 {
+		t.Fatalf("received messages for unknown events: %#v", counts)
+	}
+	t.Logf("crash redelivery: %d events delivered, %d duplicate deliveries (FIFO dedup absorbs re-sends within its window)", total, duplicates)
+}
+
+// killOutboxer terminates the relay with SIGKILL, simulating a crash: no
+// signal handler runs, and the open batch transaction is torn down by the
+// operating system rather than by graceful shutdown.
+func killOutboxer(t *testing.T, process *runningProcess) {
+	t.Helper()
+	process.once.Do(func() {
+		if process.cmd.Process == nil {
+			return
+		}
+		if err := process.cmd.Process.Kill(); err != nil {
+			t.Fatalf("kill outboxer: %v", err)
+		}
+		_ = process.cmd.Wait()
+	})
+}
+
+func sqsQueueDepth(ctx context.Context, client *sqs.Client, queueURL string) (int, error) {
+	output, err := client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
+		QueueUrl:       aws.String(queueURL),
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameApproximateNumberOfMessages},
+	})
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(output.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessages)])
+}
+
+// drainSQSMessages receives and deletes everything in the queue, returning
+// once two consecutive one-second long polls come back empty. Unlike
+// receiveSQSMessages it has no expected count, so it works when the number of
+// duplicate deliveries is unknown.
+func drainSQSMessages(t *testing.T, ctx context.Context, client *sqs.Client, queueURL string) []sqsReceivedMessage {
+	t.Helper()
+	messages := []sqsReceivedMessage{}
+	emptyPolls := 0
+	for emptyPolls < 2 {
+		if ctx.Err() != nil {
+			t.Fatalf("context ended while draining %s after %d messages", queueURL, len(messages))
+		}
+		output, err := client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
+			QueueUrl:            aws.String(queueURL),
+			MaxNumberOfMessages: 10,
+			WaitTimeSeconds:     1,
+			VisibilityTimeout:   30,
+		})
+		if err != nil {
+			t.Fatalf("receive from %s: %v", queueURL, err)
+		}
+		if len(output.Messages) == 0 {
+			emptyPolls++
+			continue
+		}
+		emptyPolls = 0
+		for _, msg := range output.Messages {
+			messages = append(messages, sqsReceivedMessage{body: aws.ToString(msg.Body)})
+			if _, err := client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+				QueueUrl:      aws.String(queueURL),
+				ReceiptHandle: msg.ReceiptHandle,
+			}); err != nil {
+				t.Fatalf("delete message from %s: %v", queueURL, err)
+			}
+		}
+	}
+	return messages
 }
 
 type eventRow struct {
