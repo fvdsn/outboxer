@@ -616,6 +616,92 @@ func TestLocalEmulatorE2EDeadLettersSQSPoisonEvent(t *testing.T) {
 	}
 }
 
+// TestLocalEmulatorE2EDeadLettersBatchAcrossTargets processes one batch whose
+// poison spans both providers: two SQS events with empty bodies and one
+// Pub/Sub event with an invalid topic dead-letter together (a single batched
+// insert) while a healthy event per target is delivered.
+func TestLocalEmulatorE2EDeadLettersBatchAcrossTargets(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	root := repoRoot(t)
+	binary := buildOutboxer(t, root)
+	runID := strings.ReplaceAll(fmt.Sprintf("e2e-%d", time.Now().UnixNano()), "-", "_")
+
+	db := openE2EDB(t, ctx)
+	defer db.Close()
+	table := "outboxer_" + runID
+	dlqTable := "outboxer_dlq_" + runID
+	createEventsTable(t, ctx, db, table)
+	createDLQTable(t, ctx, db, dlqTable)
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(table)))
+		_, _ = db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", ident(dlqTable)))
+	})
+
+	t.Setenv("PUBSUB_EMULATOR_HOST", e2ePubSubEndpoint)
+	pubsubClient := newPubSubClient(t, ctx)
+	defer pubsubClient.Close()
+	topic := "ps_dlq_batch_" + runID
+	subscription := topic + "_sub"
+	createPubSubTopicAndSubscription(t, ctx, pubsubClient, topic, subscription)
+
+	sqsClient := newSQSClient(t, ctx)
+	queue := createSQSQueue(t, ctx, sqsClient, "dlq-batch-"+runID, false)
+
+	insertEvents(t, ctx, db, table, []eventRow{
+		{id: "sqs-poison-00", target: "sqs", destination: queue, payload: "", attributes: `null`},
+		{id: "sqs-poison-01", target: "sqs", destination: queue, payload: "", attributes: `null`},
+		{id: "pubsub-poison-00", target: "pubsub", destination: "bad/topic", payload: "pubsub-poison", attributes: `null`},
+		{id: "sqs-healthy-00", target: "sqs", destination: queue, payload: "sqs-healthy-00", attributes: `null`},
+		{id: "pubsub-healthy-00", target: "pubsub", destination: topic, payload: "pubsub-healthy-00", attributes: `null`},
+	})
+
+	process := startOutboxer(t, ctx, binary, table, map[string]string{
+		"DLQ_TABLE":                 dlqTable,
+		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
+	})
+
+	pubsubMessages := receivePubSubMessages(t, ctx, pubsubClient, subscription, 1)
+	sqsMessages := receiveSQSMessages(t, ctx, sqsClient, queue, 1)
+	waitForEmptyTable(t, ctx, db, table)
+	deadLetters := readDLQEvents(t, ctx, db, dlqTable, 3)
+	stopOutboxer(t, process)
+
+	assertBodies(t, pubsubMessages, "pubsub-healthy-", 1)
+	assertBodies(t, sqsMessages, "sqs-healthy-", 1)
+
+	deadLettersByID := map[string]map[string]any{}
+	for _, deadLetter := range deadLetters {
+		original, ok := deadLetter["original_event"].(map[string]any)
+		if !ok {
+			t.Fatalf("DLQ original_event has type %T: %#v", deadLetter["original_event"], deadLetter)
+		}
+		id, _ := original["id"].(string)
+		deadLettersByID[id] = deadLetter
+	}
+	wantRoutes := map[string]struct{ target, destination string }{
+		"sqs-poison-00":    {"sqs", queue},
+		"sqs-poison-01":    {"sqs", queue},
+		"pubsub-poison-00": {"pubsub", "bad/topic"},
+	}
+	if len(deadLettersByID) != len(wantRoutes) {
+		t.Fatalf("unexpected dead-lettered ids: %#v", deadLettersByID)
+	}
+	for id, route := range wantRoutes {
+		deadLetter, ok := deadLettersByID[id]
+		if !ok {
+			t.Fatalf("expected %s to be dead-lettered, got %#v", id, deadLettersByID)
+		}
+		if deadLetter["target"] != route.target || deadLetter["destination"] != route.destination {
+			t.Fatalf("unexpected resolved route for %s: %#v", id, deadLetter)
+		}
+		if errorText, ok := deadLetter["error"].(string); !ok || errorText == "" {
+			t.Fatalf("expected a dead-letter error for %s: %#v", id, deadLetter)
+		}
+	}
+}
+
 type eventRow struct {
 	id          string
 	target      string
