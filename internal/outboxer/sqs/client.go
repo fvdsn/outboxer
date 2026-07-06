@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"time"
 
 	"cloud.google.com/go/compute/metadata"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -33,7 +34,7 @@ func NewClient(ctx context.Context, cfg Config) (*sqs.Client, error) {
 	switch {
 	case cfg.AWSWebIdentityProvider == WebIdentityProviderGoogle:
 		stsClient := sts.NewFromConfig(awsConfig)
-		retriever := &googleIDTokenRetriever{ctx: ctx, audience: cfg.AWSWebIdentityAudience}
+		retriever := &googleIDTokenRetriever{audience: cfg.AWSWebIdentityAudience}
 		provider := stscreds.NewWebIdentityRoleProvider(stsClient, cfg.AWSRoleARN, retriever, func(options *stscreds.WebIdentityRoleOptions) {
 			options.RoleSessionName = cfg.AWSRoleSessionName
 			options.Duration = cfg.AWSRoleDuration
@@ -70,13 +71,20 @@ func NewPublisher(client *sqs.Client) Publisher {
 // googleIDTokenRetriever fetches a Google-signed OIDC ID token from the GCP
 // metadata server for use as an AWS web identity token.
 type googleIDTokenRetriever struct {
-	ctx      context.Context
 	audience string
 }
 
+// googleIDTokenTimeout bounds one metadata-server token fetch. The AWS SDK's
+// IdentityTokenRetriever interface passes no context, and credentials refresh
+// long after startup, so each fetch gets its own bounded context instead of a
+// context captured at construction.
+const googleIDTokenTimeout = 10 * time.Second
+
 func (r *googleIDTokenRetriever) GetIdentityToken() ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), googleIDTokenTimeout)
+	defer cancel()
 	path := fmt.Sprintf("instance/service-accounts/default/identity?audience=%s&format=full", url.QueryEscape(r.audience))
-	token, err := metadata.GetWithContext(r.ctx, path)
+	token, err := metadata.GetWithContext(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("fetch Google ID token from metadata server: %w", err)
 	}

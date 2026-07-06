@@ -18,19 +18,31 @@ type eventRoute struct {
 type event struct {
 	columns map[string]any
 	route   eventRoute
+	// options is this event's section of the options column for its resolved
+	// target, parsed once during batch triage (see withParsedOptions).
+	options provider.Options
+}
+
+// withParsedOptions parses the event's options column for its resolved target
+// and stores the section on the returned copy, so dispatch does not re-parse
+// it. A structural error means the event must be dead-lettered, not dispatched.
+func (e event) withParsedOptions(cfg appConfig) (event, error) {
+	options, err := eventOptions(e.columns[cfg.EventOptions], e.route.target)
+	if err != nil {
+		return e, err
+	}
+	e.options = options
+	return e, nil
 }
 
 func providerEvent(evt event, cfg appConfig) provider.Event {
 	timestamp, _ := eventTimestamp(evt.columns[cfg.EventTimestamp])
-	// Structurally malformed options are dead-lettered before dispatch (see
-	// processEventBatch), so dispatched events always carry a valid section.
-	options, _ := eventOptions(evt.columns[cfg.EventOptions], evt.route.target)
 	return provider.Event{
 		ID:          evt.columns[cfg.EventID],
 		Payload:     valueBytes(evt.columns[cfg.EventPayload]),
 		Timestamp:   timestamp,
 		Destination: evt.route.destination,
-		Options:     options,
+		Options:     evt.options,
 	}
 }
 

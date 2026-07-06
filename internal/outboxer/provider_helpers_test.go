@@ -33,6 +33,10 @@ func (a *app) routeTestPubsubEvents(events []event) []event {
 			destination = a.cfg.DefaultPubSubTopic
 		}
 		evt.route = eventRoute{target: eventTargetPubSub, destination: destination}
+		// Match the processor's triage: options are parsed once before dispatch.
+		// Structurally malformed options never reach a sender in production, so
+		// helper callers only exercise per-field provider validation.
+		evt, _ = evt.withParsedOptions(a.cfg)
 		routed[i] = evt
 	}
 	return routed

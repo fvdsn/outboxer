@@ -380,13 +380,14 @@ func (a *sender) sendSQSBatch(ctx context.Context, queueURL string, events []sqs
 	}
 
 	for _, entry := range response.Failed {
+		entryLog := logsByEntryID[entry.ID]
 		if entry.SenderFault {
-			callbacks.AddPoisonID(logsByEntryID[entry.ID].ID, fmt.Sprintf("%s: %s", entry.Code, entry.Message))
+			callbacks.AddPoisonID(entryLog.ID, fmt.Sprintf("%s: %s", entry.Code, entry.Message))
 			anyDone = true
 		}
 		callbacks.ReportFailure(ctx, "Failed to send event",
 			fmt.Sprintf("%s|%s|%s|%s", Target, queueURL, entry.Code, entry.Message),
-			"event_id", entry.ID,
+			"event_id", entryLog.ID,
 			"event_destination", queueURL,
 			"error", fmt.Sprintf("%s: %s", entry.Code, entry.Message),
 		)
@@ -409,4 +410,3 @@ func (a *sender) sendSQSBatchIsolated(ctx context.Context, queueURL string, even
 	}
 	return anyDone, joined
 }
-

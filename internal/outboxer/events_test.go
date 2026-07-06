@@ -140,7 +140,7 @@ func TestMalformedOptionsAreReportedAsPoison(t *testing.T) {
 	pubsub := &fakePubSubPublisher{}
 	a := &app{cfg: cfg}
 	setTestPubSubProvider(a, pubsub)
-	events := []event{{
+	evt := event{
 		columns: map[string]any{
 			"id":          "event-1",
 			"destination": "topic-1",
@@ -148,9 +148,15 @@ func TestMalformedOptionsAreReportedAsPoison(t *testing.T) {
 			"options":     []byte(`{"pubsub":{"attributes":[]}}`),
 		},
 		route: eventRoute{target: eventTargetPubSub, destination: "topic-1"},
-	}}
+	}
+	// A structurally valid options column passes triage; the array-valued
+	// attributes field is the provider's per-field rejection to make.
+	evt, err := evt.withParsedOptions(cfg)
+	if err != nil {
+		t.Fatalf("withParsedOptions returned error: %v", err)
+	}
 
-	output, err := a.collectProviderOutput(context.Background(), a.senders[eventTargetPubSub], events)
+	output, err := a.collectProviderOutput(context.Background(), a.senders[eventTargetPubSub], []event{evt})
 	if err != nil {
 		t.Fatalf("collectSenderOutput returned error: %v", err)
 	}

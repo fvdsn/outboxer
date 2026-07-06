@@ -16,6 +16,9 @@ type Sender interface {
 }
 
 // Callbacks reports per-event outcomes and publishing progress to the relay.
+// AddConfirmedID and AddPoisonID are required: the relay cannot resolve a batch
+// without them. MarkProgress and LogFailure are optional and may be nil;
+// providers invoke them through Progress and ReportFailure, which tolerate nil.
 type Callbacks struct {
 	AddConfirmedID func(EventID)
 	AddPoisonID    func(EventID, string)
