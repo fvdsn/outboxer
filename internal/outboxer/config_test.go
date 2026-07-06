@@ -46,8 +46,8 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	if cfg.HealthPort != 0 {
 		t.Fatalf("expected default healthcheck port 0, got %d", cfg.HealthPort)
 	}
-	if cfg.PollInterval != 0 {
-		t.Fatalf("expected default poll interval 0, got %s", cfg.PollInterval)
+	if cfg.PollInterval != time.Second {
+		t.Fatalf("expected default poll interval 1s, got %s", cfg.PollInterval)
 	}
 	if cfg.WatchdogInterval != 10*time.Minute {
 		t.Fatalf("expected default watchdog interval 10m, got %s", cfg.WatchdogInterval)

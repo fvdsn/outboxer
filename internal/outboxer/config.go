@@ -135,7 +135,7 @@ func defaultConfig() appConfig {
 		PubSubAPIEndpoint:  "",
 		SQSAPIEndpoint:     "",
 		ErrorCooldown:      5 * time.Second,
-		PollInterval:       0,
+		PollInterval:       time.Second,
 		PublishTimeout:     30 * time.Second,
 		PublishResultGrace: 5 * time.Second,
 		MaxEventAge:        0,

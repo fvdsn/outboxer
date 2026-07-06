@@ -37,9 +37,9 @@ provisioning-specific schema flags:
   `EVENT_TIMESTAMP`, `EVENT_OPTIONS`). An optional column set to `disabled` is
   omitted. Only `id` and `payload` are `NOT NULL`; the rest are nullable.
 - **DLQ table** (`DLQ_TABLE`), only when set to a table name.
-- **Notify function and trigger**, always, on the `NOTIFY_CHANNEL` channel, so
-  `LISTEN`/`NOTIFY` wake-ups can be enabled later by raising `POLL_INTERVAL_MS`
-  without re-running `init`. See [Notifications](notifications.md).
+- **Notify function and trigger**, always, on the `NOTIFY_CHANNEL` channel,
+  independent of the relay's `POLL_INTERVAL_MS`, which keys the `LISTEN`/`NOTIFY`
+  wake-ups. See [Notifications](notifications.md).
 - **PostgreSQL schema** (`PG_SCHEMA`), created when absent. It defaults to
   `public`.
 

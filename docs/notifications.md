@@ -1,28 +1,27 @@
 # Low-Latency Notifications
 
-By default Outboxer polls the outbox table continuously (`POLL_INTERVAL_MS=0`),
-so latency is already near-immediate but the database is polled constantly. If
-you raise `POLL_INTERVAL_MS` to reduce that polling load, events are then only
-picked up on the next poll — up to one interval of latency.
-
-A PostgreSQL `LISTEN`/`NOTIFY` trigger removes that trade-off: Outboxer waits for
+Between empty batches Outboxer sleeps for `POLL_INTERVAL_MS` (default one
+second), so plain polling alone would add up to one interval of latency. A
+PostgreSQL `LISTEN`/`NOTIFY` trigger removes that trade-off: Outboxer waits for
 a notification instead of sleeping out the full interval, so an insert wakes it
-almost immediately while the interval load stays low. The poll interval becomes a
+almost immediately while the polling load stays low. The poll interval is a
 **safety sweep** rather than a latency floor.
 
-This is an optional optimization. It is never required for correctness — a
-missed or absent notification only delays an event until the next sweep, never
-loses it.
+The trigger is an optional optimization. It is never required for correctness —
+a missed or absent notification only delays an event until the next sweep,
+never loses it.
 
 ## How it works
 
-- `POLL_INTERVAL_MS=0` (the default): hot-loop polling. Outboxer never sleeps
-  between empty batches, so there is nothing for a notification to interrupt and
-  no listener is started. Installing the trigger has no effect.
-- `POLL_INTERVAL_MS > 0`: between empty batches Outboxer waits for a notification
-  on the configured channel, but wakes no later than `POLL_INTERVAL_MS` anyway.
-  With the trigger installed, inserts wake it almost immediately; without it, it
-  behaves exactly like plain polling at that interval.
+- `POLL_INTERVAL_MS > 0` (default `1000`): between empty batches Outboxer waits
+  for a notification on the configured channel, but wakes no later than
+  `POLL_INTERVAL_MS` anyway. With the trigger installed, inserts wake it almost
+  immediately; without it, it behaves exactly like plain polling at that
+  interval.
+- `POLL_INTERVAL_MS=0`: hot-loop polling. Outboxer never sleeps between empty
+  batches, so there is nothing for a notification to interrupt and no listener
+  is started. Installing the trigger has no effect. This trades constant
+  database load for the lowest possible latency without the trigger.
 
 There is no on/off switch for this feature — it is keyed entirely off
 `POLL_INTERVAL_MS`.
