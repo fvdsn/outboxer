@@ -16,6 +16,12 @@ import (
 // database schema, anything else (or only flags) runs the relay. An unknown
 // non-flag first argument is rejected rather than silently starting the relay.
 func Run(ctx context.Context, args []string) error {
+	// A local .env file deliberately populates the process environment, not just
+	// Outboxer's own settings: credentials like AWS_ACCESS_KEY_ID or
+	// GOOGLE_APPLICATION_CREDENTIALS must also reach the provider SDKs, which
+	// read the environment themselves.
+	loadDotEnv(".env")
+
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		switch args[0] {
 		case "init":

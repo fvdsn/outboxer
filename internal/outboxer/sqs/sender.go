@@ -64,16 +64,14 @@ type BatchEntry struct {
 
 type sqsCandidateEvent struct {
 	evt         provider.Event
-	options     provider.Options
-	id          provider.EventID
 	orderingKey string
 }
 
-func (evt sqsCandidateEvent) fifoGroupID() string {
-	if evt.orderingKey != "" {
-		return evt.orderingKey
+func (c sqsCandidateEvent) fifoGroupID() string {
+	if c.orderingKey != "" {
+		return c.orderingKey
 	}
-	return syntheticFIFOGroupID(fmt.Sprint(evt.id))
+	return syntheticFIFOGroupID(fmt.Sprint(c.evt.ID))
 }
 
 type sqsPreparedEvent struct {
@@ -246,44 +244,40 @@ func (a *sender) parseSQSCandidate(ctx context.Context, evt provider.Event, call
 		return sqsCandidateEvent{}, false
 	}
 
-	return sqsCandidateEvent{
-		evt:         evt,
-		options:     evt.Options,
-		id:          evt.ID,
-		orderingKey: orderingKey,
-	}, true
+	return sqsCandidateEvent{evt: evt, orderingKey: orderingKey}, true
 }
 
 func (a *sender) prepareSQSEvent(ctx context.Context, candidate sqsCandidateEvent, queueURL string, isFIFO bool, callbacks provider.Callbacks) (sqsPreparedEvent, bool) {
-	attributes, err := sqsAttributes(candidate.options)
+	options := candidate.evt.Options
+	attributes, err := sqsAttributes(options)
 	if err != nil {
 		callbacks.RejectMalformedOptions(ctx, Target, candidate.evt, "attributes", err)
 		return sqsPreparedEvent{}, false
 	}
-	deduplicationID, err := candidate.options.String("messageDeduplicationId")
+	deduplicationID, err := options.String("messageDeduplicationId")
 	if err != nil {
 		callbacks.RejectMalformedOptions(ctx, Target, candidate.evt, "messageDeduplicationId", err)
 		return sqsPreparedEvent{}, false
 	}
-	delaySeconds, err := sqsDelaySeconds(candidate.options)
+	delaySeconds, err := sqsDelaySeconds(options)
 	if err != nil {
 		callbacks.RejectMalformedOptions(ctx, Target, candidate.evt, "delaySeconds", err)
 		return sqsPreparedEvent{}, false
 	}
-	traceHeader, err := sqsAWSTraceHeader(candidate.options)
+	traceHeader, err := sqsAWSTraceHeader(options)
 	if err != nil {
 		callbacks.RejectMalformedOptions(ctx, Target, candidate.evt, "messageSystemAttributes", err)
 		return sqsPreparedEvent{}, false
 	}
 
-	eventID := fmt.Sprint(candidate.id)
+	eventID := fmt.Sprint(candidate.evt.ID)
 	entryID := providerSafeID(eventID, sqsBatchEntryIDPattern)
 	data := candidate.evt.Payload
 	if isSQSPoison(data, attributes, candidate.orderingKey, deduplicationID, delaySeconds) {
-		callbacks.AddPoisonID(candidate.id, "Event is invalid for SQS")
+		callbacks.AddPoisonID(candidate.evt.ID, "Event is invalid for SQS")
 		callbacks.ReportFailure(ctx, "Failed to send event",
 			fmt.Sprintf("%s|%s|%s|local-poison", Target, queueURL, candidate.orderingKey),
-			"event_id", candidate.id,
+			"event_id", candidate.evt.ID,
 			"event_destination", queueURL,
 			"error", "Event is invalid for SQS",
 		)

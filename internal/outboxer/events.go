@@ -102,10 +102,6 @@ func eventValue(evt event, column string) any {
 	return evt.columns[column]
 }
 
-func eventString(evt event, column string) string {
-	return valueString(evt.columns[column])
-}
-
 // valueString converts a raw database/sql value to its string representation.
 func valueString(value any) string {
 	switch typed := value.(type) {

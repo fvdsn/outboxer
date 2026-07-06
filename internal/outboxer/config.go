@@ -127,7 +127,6 @@ type configParser struct {
 }
 
 func newConfigParser(name string, output io.Writer) *configParser {
-	loadDotEnv(".env")
 	parser := &configParser{cfg: defaultConfig()}
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(output)

@@ -78,8 +78,7 @@ func (a *sender) sendPubsubEventsWithCallbacks(ctx context.Context, events []pro
 			continue
 		}
 
-		topic := candidate.topic
-		groupID := topic + "\x00" + orderingKey
+		groupID := candidate.evt.Destination + "\x00" + orderingKey
 		if _, ok := orderedByGroup[groupID]; !ok {
 			groupOrder = append(groupOrder, groupID)
 		}
@@ -200,8 +199,6 @@ type pubsubPreparedEvent struct {
 
 type pubsubCandidateEvent struct {
 	evt         provider.Event
-	options     provider.Options
-	topic       string
 	orderingKey string
 }
 
@@ -211,18 +208,17 @@ type pubsubPendingPublish struct {
 }
 
 func (a *sender) parsePubsubCandidate(ctx context.Context, evt provider.Event, callbacks provider.Callbacks) (pubsubCandidateEvent, bool) {
-	topicName := evt.Destination
 	orderingKey, err := evt.Options.String("orderingKey")
 	if err != nil {
 		callbacks.RejectMalformedOptions(ctx, Target, evt, "orderingKey", err)
 		return pubsubCandidateEvent{}, false
 	}
-	return pubsubCandidateEvent{evt: evt, options: evt.Options, topic: topicName, orderingKey: orderingKey}, true
+	return pubsubCandidateEvent{evt: evt, orderingKey: orderingKey}, true
 }
 
 func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandidateEvent, callbacks provider.Callbacks) (pubsubPreparedEvent, bool) {
 	evt := candidate.evt
-	attributes, err := candidate.options.Object("attributes")
+	attributes, err := evt.Options.Object("attributes")
 	if err != nil {
 		callbacks.RejectMalformedOptions(ctx, Target, evt, "attributes", err)
 		return pubsubPreparedEvent{}, false
@@ -232,7 +228,7 @@ func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandida
 	if len(deletedAttributes) != 0 {
 		slog.Warn("Some attributes were dropped",
 			"event_id", evt.ID,
-			"event_destination", candidate.topic,
+			"event_destination", evt.Destination,
 			"dropped_attributes", deletedAttributes,
 		)
 	}
@@ -244,7 +240,7 @@ func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandida
 	prepared := pubsubPreparedEvent{
 		log: log,
 		message: Message{
-			Topic:       candidate.topic,
+			Topic:       evt.Destination,
 			Data:        evt.Payload,
 			OrderingKey: candidate.orderingKey,
 			Attributes:  stringAttributes,
@@ -255,7 +251,7 @@ func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandida
 		callbacks.AddPoisonID(evt.ID, reason)
 		slog.Error("Failed to send event",
 			"event_id", evt.ID,
-			"event_destination", candidate.topic,
+			"event_destination", evt.Destination,
 			"error", reason,
 		)
 		return prepared, false

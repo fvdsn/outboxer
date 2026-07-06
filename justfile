@@ -71,9 +71,9 @@ e2e-local-clean:
     just e2e-local
     just db-down
 
-# Format Go code.
+# Format Go code (the same directories CI's gofmt check verifies).
 fmt:
-    gofmt -w ./cmd/outboxer/*.go ./internal/outboxer/*.go ./test/e2e/*.go
+    gofmt -w ./cmd ./internal ./test
 
 # Tidy Go modules.
 tidy:

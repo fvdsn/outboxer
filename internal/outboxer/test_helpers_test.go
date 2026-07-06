@@ -308,6 +308,10 @@ func combinedOrderingOptions() map[string]any {
 	}
 }
 
+func eventString(evt event, column string) string {
+	return valueString(evt.columns[column])
+}
+
 func mockRowsForEvents(cfg appConfig, events []event) *sqlmock.Rows {
 	rows := mockEventRows()
 	for _, evt := range events {
