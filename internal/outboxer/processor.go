@@ -6,34 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
-	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/fvdsn/outboxer/internal/outboxer/provider"
 )
 
 var (
-	randomMu     sync.Mutex
-	randomSource = rand.New(rand.NewSource(time.Now().UnixNano()))
-
-	// deadlockDetector is bumped to a fresh random value on every batch. The
-	// watchdog goroutine reads it on a ticker; if it has not changed between two
-	// ticks the process is assumed stuck and exits. It is accessed from both the
-	// processing and watchdog goroutines, so it must be atomic.
-	deadlockDetector atomic.Int64
-)
-
-var (
 	errDatabaseBatch    = errors.New("database batch error")
 	errFatalAfterCommit = provider.ErrFatalAfterCommit
 )
-
-func init() {
-	markProcessorProgress()
-}
 
 type batchResult struct {
 	selected int
@@ -48,23 +30,6 @@ type senderOutput struct {
 type senderResult struct {
 	output senderOutput
 	err    error
-}
-
-func startDeadlockDetector(interval time.Duration) {
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		var previous int64
-		for range ticker.C {
-			current := deadlockDetector.Load()
-			if current == previous {
-				slog.Error("Deadlock detected, shutting down")
-				os.Exit(1)
-			}
-			previous = current
-			slog.Debug("Watchdog heartbeat")
-		}
-	}()
 }
 
 func (a *app) processEvents(ctx context.Context) error {
@@ -159,7 +124,7 @@ func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 		}
 		return result, fmtDBError(err)
 	}
-	markProcessorProgress()
+	a.markProgress()
 	a.stats.addCommittedBatch(result.stats)
 
 	return result, batchErr
@@ -174,53 +139,73 @@ func logBatchError(ctx context.Context, message string, err error) {
 	slog.Error(message, "error", err.Error())
 }
 
+// batchTriage is the dispatch plan for one selected batch: events grouped by
+// their resolved target, plus the events that can never be sent as-is.
+type batchTriage struct {
+	eventsByTarget map[string][]event
+	poison         []poisonEvent
+}
+
+// triageEvents partitions a selected batch into per-target dispatch groups and
+// poison events, parsing each event's options once. It errors when a selected
+// event violates a selection invariant (an unresolved route, or a target with
+// no configured sender): those mean the selection query and the configuration
+// disagree, so the whole batch must be rolled back rather than dispatched.
+func (a *app) triageEvents(events []event) (batchTriage, error) {
+	triage := batchTriage{eventsByTarget: map[string][]event{}}
+	now := time.Now().UTC()
+	for _, evt := range events {
+		a.markProgress()
+		if a.isExpiredEvent(evt, now) {
+			triage.poison = append(triage.poison, poisonEvent{evt: evt, error: "Event expired by MAX_EVENT_AGE_MS"})
+			continue
+		}
+		if evt.route.target == "" {
+			return triage, fmt.Errorf("selected event %v has no resolved route", eventValue(evt, a.cfg.EventID))
+		}
+		if _, ok := a.senders[evt.route.target]; !ok {
+			return triage, fmt.Errorf("selected event target %q has no configured sender", evt.route.target)
+		}
+		parsed, err := evt.withParsedOptions(a.cfg)
+		if err != nil {
+			triage.poison = append(triage.poison, poisonEvent{evt: evt, error: err.Error()})
+			continue
+		}
+		triage.eventsByTarget[evt.route.target] = append(triage.eventsByTarget[evt.route.target], parsed)
+	}
+	return triage, nil
+}
+
 func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, error) {
-	markProcessorProgress()
+	a.markProgress()
 
 	events, err := a.selectEvents(ctx, tx)
 	if err != nil {
 		return batchResult{}, fmtDBError(err)
 	}
-	markProcessorProgress()
+	a.markProgress()
 	result := batchResult{selected: len(events)}
 	result.stats.selected = len(events)
 	if len(events) > 0 {
 		slog.Info("Processing batch", "count", len(events))
 	}
 
-	eventsByTarget := map[string][]event{}
-	poisonEvents := []poisonEvent{}
-	deleteIDs := []provider.EventID{}
-	for _, evt := range events {
-		if a.isExpiredEvent(evt, time.Now().UTC()) {
-			poisonEvents = append(poisonEvents, poisonEvent{evt: evt, error: "Event expired by MAX_EVENT_AGE_MS"})
-			deleteIDs = append(deleteIDs, eventValue(evt, a.cfg.EventID))
-			markProcessorProgress()
-			continue
-		}
-
-		markProcessorProgress()
-		if evt.route.target == "" {
-			return result, fmtDBError(fmt.Errorf("selected event %v has no resolved route", eventValue(evt, a.cfg.EventID)))
-		}
-		parsed, err := evt.withParsedOptions(a.cfg)
-		if err != nil {
-			poisonEvents = append(poisonEvents, poisonEvent{evt: evt, error: err.Error()})
-			deleteIDs = append(deleteIDs, eventValue(evt, a.cfg.EventID))
-			continue
-		}
-		eventsByTarget[evt.route.target] = append(eventsByTarget[evt.route.target], parsed)
+	triage, err := a.triageEvents(events)
+	if err != nil {
+		return result, fmtDBError(err)
+	}
+	poisonEvents := triage.poison
+	deleteIDs := make([]provider.EventID, 0, len(events))
+	for _, poisoned := range poisonEvents {
+		deleteIDs = append(deleteIDs, eventValue(poisoned.evt, a.cfg.EventID))
 	}
 
-	results := make(chan senderResult, len(eventsByTarget))
+	results := make(chan senderResult, len(triage.eventsByTarget))
 	var wg sync.WaitGroup
 
-	for target, providerEvents := range eventsByTarget {
-		sender, ok := a.senders[target]
-		if !ok {
-			return result, fmtDBError(fmt.Errorf("selected event target %q has no configured sender", target))
-		}
-		events := append([]event(nil), providerEvents...)
+	for target, targetEvents := range triage.eventsByTarget {
+		sender := a.senders[target]
+		events := targetEvents
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -266,7 +251,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		}
 		return result, fmtDBError(err)
 	}
-	markProcessorProgress()
+	a.markProgress()
 
 	if err := a.deleteEvents(ctx, tx, deleteIDs); err != nil {
 		if senderErr != nil {
@@ -274,7 +259,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		}
 		return result, fmtDBError(err)
 	}
-	markProcessorProgress()
+	a.markProgress()
 
 	if senderErr != nil {
 		return result, senderErr
@@ -339,7 +324,7 @@ func newSenderCollector(ctx context.Context, a *app, events []event) *senderColl
 }
 
 func (c *senderCollector) record(id provider.EventID, reason string, poisoned bool) {
-	markProcessorProgress()
+	c.app.markProgress()
 	key := eventIDKey(id)
 
 	c.mu.Lock()
@@ -387,7 +372,7 @@ func (a *app) collectSenderOutput(ctx context.Context, events []event, send func
 	err := send(provider.Callbacks{
 		AddConfirmedID: collector.confirm,
 		AddPoisonID:    collector.poison,
-		MarkProgress:   markProcessorProgress,
+		MarkProgress:   a.markProgress,
 		LogFailure:     a.logFailure,
 	})
 	return collector.snapshot(), err
@@ -399,14 +384,4 @@ func fmtDBError(err error) error {
 
 func eventIDKey(id provider.EventID) string {
 	return fmt.Sprintf("%T:%v", id, id)
-}
-
-func randomInt63() int64 {
-	randomMu.Lock()
-	defer randomMu.Unlock()
-	return randomSource.Int63()
-}
-
-func markProcessorProgress() {
-	deadlockDetector.Store(randomInt63())
 }

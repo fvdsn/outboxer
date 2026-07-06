@@ -819,9 +819,10 @@ func TestSleepContextReturnsOnCancel(t *testing.T) {
 	}
 }
 
-func TestDeadlockDetectorConcurrentAccess(_ *testing.T) {
+func TestWatchdogConcurrentAccess(_ *testing.T) {
 	// Exercises the watchdog counter from two goroutines so the race detector
 	// would flag a regression back to an unsynchronized int64.
+	w := &watchdog{}
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 
@@ -833,14 +834,14 @@ func TestDeadlockDetectorConcurrentAccess(_ *testing.T) {
 			case <-stop:
 				return
 			default:
-				deadlockDetector.Store(randomInt63())
+				w.markProgress()
 			}
 		}
 	}()
 
 	var previous int64
 	for i := 0; i < 100000; i++ {
-		previous = deadlockDetector.Load()
+		previous = w.progress.Load()
 	}
 	_ = previous
 

@@ -17,6 +17,7 @@ type app struct {
 
 	failureLogger *failureLogger
 	stats         *appStats
+	watchdog      *watchdog
 
 	// shutdown cancels the root context, triggering a graceful shutdown of the
 	// processing loop. It is called from the HTTP handler and on HTTP server

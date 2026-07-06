@@ -185,7 +185,7 @@ func (a *app) insertDeadLetters(ctx context.Context, tx *sql.Tx, poison []poison
 		if _, err := tx.ExecContext(ctx, query, string(payload)); err != nil {
 			return err
 		}
-		markProcessorProgress()
+		a.markProgress()
 	}
 	return nil
 }

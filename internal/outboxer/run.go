@@ -48,7 +48,15 @@ func runRelay(ctx context.Context, args []string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	startDeadlockDetector(cfg.WatchdogInterval)
+	// The watchdog starts before the first database connection so a hung startup
+	// is caught too. A stall exits the process rather than attempting recovery:
+	// the supervisor (systemd, Kubernetes) owns the restart.
+	wd := &watchdog{}
+	stopWatchdog := wd.start(cfg.WatchdogInterval, func() {
+		slog.Error("Deadlock detected, shutting down")
+		os.Exit(1)
+	})
+	defer stopWatchdog()
 
 	db, err := openDB(cfg)
 	if err != nil {
@@ -69,6 +77,7 @@ func runRelay(ctx context.Context, args []string) error {
 		shutdown:      cancel,
 		failureLogger: newFailureLogger(failureLogWindow),
 		stats:         &appStats{},
+		watchdog:      wd,
 	}
 
 	slog.Info("Startup", "pid", os.Getpid())

@@ -139,6 +139,12 @@ func (a *app) selectEventsQuery() (string, []any) {
 	return a.selectEventsQuerySQL(), []any{a.cfg.CollectBatchTarget}
 }
 
+// selectEventsQuerySQL assembles the batch collection query from three named
+// pieces so each can be reviewed on its own:
+//
+//	WITH routes AS (<one row per eligible route, with the route count>),
+//	     selected AS (<per route, the ids of its oldest routable events>)
+//	SELECT <the full selected rows, locked, in id order>
 func (a *app) selectEventsQuerySQL() string {
 	table := qualifiedIdent(a.cfg.PGSchema, a.cfg.EventTable)
 	idCol := ident(a.cfg.EventID)
@@ -155,30 +161,29 @@ func (a *app) selectEventsQuerySQL() string {
 	candidateRoutablePredicate := a.routableSQL(candidateTargetExpr, candidateDestinationExpr, candidateTargetPredicate)
 	candidateRouteMatchPredicate := a.routeMatchSQL(candidateAlias, candidateTargetExpr, candidateDestinationExpr)
 
-	return fmt.Sprintf(
-		`WITH routes AS (`+
-			`SELECT resolved_target, resolved_destination, count(*) OVER () AS route_count `+
+	// routes: one row per distinct eligible route; route_count spreads the batch
+	// target ($1) evenly across the routes.
+	routesCTE := fmt.Sprintf(
+		`SELECT resolved_target, resolved_destination, count(*) OVER () AS route_count `+
 			`FROM (`+
 			`SELECT DISTINCT %s AS resolved_target, %s AS resolved_destination `+
 			`FROM %s AS %s WHERE %s`+
-			`) AS resolved_routes`+
-			`), selected AS (`+
-			`SELECT picked.%s AS id, routes.resolved_target, routes.resolved_destination `+
-			`FROM routes `+
-			`CROSS JOIN LATERAL (`+
-			`SELECT %s.%s `+
-			`FROM %s AS %s `+
-			`WHERE %s AND %s `+
-			`ORDER BY %s.%s `+
-			`LIMIT GREATEST(1, (($1::bigint + routes.route_count - 1) / routes.route_count))`+
-			`) AS picked`+
-			`) SELECT selected.resolved_target, selected.resolved_destination, %s.* FROM %s AS %s JOIN selected ON %s.%s = selected.id ORDER BY %s.%s FOR UPDATE`,
+			`) AS resolved_routes`,
 		sourceTargetExpr,
 		sourceDestinationExpr,
 		table,
 		ident(sourceAlias),
 		sourceRoutablePredicate,
-		idCol,
+	)
+
+	// picked: this route's oldest routable event ids, capped at an even share of
+	// the batch target (always at least one so no eligible route starves).
+	pickedLateral := fmt.Sprintf(
+		`SELECT %s.%s `+
+			`FROM %s AS %s `+
+			`WHERE %s AND %s `+
+			`ORDER BY %s.%s `+
+			`LIMIT GREATEST(1, (($1::bigint + routes.route_count - 1) / routes.route_count))`,
 		ident(candidateAlias),
 		idCol,
 		table,
@@ -187,6 +192,26 @@ func (a *app) selectEventsQuerySQL() string {
 		candidateRouteMatchPredicate,
 		ident(candidateAlias),
 		idCol,
+	)
+
+	// selected: the picked ids of every route, each joined to its route.
+	selectedCTE := fmt.Sprintf(
+		`SELECT picked.%s AS id, routes.resolved_target, routes.resolved_destination `+
+			`FROM routes `+
+			`CROSS JOIN LATERAL (%s) AS picked`,
+		idCol,
+		pickedLateral,
+	)
+
+	// The final select re-reads the full selected rows and locks them, in id
+	// order, for the duration of the batch transaction.
+	return fmt.Sprintf(
+		`WITH routes AS (%s), selected AS (%s) `+
+			`SELECT selected.resolved_target, selected.resolved_destination, %s.* `+
+			`FROM %s AS %s JOIN selected ON %s.%s = selected.id `+
+			`ORDER BY %s.%s FOR UPDATE`,
+		routesCTE,
+		selectedCTE,
 		ident(eventsAlias),
 		table,
 		ident(eventsAlias),
