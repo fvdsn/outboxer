@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/fvdsn/outboxer/internal/outboxer/provider"
 )
 
 func openDB(cfg appConfig) (*sql.DB, error) {
@@ -66,7 +68,7 @@ func buildTLSConfig(cfg appConfig) (*tls.Config, error) {
 }
 
 func (a *app) checkDBWorks(ctx context.Context) error {
-	ctx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
+	ctx, cancel := provider.WithTimeout(ctx, a.cfg.PGQueryTimeout)
 	defer cancel()
 
 	query := fmt.Sprintf("SELECT * FROM %s LIMIT 1", qualifiedIdent(a.cfg.PGSchema, a.cfg.EventTable))
@@ -120,7 +122,7 @@ func validateEventColumns(cfg appConfig, columns []string) error {
 }
 
 func (a *app) selectEvents(ctx context.Context, tx *sql.Tx) ([]event, error) {
-	ctx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
+	ctx, cancel := provider.WithTimeout(ctx, a.cfg.PGQueryTimeout)
 	defer cancel()
 
 	query, args := a.selectEventsQuery()
@@ -414,7 +416,7 @@ func (a *app) deleteEvents(ctx context.Context, tx *sql.Tx, ids []any) error {
 		strings.Join(placeholders, ", "),
 	)
 
-	ctx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
+	ctx, cancel := provider.WithTimeout(ctx, a.cfg.PGQueryTimeout)
 	defer cancel()
 
 	_, err := tx.ExecContext(ctx, query, ids...)

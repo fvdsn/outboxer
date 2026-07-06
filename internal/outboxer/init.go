@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/fvdsn/outboxer/internal/outboxer/provider"
 )
 
 // runInit provisions the database objects the relay needs. Without --apply it
@@ -242,7 +244,7 @@ func applyInit(ctx context.Context, cfg appConfig) error {
 // execInitStatement runs a single provisioning statement bounded by
 // PG_QUERY_TIMEOUT, so a conflicting lock cannot hang provisioning indefinitely.
 func execInitStatement(ctx context.Context, tx *sql.Tx, timeout time.Duration, query string) error {
-	ctx, cancel := withTimeout(ctx, timeout)
+	ctx, cancel := provider.WithTimeout(ctx, timeout)
 	defer cancel()
 	_, err := tx.ExecContext(ctx, query)
 	return err
@@ -251,7 +253,7 @@ func execInitStatement(ctx context.Context, tx *sql.Tx, timeout time.Duration, q
 // validateProvisionedSchema runs the relay's own shape checks against the
 // uncommitted transaction, so a successful apply guarantees a relay-ready schema.
 func validateProvisionedSchema(ctx context.Context, tx *sql.Tx, cfg appConfig) error {
-	columnsCtx, cancel := withTimeout(ctx, cfg.PGQueryTimeout)
+	columnsCtx, cancel := provider.WithTimeout(ctx, cfg.PGQueryTimeout)
 	defer cancel()
 	rows, err := tx.QueryContext(columnsCtx, fmt.Sprintf("SELECT * FROM %s LIMIT 0", qualifiedIdent(cfg.PGSchema, cfg.EventTable)))
 	if err != nil {
@@ -268,7 +270,7 @@ func validateProvisionedSchema(ctx context.Context, tx *sql.Tx, cfg appConfig) e
 	}
 
 	if cfg.DLQTable != "" {
-		dlqCtx, cancel := withTimeout(ctx, cfg.PGQueryTimeout)
+		dlqCtx, cancel := provider.WithTimeout(ctx, cfg.PGQueryTimeout)
 		defer cancel()
 		metadata, err := loadDLQTableMetadata(dlqCtx, tx, cfg.PGSchema, cfg.DLQTable)
 		if err != nil {

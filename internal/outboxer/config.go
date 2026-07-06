@@ -462,16 +462,6 @@ func parseStringList(value string) []string {
 	return out
 }
 
-func parseEnvVars(envVar string) []string {
-	names := []string{}
-	for _, part := range strings.Split(envVar, ",") {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
-			names = append(names, trimmed)
-		}
-	}
-	return names
-}
-
 func optionHelp(description string, envVar string, defaultValue any) string {
 	return fmt.Sprintf("%s Env: %s. Default: %v.", description, envVar, defaultValue)
 }
@@ -480,7 +470,7 @@ func addStringFlag(flags *flag.FlagSet, options *[]cliOption, category string, d
 	*destination = value
 	usage := optionHelp(description, envVar, value)
 	flags.Var(&nonEmptyStringValue{value: destination}, name, usage)
-	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseEnvVars(envVar)})
+	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseStringList(envVar)})
 }
 
 // addDisableableFlag registers an optional string setting whose value may be the
@@ -493,25 +483,25 @@ func addDisableableFlag(flags *flag.FlagSet, options *[]cliOption, category stri
 	}
 	usage := optionHelp(description+fmt.Sprintf(" Set to %q to omit it.", disableSentinel), envVar, defaultDisplay)
 	flags.Var(&disableableStringValue{value: destination}, name, usage)
-	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseEnvVars(envVar)})
+	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseStringList(envVar)})
 }
 
 func addIntFlag(flags *flag.FlagSet, options *[]cliOption, category string, destination *int, name string, value int, description string, envVar string) {
 	usage := optionHelp(description, envVar, value)
 	flags.IntVar(destination, name, value, usage)
-	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseEnvVars(envVar)})
+	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseStringList(envVar)})
 }
 
 func addBoolFlag(flags *flag.FlagSet, options *[]cliOption, category string, destination *bool, name string, value bool, description string, envVar string) {
 	usage := optionHelp(description, envVar, value)
 	flags.BoolVar(destination, name, value, usage)
-	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseEnvVars(envVar)})
+	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseStringList(envVar)})
 }
 
 func addValueFlag(flags *flag.FlagSet, options *[]cliOption, category string, value flag.Value, name string, description string, envVar string, defaultValue any) {
 	usage := optionHelp(description, envVar, defaultValue)
 	flags.Var(value, name, usage)
-	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseEnvVars(envVar)})
+	*options = append(*options, cliOption{category: category, name: name, usage: usage, envVars: parseStringList(envVar)})
 }
 
 func printUsage(output io.Writer, options []cliOption) {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -78,12 +77,8 @@ func (evt sqsCandidateEvent) fifoGroupID() string {
 }
 
 type sqsPreparedEvent struct {
-	id          provider.EventID
-	timestamp   any
-	latency     any
-	payloadLen  int
+	log         provider.PublishLog
 	messageSize int
-	orderingKey string
 	entry       BatchEntry
 }
 
@@ -153,7 +148,7 @@ func (a *sender) sendSQSQueueEvents(ctx context.Context, sem chan struct{}, queu
 		for _, evt := range events {
 			callbacks.AddPoisonID(evt.ID, "SQS queue URL is syntactically invalid")
 		}
-		logFailure(ctx, callbacks, "Failed to send event batch",
+		callbacks.ReportFailure(ctx, "Failed to send event batch",
 			fmt.Sprintf("%s|%s|invalid-queue-url", Target, queue),
 			"event_destination", queue,
 			"error", "SQS queue URL is syntactically invalid",
@@ -163,7 +158,7 @@ func (a *sender) sendSQSQueueEvents(ctx context.Context, sem chan struct{}, queu
 
 	candidates := make([]sqsCandidateEvent, 0, len(events))
 	for _, evt := range events {
-		candidate, ok := a.parseSQSCandidate(ctx, evt, queue, callbacks)
+		candidate, ok := a.parseSQSCandidate(ctx, evt, callbacks)
 		if ok {
 			candidates = append(candidates, candidate)
 		}
@@ -244,10 +239,10 @@ func (a *sender) sendSQSFIFOEvents(ctx context.Context, sem chan struct{}, queue
 	})
 }
 
-func (a *sender) parseSQSCandidate(ctx context.Context, evt provider.Event, queueURL string, callbacks provider.Callbacks) (sqsCandidateEvent, bool) {
+func (a *sender) parseSQSCandidate(ctx context.Context, evt provider.Event, callbacks provider.Callbacks) (sqsCandidateEvent, bool) {
 	orderingKey, err := evt.Options.String("messageGroupId")
 	if err != nil {
-		a.rejectMalformedOptions(ctx, evt, queueURL, "messageGroupId", err, callbacks)
+		callbacks.RejectMalformedOptions(ctx, Target, evt, "messageGroupId", err)
 		return sqsCandidateEvent{}, false
 	}
 
@@ -262,36 +257,31 @@ func (a *sender) parseSQSCandidate(ctx context.Context, evt provider.Event, queu
 func (a *sender) prepareSQSEvent(ctx context.Context, candidate sqsCandidateEvent, queueURL string, isFIFO bool, callbacks provider.Callbacks) (sqsPreparedEvent, bool) {
 	attributes, err := sqsAttributes(candidate.options)
 	if err != nil {
-		a.rejectMalformedOptions(ctx, candidate.evt, queueURL, "attributes", err, callbacks)
+		callbacks.RejectMalformedOptions(ctx, Target, candidate.evt, "attributes", err)
 		return sqsPreparedEvent{}, false
 	}
 	deduplicationID, err := candidate.options.String("messageDeduplicationId")
 	if err != nil {
-		a.rejectMalformedOptions(ctx, candidate.evt, queueURL, "messageDeduplicationId", err, callbacks)
+		callbacks.RejectMalformedOptions(ctx, Target, candidate.evt, "messageDeduplicationId", err)
 		return sqsPreparedEvent{}, false
 	}
 	delaySeconds, err := sqsDelaySeconds(candidate.options)
 	if err != nil {
-		a.rejectMalformedOptions(ctx, candidate.evt, queueURL, "delaySeconds", err, callbacks)
+		callbacks.RejectMalformedOptions(ctx, Target, candidate.evt, "delaySeconds", err)
 		return sqsPreparedEvent{}, false
 	}
 	traceHeader, err := sqsAWSTraceHeader(candidate.options)
 	if err != nil {
-		a.rejectMalformedOptions(ctx, candidate.evt, queueURL, "messageSystemAttributes", err, callbacks)
+		callbacks.RejectMalformedOptions(ctx, Target, candidate.evt, "messageSystemAttributes", err)
 		return sqsPreparedEvent{}, false
 	}
 
 	eventID := fmt.Sprint(candidate.id)
 	entryID := providerSafeID(eventID, sqsBatchEntryIDPattern)
 	data := candidate.evt.Payload
-	latency := candidate.evt.Latency()
-	var timestamp any
-	if !candidate.evt.Timestamp.IsZero() {
-		timestamp = candidate.evt.Timestamp
-	}
 	if isSQSPoison(data, attributes, candidate.orderingKey, deduplicationID, delaySeconds) {
 		callbacks.AddPoisonID(candidate.id, "Event is invalid for SQS")
-		logFailure(ctx, callbacks, "Failed to send event",
+		callbacks.ReportFailure(ctx, "Failed to send event",
 			fmt.Sprintf("%s|%s|%s|local-poison", Target, queueURL, candidate.orderingKey),
 			"event_id", candidate.id,
 			"event_destination", queueURL,
@@ -318,13 +308,13 @@ func (a *sender) prepareSQSEvent(ctx context.Context, candidate sqsCandidateEven
 		entry.MessageGroupID = candidate.orderingKey
 	}
 
+	log := provider.NewPublishLog(candidate.evt, Target)
+	log.OrderingKey = candidate.orderingKey
+	log.Attributes = attributes
+
 	return sqsPreparedEvent{
-		id:          candidate.id,
-		timestamp:   timestamp,
-		latency:     latency,
-		payloadLen:  len(data),
+		log:         log,
 		messageSize: sqsMessageSize(data, attributes),
-		orderingKey: candidate.orderingKey,
 		entry:       entry,
 	}, true
 }
@@ -343,39 +333,28 @@ func (a *sender) sendSQSBatch(ctx context.Context, queueURL string, events []sqs
 	if len(events) == 0 {
 		return false, nil
 	}
-	if callbacks.MarkProgress != nil {
-		defer callbacks.MarkProgress()
-	}
+	defer callbacks.Progress()
 
 	start := time.Now()
 	entries := make([]BatchEntry, 0, len(events))
-	idsByEntryID := map[string]any{}
+	logsByEntryID := map[string]provider.PublishLog{}
 
 	for _, evt := range events {
-		slog.Debug("Sending event",
-			"event_id", evt.id,
-			"event_timestamp", evt.timestamp,
-			"event_latency", evt.latency,
-			"event_payload_size", evt.payloadLen,
-			"event_ordering_key", evt.orderingKey,
-			"event_attributes", evt.entry.Attributes,
-			"event_target", Target,
-			"event_destination", queueURL,
-		)
+		evt.log.Sending()
 		entries = append(entries, evt.entry)
-		idsByEntryID[evt.entry.ID] = evt.id
+		logsByEntryID[evt.entry.ID] = evt.log
 	}
 
-	sendCtx, cancel := withTimeout(ctx, a.cfg.PublishTimeout)
+	sendCtx, cancel := provider.WithTimeout(ctx, a.cfg.PublishTimeout)
 	defer cancel()
 	response, err := a.publisher.SendBatch(sendCtx, queueURL, entries)
 	if err != nil {
 		if isSQSPermanentRequestError(err) {
 			if len(events) == 1 {
-				callbacks.AddPoisonID(events[0].id, err.Error())
-				logFailure(ctx, callbacks, "Failed to send event",
+				callbacks.AddPoisonID(events[0].log.ID, err.Error())
+				callbacks.ReportFailure(ctx, "Failed to send event",
 					fmt.Sprintf("%s|%s|%s", Target, queueURL, err.Error()),
-					"event_id", events[0].id,
+					"event_id", events[0].log.ID,
 					"event_destination", queueURL,
 					"error", err.Error(),
 				)
@@ -383,7 +362,7 @@ func (a *sender) sendSQSBatch(ctx context.Context, queueURL string, events []sqs
 			}
 			return a.sendSQSBatchIsolated(ctx, queueURL, events, callbacks)
 		}
-		logFailure(ctx, callbacks, "Failed to send event batch",
+		callbacks.ReportFailure(ctx, "Failed to send event batch",
 			fmt.Sprintf("%s|%s|%s", Target, queueURL, err.Error()),
 			"event_destination", queueURL,
 			"error", err.Error(),
@@ -394,23 +373,18 @@ func (a *sender) sendSQSBatch(ctx context.Context, queueURL string, events []sqs
 	publishLatency := time.Since(start).Seconds()
 	anyDone := false
 	for _, entry := range response.Successful {
-		originalID := idsByEntryID[entry.ID]
-		callbacks.AddConfirmedID(originalID)
+		entryLog := logsByEntryID[entry.ID]
+		callbacks.AddConfirmedID(entryLog.ID)
 		anyDone = true
-		slog.Debug("Event sent",
-			"event_id", entry.ID,
-			"event_published_id", entry.MessageID,
-			"event_destination", queueURL,
-			"publish_latency", publishLatency,
-		)
+		entryLog.Sent(entry.MessageID, publishLatency)
 	}
 
 	for _, entry := range response.Failed {
 		if entry.SenderFault {
-			callbacks.AddPoisonID(idsByEntryID[entry.ID], fmt.Sprintf("%s: %s", entry.Code, entry.Message))
+			callbacks.AddPoisonID(logsByEntryID[entry.ID].ID, fmt.Sprintf("%s: %s", entry.Code, entry.Message))
 			anyDone = true
 		}
-		logFailure(ctx, callbacks, "Failed to send event",
+		callbacks.ReportFailure(ctx, "Failed to send event",
 			fmt.Sprintf("%s|%s|%s|%s", Target, queueURL, entry.Code, entry.Message),
 			"event_id", entry.ID,
 			"event_destination", queueURL,
@@ -436,26 +410,3 @@ func (a *sender) sendSQSBatchIsolated(ctx context.Context, queueURL string, even
 	return anyDone, joined
 }
 
-func (a *sender) rejectMalformedOptions(ctx context.Context, evt provider.Event, destination string, field string, err error, callbacks provider.Callbacks) {
-	signature := fmt.Sprintf("%s|%s|%s|malformed-options", Target, destination, field)
-	callbacks.AddPoisonID(evt.ID, err.Error())
-	logFailure(ctx, callbacks, "Failed to send event",
-		signature,
-		"event_id", evt.ID,
-		"event_destination", destination,
-		"error", err.Error(),
-	)
-}
-
-func logFailure(ctx context.Context, callbacks provider.Callbacks, message string, signature string, attrs ...any) {
-	if callbacks.LogFailure != nil {
-		callbacks.LogFailure(ctx, message, signature, attrs...)
-	}
-}
-
-func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if timeout <= 0 {
-		return ctx, func() {}
-	}
-	return context.WithTimeout(ctx, timeout)
-}

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/fvdsn/outboxer/internal/outboxer/provider"
 )
 
 type poisonEvent struct {
@@ -55,7 +57,7 @@ func (a *app) checkDLQWorks(ctx context.Context) error {
 		return nil
 	}
 
-	ctx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
+	ctx, cancel := provider.WithTimeout(ctx, a.cfg.PGQueryTimeout)
 	defer cancel()
 
 	metadata, err := a.loadDLQTableMetadata(ctx)
@@ -171,7 +173,7 @@ func (a *app) insertDeadLetters(ctx context.Context, tx *sql.Tx, poison []poison
 		return nil
 	}
 
-	ctx, cancel := withTimeout(ctx, a.cfg.PGQueryTimeout)
+	ctx, cancel := provider.WithTimeout(ctx, a.cfg.PGQueryTimeout)
 	defer cancel()
 
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES ($1::jsonb)", qualifiedIdent(a.cfg.PGSchema, a.cfg.DLQTable), ident("event"))

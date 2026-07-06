@@ -60,7 +60,7 @@ func (a *app) sendSQSBatchForTest(ctx context.Context, queueURL string, events [
 	}
 	prepared := make([]sqsPreparedEvent, 0, len(events))
 	for _, evt := range events {
-		candidate, ok := s.parseSQSCandidate(ctx, evt, queueURL, callbacks)
+		candidate, ok := s.parseSQSCandidate(ctx, evt, callbacks)
 		if !ok {
 			continue
 		}

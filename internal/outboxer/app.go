@@ -6,7 +6,6 @@ package outboxer
 import (
 	"context"
 	"database/sql"
-	"time"
 
 	"github.com/fvdsn/outboxer/internal/outboxer/provider"
 )
@@ -23,13 +22,4 @@ type app struct {
 	// processing loop. It is called from the HTTP handler and on HTTP server
 	// failure.
 	shutdown context.CancelFunc
-}
-
-// withTimeout derives a context with the given timeout. A non-positive timeout
-// disables the deadline and returns the parent context unchanged.
-func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if timeout <= 0 {
-		return ctx, func() {}
-	}
-	return context.WithTimeout(ctx, timeout)
 }

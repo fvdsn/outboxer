@@ -27,8 +27,8 @@ are `debug`.
 
 | Message | When | Key fields |
 | --- | --- | --- |
-| `Sending event` | A single event is about to be published. | `event_id`, `event_timestamp`, `event_latency`, `event_payload_size`, `event_target`, `event_destination`, and (Pub/Sub) `event_ordering_key`, `event_attributes` |
-| `Event sent` | A publish is confirmed by the backend. | `event_id`, `event_published_id`, `event_destination`, `publish_latency` |
+| `Sending event` | A single event is about to be published. | `event_id`, `event_timestamp`, `event_latency`, `event_payload_size`, `event_ordering_key`, `event_attributes`, `event_target`, `event_destination` |
+| `Event sent` | A publish is confirmed by the backend. | The `Sending event` fields plus `event_published_id`, `publish_latency` |
 | `Watchdog heartbeat` | Each watchdog tick while healthy. | — |
 | `Healthcheck request answered` | A health request returns `200`. | — |
 | `Notification wake-ups enabled` | Logged once at startup when `POLL_INTERVAL_MS > 0`. | `channel` |

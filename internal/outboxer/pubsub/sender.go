@@ -183,7 +183,7 @@ func (a *sender) sendPubsubIsolated(ctx context.Context, prepared pubsubPrepared
 		a.logPubsubFailure(ctx, prepared, err, callbacks)
 		return false, errors.Join(provider.ErrFatalAfterCommit, err)
 	case isPubSubPermanentBackendError(err):
-		callbacks.AddPoisonID(prepared.id, err.Error())
+		callbacks.AddPoisonID(prepared.log.ID, err.Error())
 		a.logPubsubFailure(ctx, prepared, err, callbacks)
 		return true, nil
 	default:
@@ -193,12 +193,9 @@ func (a *sender) sendPubsubIsolated(ctx context.Context, prepared pubsubPrepared
 }
 
 type pubsubPreparedEvent struct {
-	id         provider.EventID
-	timestamp  any
-	latency    any
-	message    Message
-	startedAt  time.Time
-	payloadLen int
+	log       provider.PublishLog
+	message   Message
+	startedAt time.Time
 }
 
 type pubsubCandidateEvent struct {
@@ -217,7 +214,7 @@ func (a *sender) parsePubsubCandidate(ctx context.Context, evt provider.Event, c
 	topicName := evt.Destination
 	orderingKey, err := evt.Options.String("orderingKey")
 	if err != nil {
-		a.rejectMalformedOptions(ctx, evt, topicName, "orderingKey", err, callbacks)
+		callbacks.RejectMalformedOptions(ctx, Target, evt, "orderingKey", err)
 		return pubsubCandidateEvent{}, false
 	}
 	return pubsubCandidateEvent{evt: evt, options: evt.Options, topic: topicName, orderingKey: orderingKey}, true
@@ -227,43 +224,37 @@ func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandida
 	evt := candidate.evt
 	attributes, err := candidate.options.Object("attributes")
 	if err != nil {
-		a.rejectMalformedOptions(ctx, evt, candidate.topic, "attributes", err, callbacks)
+		callbacks.RejectMalformedOptions(ctx, Target, evt, "attributes", err)
 		return pubsubPreparedEvent{}, false
-	}
-	id := evt.ID
-	data := evt.Payload
-	latency := evt.Latency()
-	var timestamp any
-	if !evt.Timestamp.IsZero() {
-		timestamp = evt.Timestamp
 	}
 
 	stringAttributes, deletedAttributes := sanitizeStringAttributes(attributes)
 	if len(deletedAttributes) != 0 {
 		slog.Warn("Some attributes were dropped",
-			"event_id", id,
+			"event_id", evt.ID,
 			"event_destination", candidate.topic,
 			"dropped_attributes", deletedAttributes,
 		)
 	}
 
+	log := provider.NewPublishLog(evt, Target)
+	log.OrderingKey = candidate.orderingKey
+	log.Attributes = stringAttributes
+
 	prepared := pubsubPreparedEvent{
-		id:         id,
-		timestamp:  timestamp,
-		latency:    latency,
-		payloadLen: len(data),
+		log: log,
 		message: Message{
 			Topic:       candidate.topic,
-			Data:        data,
+			Data:        evt.Payload,
 			OrderingKey: candidate.orderingKey,
 			Attributes:  stringAttributes,
 		},
 	}
 
 	if reason, poison := pubsubPoisonReason(prepared.message); poison {
-		callbacks.AddPoisonID(id, reason)
+		callbacks.AddPoisonID(evt.ID, reason)
 		slog.Error("Failed to send event",
-			"event_id", id,
+			"event_id", evt.ID,
 			"event_destination", candidate.topic,
 			"error", reason,
 		)
@@ -275,39 +266,19 @@ func (a *sender) preparePubsubEvent(ctx context.Context, candidate pubsubCandida
 
 func (a *sender) publishPubsubEvent(ctx context.Context, prepared pubsubPreparedEvent) (pubsubPreparedEvent, PublishResult) {
 	prepared.startedAt = time.Now()
-	slog.Debug("Sending event",
-		"event_id", prepared.id,
-		"event_timestamp", prepared.timestamp,
-		"event_latency", prepared.latency,
-		"event_payload_size", prepared.payloadLen,
-		"event_ordering_key", prepared.message.OrderingKey,
-		"event_attributes", prepared.message.Attributes,
-		"event_target", Target,
-		"event_destination", prepared.message.Topic,
-	)
+	prepared.log.Sending()
 	return prepared, a.publisher.Publish(ctx, prepared.message)
 }
 
 func (a *sender) markPubsubDone(prepared pubsubPreparedEvent, messageID string, callbacks provider.Callbacks) {
-	callbacks.AddConfirmedID(prepared.id)
-	slog.Debug("Event sent",
-		"event_id", prepared.id,
-		"event_timestamp", prepared.timestamp,
-		"event_latency", prepared.latency,
-		"event_payload_size", prepared.payloadLen,
-		"event_published_id", messageID,
-		"event_ordering_key", prepared.message.OrderingKey,
-		"event_attributes", prepared.message.Attributes,
-		"event_target", Target,
-		"event_destination", prepared.message.Topic,
-		"publish_latency", time.Since(prepared.startedAt).Seconds(),
-	)
+	callbacks.AddConfirmedID(prepared.log.ID)
+	prepared.log.Sent(messageID, time.Since(prepared.startedAt).Seconds())
 }
 
 func (a *sender) logPubsubFailure(ctx context.Context, prepared pubsubPreparedEvent, err error, callbacks provider.Callbacks) {
-	logFailure(ctx, callbacks, "Failed to send event",
+	callbacks.ReportFailure(ctx, "Failed to send event",
 		fmt.Sprintf("%s|%s|%s|%s", Target, prepared.message.Topic, prepared.message.OrderingKey, err.Error()),
-		"event_id", prepared.id,
+		"event_id", prepared.log.ID,
 		"event_ordering_key", prepared.message.OrderingKey,
 		"event_attributes", prepared.message.Attributes,
 		"event_target", Target,
@@ -316,36 +287,10 @@ func (a *sender) logPubsubFailure(ctx context.Context, prepared pubsubPreparedEv
 	)
 }
 
-func (a *sender) rejectMalformedOptions(ctx context.Context, evt provider.Event, destination string, field string, err error, callbacks provider.Callbacks) {
-	signature := fmt.Sprintf("%s|%s|%s|malformed-options", Target, destination, field)
-	callbacks.AddPoisonID(evt.ID, err.Error())
-	logFailure(ctx, callbacks, "Failed to send event",
-		signature,
-		"event_id", evt.ID,
-		"event_destination", destination,
-		"error", err.Error(),
-	)
-}
-
-func logFailure(ctx context.Context, callbacks provider.Callbacks, message string, signature string, attrs ...any) {
-	if callbacks.LogFailure != nil {
-		callbacks.LogFailure(ctx, message, signature, attrs...)
-	}
-}
-
 func (a *sender) awaitPubsubResult(ctx context.Context, result PublishResult, callbacks provider.Callbacks) (string, error) {
-	if callbacks.MarkProgress != nil {
-		defer callbacks.MarkProgress()
-	}
+	defer callbacks.Progress()
 
-	waitCtx, cancel := withTimeout(ctx, a.cfg.PublishTimeout+a.cfg.PublishResultGrace)
+	waitCtx, cancel := provider.WithTimeout(ctx, a.cfg.PublishTimeout+a.cfg.PublishResultGrace)
 	defer cancel()
 	return result.Get(waitCtx)
-}
-
-func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if timeout <= 0 {
-		return ctx, func() {}
-	}
-	return context.WithTimeout(ctx, timeout)
 }
