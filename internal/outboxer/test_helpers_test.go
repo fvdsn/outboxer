@@ -14,8 +14,8 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -245,10 +245,50 @@ func testConfig() appConfig {
 	}
 }
 
-const (
-	deleteOneSQL = `DELETE FROM "public"."events" WHERE "id" IN ($1)`
-	deleteTwoSQL = `DELETE FROM "public"."events" WHERE "id" IN ($1, $2)`
-)
+const deleteEventsSQL = `DELETE FROM "public"."events" WHERE "id" = ANY($1)`
+
+// deletedIDs matches the batched delete's single array parameter: the same
+// ids, in any order (sender outcomes arrive per-target, so order varies).
+type deletedIDs []any
+
+func (m deletedIDs) Match(value driver.Value) bool {
+	ids, ok := value.([]any)
+	if !ok || len(ids) != len(m) {
+		return false
+	}
+	remaining := append([]any(nil), m...)
+outer:
+	for _, id := range ids {
+		for i, want := range remaining {
+			if reflect.DeepEqual(id, want) {
+				remaining = append(remaining[:i], remaining[i+1:]...)
+				continue outer
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// anyDeletedIDs matches an id array parameter of the given length.
+type anyDeletedIDs int
+
+func (m anyDeletedIDs) Match(value driver.Value) bool {
+	ids, ok := value.([]any)
+	return ok && len(ids) == int(m)
+}
+
+// sliceValueConverter lets slice parameters (the batched delete ids and DLQ
+// payloads) reach expectations unconverted; the default converter rejects them.
+type sliceValueConverter struct{}
+
+func (sliceValueConverter) ConvertValue(value any) (driver.Value, error) {
+	switch value.(type) {
+	case []any, []string:
+		return value, nil
+	}
+	return driver.DefaultParameterConverter.ConvertValue(value)
+}
 
 func expectSelectEvents(mock sqlmock.Sqlmock, a *app) *sqlmock.ExpectedQuery {
 	query, args := a.selectEventsQuery()
@@ -261,7 +301,10 @@ func expectSelectEvents(mock sqlmock.Sqlmock, a *app) *sqlmock.ExpectedQuery {
 
 func newMockProcessorApp(t *testing.T, cfg appConfig) (*app, sqlmock.Sqlmock, func()) {
 	t.Helper()
-	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	db, mock, err := sqlmock.New(
+		sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual),
+		sqlmock.ValueConverterOption(sliceValueConverter{}),
+	)
 	if err != nil {
 		t.Fatalf("open sql mock: %v", err)
 	}
@@ -363,22 +406,6 @@ func mockDBValue(value any) any {
 	default:
 		return value
 	}
-}
-
-func deleteEventsSQL(count int) string {
-	placeholders := make([]string, count)
-	for i := range placeholders {
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
-	}
-	return fmt.Sprintf(`DELETE FROM "public"."events" WHERE "id" IN (%s)`, strings.Join(placeholders, ", "))
-}
-
-func anySQLArgs(count int) []driver.Value {
-	args := make([]driver.Value, count)
-	for i := range args {
-		args[i] = sqlmock.AnyArg()
-	}
-	return args
 }
 
 func assertStatsSnapshot(t *testing.T, got statsSnapshot, want statsSnapshot) {

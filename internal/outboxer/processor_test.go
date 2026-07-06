@@ -48,7 +48,7 @@ func TestProcessEventsStopsAfterFatalAfterCommit(t *testing.T) {
 		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions()))...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
-	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"event-1"}).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	done := make(chan error, 1)
@@ -80,7 +80,7 @@ func TestProcessEventsDoesNotCooldownAfterNonFatalSenderError(t *testing.T) {
 		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", nil)...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(firstRows)
-	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"event-1"}).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	secondErr := errors.New("second select failed")
@@ -119,7 +119,7 @@ func TestProcessOneBatchCommitsDoneBeforeNonFatalSenderError(t *testing.T) {
 		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", nil)...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
-	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"event-1"}).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -330,7 +330,7 @@ func TestProcessOneBatchDispatchesByRegisteredTarget(t *testing.T) {
 		AddRow(mockEventRow("event-1", "webhook", "https://example.com/events", "payload", nil)...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
-	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"event-1"}).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -390,7 +390,7 @@ func TestProcessOneBatchCommitsHealthyRouteWhenAnotherRouteFails(t *testing.T) {
 		AddRow(mockEventRow("sqs-fail", "sqs", "queue-broken", "retry", nil)...)
 	mock.ExpectBegin()
 	mock.ExpectQuery(query).WithArgs(cfg.CollectBatchTarget).WillReturnRows(rows)
-	mock.ExpectExec(deleteOneSQL).WithArgs("pubsub-ok").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"pubsub-ok"}).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -424,7 +424,7 @@ func TestProcessOneBatchDeletesContentPoisonAndConfirmedSendTogether(t *testing.
 		AddRow(mockEventRow("confirmed", "sqs", "queue-a", "payload", nil)...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
-	mock.ExpectExec(deleteTwoSQL).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(anyDeletedIDs(2)).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -453,7 +453,7 @@ func TestProcessOneBatchDeletesExpiredEventWithoutProviderCall(t *testing.T) {
 		AddRow(mockEventRow("fresh", "sqs", "queue-a", "payload", nil, time.Now())...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
-	mock.ExpectExec(deleteTwoSQL).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(anyDeletedIDs(2)).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -482,7 +482,7 @@ func TestProcessOneBatchDeadLettersStructurallyMalformedOptionsWithoutProviderCa
 		AddRow(mockEventRow("good", "sqs", "queue-a", "payload", nil)...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
-	mock.ExpectExec(deleteTwoSQL).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(anyDeletedIDs(2)).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -539,7 +539,7 @@ func TestProcessOneBatchCommitsDoneBeforeFatalAfterCommit(t *testing.T) {
 		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions()))...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
-	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"event-1"}).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -564,7 +564,7 @@ func TestProcessOneBatchPreservesFatalAfterCommitOnCommitFailure(t *testing.T) {
 		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions()))...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
-	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"event-1"}).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit().WillReturnError(expectedErr)
 
 	result, err := a.processOneBatch(context.Background())
@@ -589,7 +589,7 @@ func TestProcessOneBatchPreservesFatalAfterCommitOnDeleteFailure(t *testing.T) {
 		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", mockDBValue(combinedOrderingOptions()))...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
-	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnError(expectedErr)
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"event-1"}).WillReturnError(expectedErr)
 	mock.ExpectRollback()
 
 	result, err := a.processOneBatch(context.Background())
@@ -612,7 +612,7 @@ func TestProcessOneBatchRollsBackOnDeleteFailure(t *testing.T) {
 	rows := mockEventRows().AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", nil)...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
-	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnError(expectedErr)
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"event-1"}).WillReturnError(expectedErr)
 	mock.ExpectRollback()
 
 	result, err := a.processOneBatch(context.Background())
@@ -660,7 +660,7 @@ func TestProcessOneBatchCommitFailureIsDatabaseError(t *testing.T) {
 	rows := mockEventRows().AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", nil)...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
-	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"event-1"}).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit().WillReturnError(expectedErr)
 
 	result, err := a.processOneBatch(context.Background())
@@ -688,7 +688,7 @@ func TestProcessOneBatchDeduplicatesDoneIDs(t *testing.T) {
 	rows := mockEventRows().AddRow(mockEventRow("event-1", "sqs", "queue-a", "one", nil)...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
-	mock.ExpectExec(deleteOneSQL).WithArgs("event-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"event-1"}).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -744,7 +744,7 @@ func TestProcessOneBatchRunsEnabledBackendsConcurrently(t *testing.T) {
 		AddRow(mockEventRow("event-2", "sqs", "queue-a", "two", nil)...)
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(rows)
-	mock.ExpectExec(deleteTwoSQL).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(anyDeletedIDs(2)).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectCommit()
 
 	done := make(chan error, 1)
@@ -795,7 +795,7 @@ func TestProcessOneBatchRoutesAndDeletesHundredMixedBackendEvents(t *testing.T) 
 
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(mockRowsForEvents(cfg, events))
-	mock.ExpectExec(deleteEventsSQL(100)).WithArgs(anySQLArgs(100)...).WillReturnResult(sqlmock.NewResult(0, 100))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(anyDeletedIDs(100)).WillReturnResult(sqlmock.NewResult(0, 100))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -837,7 +837,7 @@ func TestProcessOneBatchRoutesHundredMixedDestinations(t *testing.T) {
 
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(mockRowsForEvents(cfg, events))
-	mock.ExpectExec(deleteEventsSQL(100)).WithArgs(anySQLArgs(100)...).WillReturnResult(sqlmock.NewResult(0, 100))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(anyDeletedIDs(100)).WillReturnResult(sqlmock.NewResult(0, 100))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -877,7 +877,7 @@ func TestProcessOneBatchUsesSingleBackendDefaultTopicForHundredEvents(t *testing
 
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(mockRowsForEvents(cfg, events))
-	mock.ExpectExec(deleteEventsSQL(100)).WithArgs(anySQLArgs(100)...).WillReturnResult(sqlmock.NewResult(0, 100))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(anyDeletedIDs(100)).WillReturnResult(sqlmock.NewResult(0, 100))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -913,7 +913,7 @@ func TestProcessOneBatchUsesBackendDefaultsWithExplicitTargets(t *testing.T) {
 
 	mock.ExpectBegin()
 	expectSelectEvents(mock, a).WillReturnRows(mockRowsForEvents(cfg, events))
-	mock.ExpectExec(deleteEventsSQL(40)).WithArgs(anySQLArgs(40)...).WillReturnResult(sqlmock.NewResult(0, 40))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(anyDeletedIDs(40)).WillReturnResult(sqlmock.NewResult(0, 40))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -947,7 +947,7 @@ func TestProcessOneBatchProcessesBacklogAcrossMultipleSelectedBatches(t *testing
 		}
 		mock.ExpectBegin()
 		expectSelectEvents(mock, a).WillReturnRows(mockRowsForEvents(cfg, events))
-		mock.ExpectExec(deleteEventsSQL(selected)).WithArgs(anySQLArgs(selected)...).WillReturnResult(sqlmock.NewResult(0, int64(selected)))
+		mock.ExpectExec(deleteEventsSQL).WithArgs(anyDeletedIDs(selected)).WillReturnResult(sqlmock.NewResult(0, int64(selected)))
 		mock.ExpectCommit()
 
 		result, err := a.processOneBatch(context.Background())

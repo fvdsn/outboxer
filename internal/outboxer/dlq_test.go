@@ -13,7 +13,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const insertDLQSQL = `INSERT INTO "public"."dead_letters" ("event") VALUES ($1::jsonb)`
+const insertDLQSQL = `INSERT INTO "public"."dead_letters" ("event") SELECT unnest($1::text[])::jsonb`
 
 type dlqPayloadMatcher struct {
 	t     *testing.T
@@ -71,23 +71,24 @@ func nullableStringValue(value string) any {
 	return value
 }
 
+// Match unwraps the batched insert's single text-array parameter. Every test
+// using it dead-letters exactly one event.
 func (m dlqPayloadMatcher) Match(value driver.Value) bool {
 	m.t.Helper()
 
-	var raw string
-	switch typed := value.(type) {
-	case string:
-		raw = typed
-	case []byte:
-		raw = string(typed)
-	default:
-		m.t.Errorf("DLQ payload has type %T, want string or []byte", value)
+	payloads, ok := value.([]string)
+	if !ok {
+		m.t.Errorf("DLQ payloads have type %T, want []string", value)
+		return false
+	}
+	if len(payloads) != 1 {
+		m.t.Errorf("expected one DLQ payload, got %d", len(payloads))
 		return false
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		m.t.Errorf("DLQ payload is not JSON: %v\n%s", err, raw)
+	if err := json.Unmarshal([]byte(payloads[0]), &payload); err != nil {
+		m.t.Errorf("DLQ payload is not JSON: %v\n%s", err, payloads[0])
 		return false
 	}
 	return m.check(payload)
@@ -302,7 +303,7 @@ func TestProcessOneBatchDeadLettersContentPoisonAndDeletesConfirmedSendTogether(
 		}
 		return true
 	}}).WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(deleteTwoSQL).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(anyDeletedIDs(2)).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -341,7 +342,7 @@ func TestProcessOneBatchDeadLettersPubSubLocalPoison(t *testing.T) {
 		}
 		return true
 	}}).WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(deleteOneSQL).WithArgs("poison").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"poison"}).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())
@@ -409,7 +410,7 @@ func TestProcessOneBatchDeadLettersExpiredEvent(t *testing.T) {
 		}
 		return true
 	}}).WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(deleteOneSQL).WithArgs("expired").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"expired"}).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	result, err := a.processOneBatch(context.Background())

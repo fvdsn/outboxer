@@ -424,27 +424,26 @@ func normalizeDBValue(value any) any {
 	}
 }
 
-func (a *app) deleteEvents(ctx context.Context, tx *sql.Tx, ids []any) error {
+// deleteEvents removes the batch's finished rows in one statement. The ids
+// travel as a single array parameter, so the statement's parameter count is
+// independent of the batch size (Postgres caps parameters at 65535). Postgres
+// reports the array's element type from the id column, and pgx encodes each
+// opaque id into it — the ids round-trip from that same column.
+func (a *app) deleteEvents(ctx context.Context, tx *sql.Tx, ids []provider.EventID) error {
 	if len(ids) == 0 {
 		return nil
 	}
 
-	placeholders := make([]string, len(ids))
-	for i := range ids {
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
-	}
-
 	query := fmt.Sprintf(
-		"DELETE FROM %s WHERE %s IN (%s)",
+		"DELETE FROM %s WHERE %s = ANY($1)",
 		qualifiedIdent(a.cfg.PGSchema, a.cfg.EventTable),
 		ident(a.cfg.EventID),
-		strings.Join(placeholders, ", "),
 	)
 
 	ctx, cancel := provider.WithTimeout(ctx, a.cfg.PGQueryTimeout)
 	defer cancel()
 
-	_, err := tx.ExecContext(ctx, query, ids...)
+	_, err := tx.ExecContext(ctx, query, ids)
 	return err
 }
 

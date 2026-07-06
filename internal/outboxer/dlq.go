@@ -173,20 +173,29 @@ func (a *app) insertDeadLetters(ctx context.Context, tx *sql.Tx, poison []poison
 		return nil
 	}
 
-	ctx, cancel := provider.WithTimeout(ctx, a.cfg.PGQueryTimeout)
-	defer cancel()
-
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES ($1::jsonb)", qualifiedIdent(a.cfg.PGSchema, a.cfg.DLQTable), ident("event"))
+	payloads := make([]string, 0, len(poison))
 	for _, poisoned := range poison {
 		payload, err := json.Marshal(a.deadLetterPayload(poisoned))
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, query, string(payload)); err != nil {
-			return err
-		}
-		a.markProgress()
+		payloads = append(payloads, string(payload))
 	}
+
+	ctx, cancel := provider.WithTimeout(ctx, a.cfg.PGQueryTimeout)
+	defer cancel()
+
+	// One statement dead-letters the whole batch: the payloads travel as a
+	// single text array and are cast to jsonb per element.
+	query := fmt.Sprintf(
+		"INSERT INTO %s (%s) SELECT unnest($1::text[])::jsonb",
+		qualifiedIdent(a.cfg.PGSchema, a.cfg.DLQTable),
+		ident("event"),
+	)
+	if _, err := tx.ExecContext(ctx, query, payloads); err != nil {
+		return err
+	}
+	a.markProgress()
 	return nil
 }
 
