@@ -16,12 +16,60 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// WaitForSettledRelay proves that the instance answering /metrics is the one
+// processing events. Right after a deploy two Cloud Run revisions briefly
+// coexist: the old instance may still win the row locks while the URL routes
+// scrapes to the new one. A canary event is inserted until the scraped
+// instance's sent counter moves, then the subscription is purged so canaries
+// do not pollute the scenario.
+func WaitForSettledRelay(ctx context.Context, t *testing.T, env Env, db *pgx.Conn, pubsubClient *pubsub.Client, metrics *Metrics) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Minute)
+	for attempt := 0; ; attempt++ {
+		before, err := metrics.Fetch(ctx)
+		if err != nil {
+			t.Fatalf("fetch metrics while settling: %v", err)
+		}
+		canary := Event{Payload: fmt.Sprintf("settle-canary-%d-%d", time.Now().UnixNano(), attempt)}
+		if err := InsertEvents(ctx, db, []Event{canary}); err != nil {
+			t.Fatalf("insert canary: %v", err)
+		}
+		WaitForEmptyTable(ctx, t, db, "events", time.Minute)
+
+		after, err := metrics.Fetch(ctx)
+		if err != nil {
+			t.Fatalf("fetch metrics while settling: %v", err)
+		}
+		if after["outboxer_events_sent_total"] > before["outboxer_events_sent_total"] {
+			PurgeSubscription(ctx, t, pubsubClient, env.ProjectID, env.Subscription)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("relay did not settle: the scraped instance never processed a canary (an old revision may still hold the work)")
+		}
+		t.Logf("settling: canary processed by another instance, retrying")
+		time.Sleep(5 * time.Second)
+	}
+}
+
 // Smoke verifies functional behavior against the deployed stack: delivery of
 // unordered and ordered events (with real per-key ordering), default and
 // explicit destinations, dead-lettering, a drained outbox, and truthful
-// /metrics and /healthz.
+// /metrics and /healthz. All counter assertions are deltas, so Smoke is
+// re-runnable against a live stack.
 func Smoke(ctx context.Context, t *testing.T, env Env, db *pgx.Conn, pubsubClient *pubsub.Client) {
 	t.Helper()
+
+	metrics := NewMetrics(t, env)
+	WaitForSettledRelay(ctx, t, env, db, pubsubClient, metrics)
+	baseline, err := metrics.Fetch(ctx)
+	if err != nil {
+		t.Fatalf("fetch baseline metrics: %v", err)
+	}
+	dlqBaseline, err := CountRows(ctx, db, env.DLQTable)
+	if err != nil {
+		t.Fatalf("count dead letters baseline: %v", err)
+	}
 
 	const (
 		unordered   = 200
@@ -92,26 +140,25 @@ func Smoke(ctx context.Context, t *testing.T, env Env, db *pgx.Conn, pubsubClien
 	if err != nil {
 		t.Fatalf("count dead letters: %v", err)
 	}
-	if deadLetters != poison {
-		t.Fatalf("expected %d dead letters, got %d", poison, deadLetters)
+	if deadLetters-dlqBaseline != poison {
+		t.Fatalf("expected %d new dead letters, got %d", poison, deadLetters-dlqBaseline)
 	}
 
-	metrics := NewMetrics(t, env)
 	values, err := metrics.Fetch(ctx)
 	if err != nil {
 		t.Fatalf("fetch metrics: %v", err)
 	}
-	if sent := values["outboxer_events_sent_total"]; sent < float64(want) {
-		t.Fatalf("outboxer_events_sent_total = %v, want >= %d", sent, want)
+	if sent := values["outboxer_events_sent_total"] - baseline["outboxer_events_sent_total"]; sent < float64(want) {
+		t.Fatalf("outboxer_events_sent_total delta = %v, want >= %d", sent, want)
 	}
-	if dlq := values["outboxer_events_dlq_total"]; dlq != float64(poison) {
-		t.Fatalf("outboxer_events_dlq_total = %v, want %d", dlq, poison)
+	if dlq := values["outboxer_events_dlq_total"] - baseline["outboxer_events_dlq_total"]; dlq != float64(poison) {
+		t.Fatalf("outboxer_events_dlq_total delta = %v, want %d", dlq, poison)
 	}
 	if backlog := values["outboxer_backlog_events"]; backlog != 0 {
 		t.Fatalf("outboxer_backlog_events = %v, want 0 after drain", backlog)
 	}
 	if code, err := metrics.Healthz(ctx); err != nil || code != http.StatusOK {
-		t.Fatalf("/healthz = %d (%v), want 200", code, err)
+		t.Fatalf("health endpoint = %d (%v), want 200", code, err)
 	}
 }
 
@@ -139,10 +186,12 @@ type PerfReport struct {
 
 // PerfSample is one /metrics observation during a performance run.
 type PerfSample struct {
-	Elapsed   time.Duration `json:"elapsed_ns"`
-	SentTotal float64       `json:"sent_total"`
-	Backlog   float64       `json:"backlog_events"`
-	Lag       float64       `json:"oldest_event_age_seconds"`
+	Elapsed      time.Duration `json:"elapsed_ns"`
+	SentTotal    float64       `json:"sent_total"`
+	Backlog      float64       `json:"backlog_events"`
+	Lag          float64       `json:"oldest_event_age_seconds"`
+	BatchErrors  float64       `json:"batch_errors_total"`
+	SenderErrors float64       `json:"sender_errors_total"`
 }
 
 // Perf loads n events into the outbox, then samples the relay's own /metrics
@@ -152,6 +201,7 @@ func Perf(ctx context.Context, t *testing.T, environment string, env Env, db *pg
 	t.Helper()
 
 	metrics := NewMetrics(t, env)
+	WaitForSettledRelay(ctx, t, env, db, pubsubClient, metrics)
 	before, err := metrics.Fetch(ctx)
 	if err != nil {
 		t.Fatalf("fetch metrics before run: %v", err)
@@ -184,10 +234,12 @@ func Perf(ctx context.Context, t *testing.T, environment string, env Env, db *pg
 			t.Fatalf("fetch metrics during run: %v", err)
 		}
 		sample := PerfSample{
-			Elapsed:   time.Since(drainStart),
-			SentTotal: values["outboxer_events_sent_total"] - baseSent,
-			Backlog:   values["outboxer_backlog_events"],
-			Lag:       values["outboxer_oldest_event_age_seconds"],
+			Elapsed:      time.Since(drainStart),
+			SentTotal:    values["outboxer_events_sent_total"] - baseSent,
+			Backlog:      values["outboxer_backlog_events"],
+			Lag:          values["outboxer_oldest_event_age_seconds"],
+			BatchErrors:  values["outboxer_batch_errors_total"],
+			SenderErrors: values["outboxer_sender_errors_total"],
 		}
 		report.Samples = append(report.Samples, sample)
 		report.MaxLagSeconds = max(report.MaxLagSeconds, sample.Lag)
