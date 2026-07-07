@@ -1,3 +1,16 @@
 /outboxer
 /outboxer-go
 .DS_Store
+
+# Terraform (ephemeral cloud test stacks)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+
+# Cloud test harness artifacts
+test/cloud/*/tfoutputs.json
+test/cloud/results/
+
+# Local environment (loaded by the app and just)
+.env
