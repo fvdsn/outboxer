@@ -3,7 +3,7 @@
 Outboxer is distributed as a container image:
 
 ```text
-ghcr.io/fvdsn/outboxer:v0.1.0
+ghcr.io/fvdsn/outboxer:v0.4.0
 ```
 
 The image is built for `linux/amd64` and `linux/arm64`. Pin an explicit version

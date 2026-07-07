@@ -20,7 +20,7 @@ are `debug`.
 | `Health server listening` | Health server bound, when a port is configured. | `port` |
 | `Processing events` | Processing loop starts. | `table` |
 | `Processing batch` | A non-empty batch is selected. | `count` (rows in the batch) |
-| `Statistics` | Every `STATS_INTERVAL_MS`. | See [Statistics](#statistics). |
+| `Statistics` | Every `STATS_INTERVAL_MS`, and once more at shutdown for the final partial interval. | See [Statistics](#statistics). |
 | `Graceful shutdown` | `SIGINT` / `SIGTERM` received. | — |
 
 ### Debug detail (`debug`)
@@ -30,7 +30,7 @@ are `debug`.
 | `Sending event` | A single event is about to be published. | `event_id`, `event_timestamp`, `event_latency`, `event_payload_size`, `event_ordering_key`, `event_attributes`, `event_target`, `event_destination` |
 | `Event sent` | A publish is confirmed by the backend. | The `Sending event` fields plus `event_published_id`, `publish_latency` |
 | `Watchdog heartbeat` | Each watchdog tick while healthy. | — |
-| `Healthcheck request answered` | A health request returns `200`. | — |
+| `Healthcheck request answered` | A liveness request (any path other than `/metrics` and `/healthz`) returns `200`. | — |
 | `Notification wake-ups enabled` | Logged once at startup when `POLL_INTERVAL_MS > 0`. | `channel` |
 | `Failed to start notification listener, polling instead` | The listener could not be started this idle cycle; it falls back to a plain sweep. | `error` |
 | `Notification wait failed, polling next cycle` | The listener connection failed mid-wait; the next idle cycle tries again. | `error` |
@@ -57,6 +57,7 @@ Outboxer picked it up (only meaningful when `EVENT_TIMESTAMP` is configured).
 | `Failed during batch transaction` | A select/send/delete step failed; the batch is rolled back. | `error` |
 | `Failed to rollback batch transaction` | The rollback itself failed. | `error` |
 | `Failed to commit batch transaction` | The commit failed. | `error` |
+| `Failed to count backlog` | The bounded backlog depth probe failed; `outboxer_backlog_events` keeps its previous value until the next probe. | `error` |
 | `Deadlock detected, shutting down` | The watchdog detected a stalled processor. | — |
 | `Fatal sender error after commit, stopping processor` | An unrecoverable sender error occurred after commit. | `error` |
 | `Failed to close Pub/Sub publisher` | Cleanup error during shutdown. | `error` |
@@ -69,9 +70,9 @@ produce spurious error logs.
 
 #### Repeated-failure rate limiting
 
-`Failed to send event`, `Failed to send event batch`, the routing failure, and
-the out-of-batch-id messages go through a rate limiter keyed by failure
-signature. Identical failures are logged at most once per minute; when a burst
+`Failed to send event`, `Failed to send event batch`, `Failed to count
+backlog`, the routing failure, and the out-of-batch-id messages go through a
+rate limiter keyed by failure signature. Identical failures are logged at most once per minute; when a burst
 is collapsed, the next emitted log carries a `suppressed_count` field with the
 number of occurrences that were skipped. This keeps a sustained provider outage
 from flooding the logs while still surfacing the error and its true rate.
@@ -81,7 +82,9 @@ from flooding the logs while still surfacing the error and its true rate.
 When `STATS_INTERVAL_MS` is positive (default `10000`), Outboxer logs a periodic
 `Statistics` record at `info` level. Each field except `stats_interval_ms` is a
 **counter for the interval that just elapsed**; counters reset to zero after
-every record. They are per-interval deltas, not running totals.
+every record. They are per-interval deltas, not running totals. Cumulative
+versions of the same counters are exposed on `/metrics` — see
+[Observability](observability.md).
 
 | Field | Type | Meaning |
 | --- | --- | --- |
