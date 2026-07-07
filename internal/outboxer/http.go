@@ -31,6 +31,10 @@ func (a *app) newHTTPServer() *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", a.handleMetrics)
 	mux.HandleFunc("/healthz", a.handleHealthz)
+	// Alias: Cloud Run's frontend intercepts /healthz on run.app URLs (Google
+	// edge returns 404 before the container is reached), so the staleness
+	// check is also served on /health.
+	mux.HandleFunc("/health", a.handleHealthz)
 	// Every other path answers 200 as a pure liveness signal, matching the
 	// original single-endpoint behavior.
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {

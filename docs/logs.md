@@ -30,7 +30,7 @@ are `debug`.
 | `Sending event` | A single event is about to be published. | `event_id`, `event_timestamp`, `event_latency`, `event_payload_size`, `event_ordering_key`, `event_attributes`, `event_target`, `event_destination` |
 | `Event sent` | A publish is confirmed by the backend. | The `Sending event` fields plus `event_published_id`, `publish_latency` |
 | `Watchdog heartbeat` | Each watchdog tick while healthy. | — |
-| `Healthcheck request answered` | A liveness request (any path other than `/metrics` and `/healthz`) returns `200`. | — |
+| `Healthcheck request answered` | A liveness request (any path other than `/metrics`, `/healthz`, and `/health`) returns `200`. | — |
 | `Notification wake-ups enabled` | Logged once at startup when `POLL_INTERVAL_MS > 0`. | `channel` |
 | `Failed to start notification listener, polling instead` | The listener could not be started this idle cycle; it falls back to a plain sweep. | `error` |
 | `Notification wait failed, polling next cycle` | The listener connection failed mid-wait; the next idle cycle tries again. | `error` |

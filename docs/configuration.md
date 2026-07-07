@@ -74,7 +74,7 @@ options.
 | `--health-stale-after-ms` | `HEALTH_STALE_AFTER_MS` | `300000` | `/healthz` reports `503` after this long without a committed batch, in milliseconds. Must be at least 10x `POLL_INTERVAL_MS` so an idle relay cannot flap. `0` always reports healthy. |
 
 The HTTP server starts only when `HEALTH_PORT`, `PORT`, or `--health-port` is set
-to a positive port. It serves `/healthz` (batch-staleness health), `/metrics`
+to a positive port. It serves `/healthz` (batch-staleness health; `/health` is an alias for platforms whose edge intercepts `/healthz`, such as Cloud Run), `/metrics`
 (Prometheus), and `200 all good` for any other path as a pure liveness signal.
 See [Observability](observability.md). Successful health checks are logged at
 debug level.

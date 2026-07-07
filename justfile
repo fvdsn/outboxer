@@ -116,7 +116,6 @@ cloud-gcp-cloudrun-up:
     cd deploy/gcp-cloudrun && terraform apply -input=false -auto-approve \
         -var project_id={{gcp_project}} -var region={{gcp_region}} \
         -var image={{gcp_region}}-docker.pkg.dev/{{gcp_project}}/outboxer/outboxer:{{cloud_image_tag}}
-    gcloud run jobs execute outboxer-init --project {{gcp_project}} --region {{gcp_region}} --wait
     cd deploy/gcp-cloudrun && terraform output -json > ../../test/cloud/gcpcloudrun/tfoutputs.json
 
 # Run the functional cloud scenarios against the deployed stack.

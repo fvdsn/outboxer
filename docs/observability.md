@@ -69,7 +69,7 @@ throughput is the bottleneck.
 
 ## Health
 
-`/healthz` returns `200` while batches commit, and `503` once no batch has
+`/healthz` (alias `/health`) returns `200` while batches commit, and `503` once no batch has
 committed for `HEALTH_STALE_AFTER_MS` (default 5 minutes; `0` disables the
 check and always returns `200`). A fresh relay is granted one full window from
 startup before a batch is demanded.
@@ -84,3 +84,8 @@ so the scheduler is not restarting the relay for problems a restart cannot fix.
 
 `/` (and every other path) keeps answering an unconditional `200 all good`,
 suitable as a pure liveness probe.
+
+Note for Cloud Run: Google's frontend intercepts `/healthz` on `run.app` URLs
+and returns its own 404 before the request reaches the container — use the
+`/health` alias there. Probes configured inside Cloud Run itself reach the
+container directly and may use either path.

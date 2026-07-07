@@ -272,6 +272,20 @@ resource "google_cloud_run_v2_job" "init" {
   ]
 }
 
+# Executes the provisioning job before the relay service is created: the relay
+# fails fast (by design) when the schema is missing, and Cloud Run starts the
+# service immediately on creation, so the schema must exist first. Re-runs
+# whenever the image changes; `init --apply` is idempotent.
+resource "terraform_data" "provision_schema" {
+  triggers_replace = [var.image]
+
+  provisioner "local-exec" {
+    command = "gcloud run jobs execute ${google_cloud_run_v2_job.init.name} --project ${var.project_id} --region ${var.region} --wait"
+  }
+
+  depends_on = [google_cloud_run_v2_job.init]
+}
+
 # --- The relay ----------------------------------------------------------------
 
 resource "google_cloud_run_v2_service" "relay" {
@@ -343,6 +357,7 @@ resource "google_cloud_run_v2_service" "relay" {
     google_project_iam_member.relay_cloudsql_client,
     google_pubsub_topic_iam_member.relay_publisher,
     google_secret_manager_secret_version.db_password,
+    terraform_data.provision_schema,
   ]
 }
 

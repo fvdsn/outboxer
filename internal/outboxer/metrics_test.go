@@ -105,6 +105,15 @@ func TestHealthzReflectsBatchStaleness(t *testing.T) {
 	if code := statusFor(time.Now()); code != http.StatusOK {
 		t.Fatalf("fresh relay /healthz = %d, want 200", code)
 	}
+
+	// /health is an alias for platforms whose edge intercepts /healthz
+	// (Cloud Run does, on run.app URLs).
+	stale := &app{cfg: cfg, stats: newAppStats(time.Now().Add(-2 * time.Minute))}
+	aliasRecorder := httptest.NewRecorder()
+	stale.newHTTPServer().Handler.ServeHTTP(aliasRecorder, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if aliasRecorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("stale relay /health = %d, want 503", aliasRecorder.Code)
+	}
 	if code := statusFor(time.Now().Add(-2 * time.Minute)); code != http.StatusServiceUnavailable {
 		t.Fatalf("stale relay /healthz = %d, want 503", code)
 	}

@@ -247,9 +247,10 @@ func (m *Metrics) Fetch(ctx context.Context) (map[string]float64, error) {
 	return values, nil
 }
 
-// Healthz returns the status code of the relay's /healthz endpoint.
+// Healthz returns the status code of the relay's health endpoint, using the
+// /health alias: Cloud Run's frontend intercepts /healthz on run.app URLs.
 func (m *Metrics) Healthz(ctx context.Context) (int, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.env.ServiceURL+"/healthz", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.env.ServiceURL+"/health", nil)
 	if err != nil {
 		return 0, err
 	}
