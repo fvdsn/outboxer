@@ -77,7 +77,10 @@ spec:
             periodSeconds: 30
             failureThreshold: 3
           securityContext:
+            # runAsNonRoot needs a numeric UID: the kubelet cannot verify a
+            # named image user. The Outboxer image user is UID 65532.
             runAsNonRoot: true
+            runAsUser: 65532
           resources:
             requests:
               cpu: "2"

@@ -24,11 +24,13 @@ LABEL org.opencontainers.image.title="Outboxer" \
       org.opencontainers.image.source="https://github.com/fvdsn/outboxer" \
       org.opencontainers.image.licenses="MIT"
 
+# Numeric UID/GID so Kubernetes runAsNonRoot policies can verify the user
+# (the kubelet cannot verify named users).
 RUN apk add --no-cache ca-certificates && \
-    addgroup -S outboxer && \
-    adduser -S -D -H -G outboxer outboxer
+    addgroup -S -g 65532 outboxer && \
+    adduser -S -D -H -u 65532 -G outboxer outboxer
 
 COPY --from=build /outboxer /outboxer
 
-USER outboxer:outboxer
+USER 65532:65532
 ENTRYPOINT ["/outboxer"]

@@ -33,6 +33,7 @@ spec:
             - "${CLOUDSQL_CONNECTION_NAME}"
           securityContext:
             runAsNonRoot: true
+            runAsUser: 65532 # the proxy image's own nonroot user
           resources:
             requests:
               cpu: 250m
@@ -54,7 +55,10 @@ spec:
                   name: outboxer-db
                   key: password
           securityContext:
+            # runAsNonRoot needs a numeric UID: the kubelet cannot verify a
+            # named image user. The Outboxer image user is UID 65532.
             runAsNonRoot: true
+            runAsUser: 65532
           resources:
             requests:
               cpu: 250m

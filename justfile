@@ -145,11 +145,11 @@ cloud-gcp-gke-up:
 
 # Run the functional cloud scenarios against the GKE stack.
 cloud-gcp-gke-test:
-    KUBECONFIG=deploy/gcp-gke/.kubeconfig go test -tags=cloud ./test/cloud/gcpgke -run TestGCPGKESmoke -count=1 -timeout 15m -v
+    KUBECONFIG={{justfile_directory()}}/deploy/gcp-gke/.kubeconfig go test -tags=cloud ./test/cloud/gcpgke -run TestGCPGKESmoke -count=1 -timeout 15m -v
 
 # Run the GKE performance scenario (OUTBOXER_CLOUD_PERF_EVENTS overrides the volume).
 cloud-gcp-gke-perf:
-    KUBECONFIG=deploy/gcp-gke/.kubeconfig go test -tags=cloud ./test/cloud/gcpgke -run TestGCPGKEPerf -count=1 -timeout 60m -v
+    KUBECONFIG={{justfile_directory()}}/deploy/gcp-gke/.kubeconfig go test -tags=cloud ./test/cloud/gcpgke -run TestGCPGKEPerf -count=1 -timeout 60m -v
 
 # Destroy the GKE stack.
 cloud-gcp-gke-down:

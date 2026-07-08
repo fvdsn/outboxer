@@ -164,17 +164,25 @@ resource "google_pubsub_subscription" "events" {
 }
 
 # --- Workload Identity permissions for the outboxer pods -----------------------
+# The workload identity pool (PROJECT.svc.id.goog) comes into existence with
+# the project's first WI-enabled cluster, and IAM rejects bindings on
+# principals of a pool that does not exist yet — hence the explicit
+# dependency on the cluster.
 
 resource "google_pubsub_topic_iam_member" "workload_publisher" {
   topic  = google_pubsub_topic.events.id
   role   = "roles/pubsub.publisher"
   member = local.workload_member
+
+  depends_on = [google_container_cluster.outboxer]
 }
 
 resource "google_project_iam_member" "workload_cloudsql_client" {
   project = var.project_id
   role    = "roles/cloudsql.client"
   member  = local.workload_member
+
+  depends_on = [google_container_cluster.outboxer]
 }
 
 # --- Operator (test harness) permissions ----------------------------------------
