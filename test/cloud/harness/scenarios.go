@@ -276,3 +276,109 @@ func Perf(ctx context.Context, t *testing.T, environment string, env Env, db *pg
 		n, report.DrainDuration.Round(time.Second), report.EventsPerSec, report.MaxLagSeconds)
 	return report
 }
+
+// LatencyReport summarizes per-event end-to-end latency: the time from the
+// event's insert to its delivery at a real subscriber.
+type LatencyReport struct {
+	Environment string        `json:"environment"`
+	Events      int           `json:"events"`
+	P50         time.Duration `json:"p50_ns"`
+	P90         time.Duration `json:"p90_ns"`
+	P99         time.Duration `json:"p99_ns"`
+	Max         time.Duration `json:"max_ns"`
+}
+
+// Latency measures idle-state end-to-end latency: single events inserted into
+// a quiet relay (exercising the LISTEN/NOTIFY wake-up path), timestamped in
+// the payload and measured at the subscriber. Inserts are spaced out so every
+// event finds the relay idle.
+func Latency(ctx context.Context, t *testing.T, environment string, env Env, db *pgx.Conn, pubsubClient *pubsub.Client, n int, resultsDir string) LatencyReport {
+	t.Helper()
+
+	metrics := NewMetrics(t, env)
+	WaitForSettledRelay(ctx, t, env, db, pubsubClient, metrics)
+
+	// The subscriber must be receiving before the first insert so subscriber
+	// startup does not count as event latency.
+	type delivery struct {
+		payload    string
+		receivedAt time.Time
+	}
+	deliveries := make(chan delivery, n)
+	receiveCtx, stopReceiving := context.WithCancel(ctx)
+	defer stopReceiving()
+	subscriber := pubsubClient.Subscriber(env.Subscription)
+	receiverDone := make(chan error, 1)
+	go func() {
+		receiverDone <- subscriber.Receive(receiveCtx, func(_ context.Context, msg *pubsub.Message) {
+			msg.Ack()
+			deliveries <- delivery{payload: string(msg.Data), receivedAt: time.Now()}
+		})
+	}()
+	time.Sleep(2 * time.Second) // let the streaming pull open
+
+	insertedAt := make(map[string]time.Time, n)
+	latencies := make([]time.Duration, 0, n)
+	for i := 0; i < n; i++ {
+		payload := fmt.Sprintf("latency-%d-%03d", time.Now().UnixNano(), i)
+		before := time.Now()
+		if err := InsertEvents(ctx, db, []Event{{Payload: payload}}); err != nil {
+			t.Fatalf("insert latency event %d: %v", i, err)
+		}
+		insertedAt[payload] = before
+
+		deadline := time.After(30 * time.Second)
+	waitDelivery:
+		for {
+			select {
+			case d := <-deliveries:
+				if inserted, ok := insertedAt[d.payload]; ok {
+					latencies = append(latencies, d.receivedAt.Sub(inserted))
+					delete(insertedAt, d.payload)
+					if d.payload == payload {
+						break waitDelivery
+					}
+				}
+			case <-deadline:
+				t.Fatalf("event %d not delivered within 30s (%d measured so far)", i, len(latencies))
+			}
+		}
+		// Space inserts so the relay returns to its idle LISTEN wait.
+		time.Sleep(500 * time.Millisecond)
+	}
+	stopReceiving()
+	<-receiverDone
+
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	percentile := func(p float64) time.Duration {
+		index := int(p*float64(len(latencies))) - 1
+		return latencies[max(0, min(index, len(latencies)-1))]
+	}
+	report := LatencyReport{
+		Environment: environment,
+		Events:      len(latencies),
+		P50:         percentile(0.50),
+		P90:         percentile(0.90),
+		P99:         percentile(0.99),
+		Max:         latencies[len(latencies)-1],
+	}
+
+	if resultsDir != "" {
+		if err := os.MkdirAll(resultsDir, 0o755); err != nil {
+			t.Fatalf("create results dir: %v", err)
+		}
+		path := filepath.Join(resultsDir, fmt.Sprintf("%s-latency-%s.json", environment, time.Now().UTC().Format("20060102-150405")))
+		content, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			t.Fatalf("marshal report: %v", err)
+		}
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatalf("write report: %v", err)
+		}
+	}
+
+	t.Logf("latency over %d idle-state events: p50=%s p90=%s p99=%s max=%s",
+		report.Events, report.P50.Round(time.Millisecond), report.P90.Round(time.Millisecond),
+		report.P99.Round(time.Millisecond), report.Max.Round(time.Millisecond))
+	return report
+}

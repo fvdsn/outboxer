@@ -54,3 +54,15 @@ func TestGCPGKEPerf(t *testing.T) {
 
 	harness.Perf(ctx, t, environment, env, db, pubsubClient, events, "../results")
 }
+
+func TestGCPGKELatency(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
+	env := harness.LoadEnv(t, "tfoutputs.json")
+	env.ServiceURL = harness.StartPortForward(ctx, t, "outboxer", "deployment/outboxer", 8080)
+	db := harness.StartCloudSQLProxy(ctx, t, env)
+	pubsubClient := harness.NewPubSubClient(ctx, t, env.ProjectID)
+
+	harness.Latency(ctx, t, environment, env, db, pubsubClient, 60, "../results")
+}
