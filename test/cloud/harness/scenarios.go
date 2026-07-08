@@ -258,7 +258,9 @@ func Perf(ctx context.Context, t *testing.T, environment string, db *pgx.Conn, s
 		if time.Now().After(deadline) {
 			t.Fatalf("perf run did not drain within 30m: sent %v of %d, backlog %v", sample.SentTotal, n, sample.Backlog)
 		}
-		time.Sleep(5 * time.Second)
+		// A tuned relay drains 200k events in ~10s; a coarser sampling
+		// interval would quantize the drain duration into uselessness.
+		time.Sleep(time.Second)
 	}
 	report.DrainDuration = time.Since(drainStart)
 	report.EventsPerSec = float64(n) / report.DrainDuration.Seconds()
