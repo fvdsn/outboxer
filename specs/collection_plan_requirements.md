@@ -107,6 +107,15 @@ statistics**. Bounded work by construction, whatever the table's state.
 5. The slow batched DELETE observed during the load window (CPU-bound ~6 s)
    must be re-measured once the collection fix lands; if it persists, it is
    its own issue.
+6. **Sharding-aware access paths.** Destination ownership is a row filter
+   today, so with K sharded relays each relay's scan wades through the other
+   shards' rows: K-way sharding pays roughly K× scan overhead instead of
+   partitioning the work. `init` knows each deployment's owned destinations,
+   so it can generate **per-shard partial indexes**
+   (`... WHERE destination IN (...)`) that make each relay's index walk
+   O(own pending). The redesigned collection flow should be able to use such
+   an index when it exists; whether `init` creates them by default or via a
+   flag is a design choice for implementation time.
 
 ## Regression test
 
@@ -121,6 +130,36 @@ Local, no cloud required, and must fail against today's query:
   end-to-end validation: drain time for 200k should become consistent
   (~20 s), where today it varies 20–46 s depending on whether the stall
   fires.
+
+## Acceptance benchmark: sharded scaling
+
+The strategic payoff of a statistics-immune, sharding-aware collection flow
+is that the polling outbox scales **out** per database, which log-based CDC
+cannot: a logical replication slot is decoded serially by a single walsender,
+and additional slots each re-decode the entire WAL. Whether Outboxer actually
+converts shards into throughput is unproven, so the fix's acceptance
+benchmark is a multi-relay scenario in the cloud harness, sequenced after the
+collection fix (which decides whether sharding scales at all):
+
+- **Setup**: N relay services (start with N=4) over one outbox table, each
+  owning a disjoint destination set (`PUBSUB_DESTINATIONS` split across N
+  topics), per-shard partial indexes provisioned. Deploy stack gains a shard
+  count variable; the harness produces events across all shards and samples
+  every relay's `/metrics`.
+- **Measurement**: same bulk-load drain profile as the single-relay runs
+  (N × 100k events, 256 B, unordered), reporting aggregate events/s and the
+  per-shard curves.
+- **Success criteria**: aggregate throughput ≥ 3× the single-relay baseline
+  at N=4 (sublinear from shared table churn is expected; worse than 3×
+  means cross-shard interference still dominates); no shard starves; each
+  relay's `outboxer_backlog_events` reports only its own shard; drain time
+  is consistent across runs (the stall variance this document exists for
+  stays gone).
+- **Context for the numbers**: the single-relay baseline is ~18–20k
+  events/s; well-tuned single-connector Debezium setups are commonly cited
+  in the ~30–80k events/s range and cannot shard within one database. The
+  benchmark's purpose is to make "exceeds the per-database ceiling of
+  log-based CDC" a measured claim instead of an architectural argument.
 
 ## Reference numbers (2026-07-08, gcp-cloudrun stack)
 
