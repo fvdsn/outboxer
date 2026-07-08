@@ -108,7 +108,7 @@ resource "aws_security_group" "rds" {
   vpc_id = aws_vpc.outboxer.id
 
   ingress {
-    description = "Postgres from the cluster's pods (whole VPC)"
+    description = "Postgres from the cluster pods (whole VPC)"
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"

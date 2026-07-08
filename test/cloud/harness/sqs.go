@@ -124,13 +124,43 @@ func (s *SQSSink) Stream(ctx context.Context, t *testing.T) (<-chan ReceivedMess
 	}
 }
 
-// Purge drops everything in every queue — best-effort hygiene after bulk
-// scenarios (SQS purges complete asynchronously within a minute).
+// Purge drops everything in every queue. Two SQS quirks make this more than
+// one API call:
+//
+//   - PurgeQueue is allowed once per queue per 60 seconds. A rejected call
+//     leaves the whole backlog in place (a prior run's purge counts against
+//     the limit), so rejection is retried after the window, not shrugged off.
+//   - The purge completes asynchronously, and messages sent within 60 seconds
+//     of the call may be deleted along with the backlog. Purge blocks out
+//     that window so a scenario that runs right after (latency, for one)
+//     does not have its events swallowed by a purge still in progress.
 func (s *SQSSink) Purge(ctx context.Context, t *testing.T) {
 	t.Helper()
+	var lastPurge time.Time
 	for _, queueURL := range s.queueURLs {
-		if _, err := s.client.PurgeQueue(ctx, &awssqs.PurgeQueueInput{QueueUrl: aws.String(queueURL)}); err != nil {
-			t.Logf("purge %s (best effort): %v", queueURL, err)
+		for attempt := 0; ; attempt++ {
+			_, err := s.client.PurgeQueue(ctx, &awssqs.PurgeQueueInput{QueueUrl: aws.String(queueURL)})
+			if err == nil {
+				lastPurge = time.Now()
+				break
+			}
+			if attempt >= 2 || ctx.Err() != nil {
+				t.Logf("purge %s failed after %d attempts: %v", queueURL, attempt+1, err)
+				break
+			}
+			t.Logf("purge %s rejected (retrying after the 60s purge window): %v", queueURL, err)
+			select {
+			case <-time.After(65 * time.Second):
+			case <-ctx.Done():
+			}
 		}
+	}
+	if lastPurge.IsZero() {
+		return
+	}
+	t.Log("waiting out the 60s SQS purge window")
+	select {
+	case <-time.After(time.Until(lastPurge.Add(60 * time.Second))):
+	case <-ctx.Done():
 	}
 }
