@@ -61,6 +61,12 @@ func (a *app) writeMetrics(w io.Writer) {
 			"Age of the oldest event selected by the most recent committed batch; 0 when the outbox was empty. This is the outbox lag.",
 			formatSeconds(stats.oldestEventAgeMillis.Load()))
 	}
+	writeGauge(w, "outboxer_last_batch_db_seconds",
+		"Database time (select, dead-letter insert, delete) of the most recent committed batch.",
+		formatSeconds(stats.lastBatchDBMillis.Load()))
+	writeGauge(w, "outboxer_last_batch_publish_seconds",
+		"Provider publish time of the most recent committed batch.",
+		formatSeconds(stats.lastBatchPublishMillis.Load()))
 	writeGauge(w, "outboxer_backlog_events",
 		"This relay's pending events after the last committed batch: exact when the batch drained every route, otherwise the bounded probe's count.",
 		strconv.FormatInt(stats.backlogEvents.Load(), 10))

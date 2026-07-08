@@ -183,10 +183,12 @@ func (a *app) triageEvents(events []event) (batchTriage, error) {
 func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, error) {
 	a.markProgress()
 
+	dbStart := time.Now()
 	events, err := a.selectEvents(ctx, tx)
 	if err != nil {
 		return batchResult{}, fmtDBError(err)
 	}
+	selectDuration := time.Since(dbStart)
 	a.markProgress()
 	result := batchResult{selected: len(events), drained: batchDrained(events, a.cfg.CollectBatchTarget)}
 	result.stats.selected = len(events)
@@ -205,6 +207,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		deleteIDs = append(deleteIDs, eventValue(poisoned.evt, a.cfg.EventID))
 	}
 
+	publishStart := time.Now()
 	results := make(chan senderResult, len(triage.eventsByTarget))
 	var wg sync.WaitGroup
 
@@ -221,6 +224,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 
 	wg.Wait()
 	close(results)
+	result.stats.publishDuration = time.Since(publishStart)
 
 	var senderErr error
 	for senderResult := range results {
@@ -250,6 +254,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		result.stats.keptForRetry = 0
 	}
 
+	writeStart := time.Now()
 	if err := a.insertDeadLetters(ctx, tx, poisonEvents); err != nil {
 		if senderErr != nil {
 			return result, errors.Join(senderErr, fmtDBError(err))
@@ -265,6 +270,7 @@ func (a *app) processEventBatch(ctx context.Context, tx *sql.Tx) (batchResult, e
 		return result, fmtDBError(err)
 	}
 	a.markProgress()
+	result.stats.dbDuration = selectDuration + time.Since(writeStart)
 
 	if senderErr != nil {
 		return result, senderErr

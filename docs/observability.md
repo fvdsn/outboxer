@@ -25,6 +25,8 @@ Counters are cumulative since process start.
 | `outboxer_last_batch_selected_events` | gauge | Events selected by the most recent committed batch. |
 | `outboxer_events_pending_retry` | gauge | Events that failed to send in the most recent batch and remain pending. |
 | `outboxer_oldest_event_age_seconds` | gauge | **Outbox lag**: age of the oldest event selected by the most recent batch; `0` when the outbox was empty. Only exposed when `EVENT_TIMESTAMP` is configured. |
+| `outboxer_last_batch_db_seconds` | gauge | Database time (select, dead-letter insert, delete) of the most recent committed batch. |
+| `outboxer_last_batch_publish_seconds` | gauge | Provider publish time of the most recent committed batch. Together with the DB gauge, attributes where batch time goes. |
 | `outboxer_backlog_events` | gauge | **Backlog depth**: this relay's pending events after the last committed batch. See below. |
 | `outboxer_backlog_floor` | gauge | `1` when `outboxer_backlog_events` is only a lower bound. |
 | `outboxer_last_successful_batch_timestamp_seconds` | gauge | Unix time of the last committed batch (startup time until the first one). |

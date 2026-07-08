@@ -3,11 +3,13 @@ package sqs
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"time"
 
 	"cloud.google.com/go/compute/metadata"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -19,9 +21,20 @@ type awsPublisher struct {
 	client *sqs.Client
 }
 
-// NewClient creates a configured AWS SQS client.
+// NewClient creates a configured AWS SQS client. The HTTP connection pool is
+// sized to the configured send concurrency: the SDK default keeps only a
+// handful of idle connections per host, so senders beyond that pay a fresh
+// TCP+TLS handshake per request and publish throughput stops scaling with
+// SQS_SEND_CONCURRENCY.
 func NewClient(ctx context.Context, cfg Config) (*sqs.Client, error) {
-	loadOptions := []func(*config.LoadOptions) error{}
+	httpClient := awshttp.NewBuildableClient().WithTransportOptions(func(transport *http.Transport) {
+		transport.MaxIdleConnsPerHost = max(transport.MaxIdleConnsPerHost, cfg.SendConcurrency)
+		transport.MaxIdleConns = max(transport.MaxIdleConns, cfg.SendConcurrency)
+	})
+
+	loadOptions := []func(*config.LoadOptions) error{
+		config.WithHTTPClient(httpClient),
+	}
 	if cfg.AWSRegion != "" {
 		loadOptions = append(loadOptions, config.WithRegion(cfg.AWSRegion))
 	}

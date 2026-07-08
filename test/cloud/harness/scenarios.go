@@ -179,6 +179,8 @@ type PerfSample struct {
 	Lag          float64       `json:"oldest_event_age_seconds"`
 	BatchErrors  float64       `json:"batch_errors_total"`
 	SenderErrors float64       `json:"sender_errors_total"`
+	DBSeconds    float64       `json:"last_batch_db_seconds"`
+	PubSeconds   float64       `json:"last_batch_publish_seconds"`
 }
 
 // Perf loads n events into the outbox, then samples the relay's own /metrics
@@ -226,6 +228,8 @@ func Perf(ctx context.Context, t *testing.T, environment string, db *pgx.Conn, s
 			Lag:          values["outboxer_oldest_event_age_seconds"],
 			BatchErrors:  values["outboxer_batch_errors_total"],
 			SenderErrors: values["outboxer_sender_errors_total"],
+			DBSeconds:    values["outboxer_last_batch_db_seconds"],
+			PubSeconds:   values["outboxer_last_batch_publish_seconds"],
 		}
 		report.Samples = append(report.Samples, sample)
 		report.MaxLagSeconds = max(report.MaxLagSeconds, sample.Lag)

@@ -26,10 +26,12 @@ type appStats struct {
 	// oldest event the batch selected (0 when the outbox was empty or the
 	// timestamp column is not configured), observed with no extra database
 	// work because batches select in id order.
-	lastBatchSelected     atomic.Int64
-	lastBatchKeptForRetry atomic.Int64
-	oldestEventAgeMillis  atomic.Int64
-	lastSuccessUnixMilli  atomic.Int64
+	lastBatchSelected      atomic.Int64
+	lastBatchKeptForRetry  atomic.Int64
+	oldestEventAgeMillis   atomic.Int64
+	lastSuccessUnixMilli   atomic.Int64
+	lastBatchPublishMillis atomic.Int64
+	lastBatchDBMillis      atomic.Int64
 
 	// backlogEvents is this relay's pending-event depth after the last
 	// committed batch; backlogFloor is 1 when that value is only a lower bound
@@ -76,6 +78,8 @@ type batchStats struct {
 	senderErrors           int
 	fatalAfterCommitErrors int
 	oldestEventAge         time.Duration
+	publishDuration        time.Duration
+	dbDuration             time.Duration
 }
 
 type statsSnapshot struct {
@@ -121,6 +125,8 @@ func (s *appStats) addCommittedBatch(batch batchStats, now time.Time) {
 	s.lastBatchKeptForRetry.Store(int64(batch.keptForRetry))
 	s.oldestEventAgeMillis.Store(batch.oldestEventAge.Milliseconds())
 	s.lastSuccessUnixMilli.Store(now.UnixMilli())
+	s.lastBatchPublishMillis.Store(batch.publishDuration.Milliseconds())
+	s.lastBatchDBMillis.Store(batch.dbDuration.Milliseconds())
 }
 
 func (s *appStats) addBatchError() {
