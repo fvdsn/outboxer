@@ -1,0 +1,28 @@
+# Relay configuration. ${...} placeholders are rendered by the deploy recipe
+# (or edit them by hand when copying this setup).
+#
+# Unlike the GKE setup there is no database proxy sidecar: RDS is plain TCP,
+# so PG_HOST is the instance endpoint and TLS is on. Certificate verification
+# is off for this test stack — production should mount the RDS CA bundle and
+# point PG_SSL_ROOT_CERT at it instead. The database password comes from the
+# `outboxer-db` Secret, created at deploy time and never checked in.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: outboxer
+  namespace: outboxer
+  labels:
+    app: outboxer
+data:
+  LOG_FORMAT: "json"
+  SQS_ENABLED: "true"
+  AWS_REGION: "${REGION}"
+  DEFAULT_SQS_QUEUE_URL: "${QUEUE_URL}"
+  DLQ_TABLE: "outboxer_dead_letters"
+  PG_HOST: "${DB_HOST}"
+  PG_PORT: "5432"
+  PG_USER: "outboxer"
+  PG_DATABASE: "outboxer"
+  PG_SSL: "true"
+  PG_SSL_REJECT_UNAUTHORIZED: "false"
+  HEALTH_PORT: "8080"

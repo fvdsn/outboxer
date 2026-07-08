@@ -1,0 +1,71 @@
+# The relay. Outboxer is a single-active worker:
+#
+# - replicas: 1 — one relay per outbox table (or per owned destination shard).
+# - strategy: Recreate — a rolling update would briefly run two relays against
+#   the same table; that is safe (they serialize on row locks, delivery stays
+#   at-least-once) but Recreate keeps the single-active model honest.
+# - livenessProbe on /healthz — Outboxer reports 503 only when its processing
+#   loop has not committed a batch for HEALTH_STALE_AFTER_MS (default 5m);
+#   provider outages never trip it, so the kubelet does not restart the relay
+#   for problems a restart cannot fix.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outboxer
+  namespace: outboxer
+  labels:
+    app: outboxer
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: outboxer
+  template:
+    metadata:
+      labels:
+        app: outboxer
+    spec:
+      serviceAccountName: outboxer
+      containers:
+        - name: outboxer
+          image: "${IMAGE}"
+          ports:
+            - name: health
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: outboxer
+          env:
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: outboxer-db
+                  key: password
+          # The health server binds only after the startup database checks
+          # pass, so the startup probe doubles as a schema/connectivity gate.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 30
+            failureThreshold: 3
+          securityContext:
+            # runAsNonRoot needs a numeric UID: the kubelet cannot verify a
+            # named image user. The Outboxer image user is UID 65532.
+            runAsNonRoot: true
+            runAsUser: 65532
+          resources:
+            requests:
+              cpu: "2"
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 1Gi

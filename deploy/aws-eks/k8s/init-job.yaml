@@ -1,0 +1,49 @@
+# Provisions the schema with `outboxer init --apply`. Run this to completion
+# before creating the Deployment: the relay fails fast when the schema is
+# missing.
+#
+# On EKS Auto Mode the very first pod in the cluster also triggers node
+# provisioning, so this Job doubles as the capacity warm-up — expect an extra
+# minute or two of Pending on a fresh cluster.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: outboxer-init
+  namespace: outboxer
+  labels:
+    app: outboxer
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: outboxer-init
+    spec:
+      serviceAccountName: outboxer
+      restartPolicy: Never
+      containers:
+        - name: outboxer-init
+          image: "${IMAGE}"
+          args: ["init", "--apply"]
+          envFrom:
+            - configMapRef:
+                name: outboxer
+          env:
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: outboxer-db
+                  key: password
+          securityContext:
+            # runAsNonRoot needs a numeric UID: the kubelet cannot verify a
+            # named image user. The Outboxer image user is UID 65532.
+            runAsNonRoot: true
+            runAsUser: 65532
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

@@ -177,6 +177,26 @@ cloud-aws-fargate-latency:
 cloud-aws-fargate-down:
     ./deploy/aws-fargate/down.sh
 
+# Deploy the ephemeral AWS EKS stack (cluster and RDS take ~12 min).
+cloud-aws-eks-up:
+    ./deploy/aws-eks/up.sh
+
+# Run the functional cloud scenarios against the EKS stack.
+cloud-aws-eks-test:
+    KUBECONFIG={{justfile_directory()}}/deploy/aws-eks/.kubeconfig go test -tags=cloud ./test/cloud/awseks -run TestAWSEKSSmoke -count=1 -timeout 15m -v
+
+# Run the EKS performance scenario (OUTBOXER_CLOUD_PERF_EVENTS overrides the volume).
+cloud-aws-eks-perf:
+    KUBECONFIG={{justfile_directory()}}/deploy/aws-eks/.kubeconfig go test -tags=cloud ./test/cloud/awseks -run TestAWSEKSPerf -count=1 -timeout 60m -v
+
+# Measure idle-state end-to-end latency on the EKS stack.
+cloud-aws-eks-latency:
+    KUBECONFIG={{justfile_directory()}}/deploy/aws-eks/.kubeconfig go test -tags=cloud ./test/cloud/awseks -run TestAWSEKSLatency -count=1 -timeout 20m -v
+
+# Destroy the EKS stack.
+cloud-aws-eks-down:
+    ./deploy/aws-eks/down.sh
+
 # List every resource tagged outboxer-test in the AWS test account/region.
 cloud-aws-orphans:
     aws resourcegroupstaggingapi get-resources --region {{aws_region}} \
