@@ -134,12 +134,19 @@ resource "google_sql_database_instance" "outboxer" {
   depends_on = [google_project_service.apis]
 }
 
+# ABANDON: the ephemeral instance's deletion removes the database and user
+# anyway; polite drops race lingering connections and role-owned objects
+# during teardown.
 resource "google_sql_database" "outboxer" {
+  deletion_policy = "ABANDON"
+
   name     = "outboxer"
   instance = google_sql_database_instance.outboxer.name
 }
 
 resource "google_sql_user" "outboxer" {
+  deletion_policy = "ABANDON"
+
   name     = "outboxer"
   instance = google_sql_database_instance.outboxer.name
   password = random_password.db.result

@@ -15,3 +15,4 @@ test/cloud/results/
 # Local environment (loaded by the app and just)
 .env
 deploy/*/.kubeconfig
+deploy/*/gke_gcloud_auth_plugin_cache
