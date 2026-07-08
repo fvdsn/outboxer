@@ -51,5 +51,5 @@ variable "collect_batch_target" {
 variable "sqs_send_concurrency" {
   description = "Relay SQS_SEND_CONCURRENCY: concurrent SendMessageBatch calls. SQS caps batches at 10 messages, so this is the AWS throughput knob."
   type        = number
-  default     = 8
+  default     = 128
 }

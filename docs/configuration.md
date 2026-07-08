@@ -55,7 +55,7 @@ options.
 | --- | --- | --- | --- |
 | `--collect-batch-target` | `COLLECT_BATCH_TARGET` | `5000` | Approximate target rows selected per batch. Must be positive. Every eligible route (distinct target and destination pair with pending events) gets an even share of the target, at least one row; a busy route does not borrow an idle route's share within a batch. |
 | `--backlog-count-limit` | `BACKLOG_COUNT_LIMIT` | `100000` | Scan cap for the backlog depth probe behind the `outboxer_backlog_events` metric. `0` disables the probe. See [Observability](observability.md). |
-| `--sqs-send-concurrency` | `SQS_SEND_CONCURRENCY` | `8` | Maximum concurrent SQS send requests. |
+| `--sqs-send-concurrency` | `SQS_SEND_CONCURRENCY` | `128` | Maximum concurrent SQS send requests. SQS caps batches at 10 messages, so this is the SQS throughput knob; the HTTP connection pool is sized to match. |
 | `--dlq-table` | `DLQ_TABLE` | `disabled` | Dead letter table for poison events. Defaults to `disabled`; set a table name to enable. See [Dead Letter Queue](dlq.md). |
 | `--max-event-age-ms` | `MAX_EVENT_AGE_MS` | `0` | Maximum selected event age in milliseconds. `0` disables age-based poison. Requires `EVENT_TIMESTAMP`. |
 | `--error-cooldown-ms` | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors in milliseconds. |

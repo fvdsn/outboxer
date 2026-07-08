@@ -121,7 +121,11 @@ func defaultConfig() appConfig {
 
 		CollectBatchTarget: 5000,
 		BacklogCountLimit:  100000,
-		SQSSendConcurrency: 8,
+		// Measured on ECS Fargate + SQS (eu-central-1): throughput scales with
+		// send concurrency up to ~128, where publish time converges with the
+		// batch's database time. Idle deployments pay nothing for the headroom:
+		// goroutines and connections only materialize under load.
+		SQSSendConcurrency: 128,
 		DLQTable:           "",
 		NotifyChannel:      "outboxer_events",
 
