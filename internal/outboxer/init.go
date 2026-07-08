@@ -63,6 +63,10 @@ func buildInitStatements(cfg appConfig, redactSecrets bool) []initStatement {
 
 	stmts = append(stmts, initStatement{sql: createSchemaSQL(cfg)})
 	stmts = append(stmts, initStatement{sql: createEventTableSQL(cfg)})
+	stmts = append(stmts, initStatement{
+		comment: "-- The outbox churns every row (insert + delete), so autovacuum must run far more eagerly than the defaults.",
+		sql:     eventTableStorageSQL(cfg),
+	})
 	if cfg.DLQTable != "" {
 		stmts = append(stmts, initStatement{sql: createDLQTableSQL(cfg)})
 	}
@@ -106,6 +110,25 @@ func createEventTableSQL(cfg appConfig) string {
 		columns = append(columns, fmt.Sprintf("%s jsonb", ident(cfg.EventOptions)))
 	}
 	return fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n    %s\n);", qualifiedIdent(cfg.PGSchema, cfg.EventTable), strings.Join(columns, ",\n    "))
+}
+
+// eventTableStorageSQL tunes autovacuum for the outbox table's churn: every
+// row is inserted and deleted once, so the default scale factors (20% dead
+// tuples for vacuum, 10% changes for analyze) defer maintenance exactly when
+// the table is busiest, leaving bloat and stale planner statistics. Absolute
+// thresholds with small scale factors keep vacuum and analyze frequent on a
+// table whose live size is usually near zero. The statement is idempotent, so
+// re-running init also upgrades tables created by earlier versions.
+func eventTableStorageSQL(cfg appConfig) string {
+	return fmt.Sprintf(
+		"ALTER TABLE %s SET (\n"+
+			"    autovacuum_vacuum_threshold = 1000,\n"+
+			"    autovacuum_vacuum_scale_factor = 0.01,\n"+
+			"    autovacuum_analyze_threshold = 1000,\n"+
+			"    autovacuum_analyze_scale_factor = 0.02\n"+
+			");",
+		qualifiedIdent(cfg.PGSchema, cfg.EventTable),
+	)
 }
 
 func createDLQTableSQL(cfg appConfig) string {

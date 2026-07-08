@@ -54,6 +54,11 @@ func TestInitScriptCreatesAllConfiguredColumns(t *testing.T) {
 	assertContains(t, script, `"destination" text`)
 	assertContains(t, script, `"timestamp" timestamptz`)
 	assertContains(t, script, `"options" jsonb`)
+	assertContains(t, script, `ALTER TABLE "public"."events" SET (`)
+	assertContains(t, script, `autovacuum_vacuum_scale_factor = 0.01`)
+	assertContains(t, script, `autovacuum_analyze_scale_factor = 0.02`)
+	assertContains(t, script, `autovacuum_vacuum_threshold = 1000`)
+	assertContains(t, script, `autovacuum_analyze_threshold = 1000`)
 }
 
 func TestInitScriptQualifiesCustomSchema(t *testing.T) {
@@ -68,6 +73,7 @@ func TestInitScriptQualifiesCustomSchema(t *testing.T) {
 
 	assertContains(t, script, `CREATE SCHEMA IF NOT EXISTS "application data"`)
 	assertContains(t, script, `CREATE TABLE IF NOT EXISTS "application data"."events"`)
+	assertContains(t, script, `ALTER TABLE "application data"."events" SET (`)
 	assertContains(t, script, `CREATE TABLE IF NOT EXISTS "application data"."dead_letters"`)
 	assertContains(t, script, `CREATE OR REPLACE FUNCTION "application data"."outboxer_notify"()`)
 	assertContains(t, script, `AFTER INSERT ON "application data"."events"`)

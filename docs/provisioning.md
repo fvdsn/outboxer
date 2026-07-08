@@ -36,6 +36,12 @@ provisioning-specific schema flags:
   `EVENT_PAYLOAD`, and the optional `EVENT_TARGET`, `EVENT_DESTINATION`,
   `EVENT_TIMESTAMP`, `EVENT_OPTIONS`). An optional column set to `disabled` is
   omitted. Only `id` and `payload` are `NOT NULL`; the rest are nullable.
+  The table also gets eager per-table autovacuum settings (small scale
+  factors with absolute thresholds): the outbox churns every row — one
+  insert and one delete each — so the PostgreSQL defaults defer vacuum and
+  analyze exactly when the table is busiest, accumulating bloat and stale
+  planner statistics. After a **bulk backfill**, run `ANALYZE <table>`
+  manually rather than waiting for autoanalyze.
 - **DLQ table** (`DLQ_TABLE`), only when set to a table name.
 - **Notify function and trigger**, always, on the `NOTIFY_CHANNEL` channel,
   independent of the relay's `POLL_INTERVAL_MS`, which keys the `LISTEN`/`NOTIFY`
