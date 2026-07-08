@@ -14,3 +14,4 @@ test/cloud/results/
 
 # Local environment (loaded by the app and just)
 .env
+deploy/*/.kubeconfig

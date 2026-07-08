@@ -53,10 +53,13 @@ func LoadEnv(t *testing.T, path string) Env {
 	if err := json.Unmarshal(content, &outputs); err != nil {
 		t.Fatalf("parse terraform outputs: %v", err)
 	}
+	// Missing outputs load as empty strings: not every stack has every field
+	// (a cluster deployment has no service URL, for example — the test wires
+	// one up via port-forward).
 	value := func(name string) string {
 		raw, ok := outputs[name]
 		if !ok {
-			t.Fatalf("terraform output %q missing from %s", name, path)
+			return ""
 		}
 		var s string
 		if err := json.Unmarshal(raw.Value, &s); err != nil {

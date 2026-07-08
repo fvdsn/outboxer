@@ -1,0 +1,64 @@
+# Provisions the schema with `outboxer init --apply`. Run this to completion
+# before creating the Deployment: the relay fails fast when the schema is
+# missing.
+#
+# The cloud-sql-proxy runs as a native sidecar (an init container with
+# restartPolicy: Always, Kubernetes >= 1.29): it is up before the main
+# container starts and is terminated when the main container finishes, so the
+# Job can actually complete.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: outboxer-init
+  namespace: outboxer
+  labels:
+    app: outboxer
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: outboxer-init
+    spec:
+      serviceAccountName: outboxer
+      restartPolicy: Never
+      initContainers:
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.15.0
+          restartPolicy: Always
+          args:
+            - "--structured-logs"
+            - "--port=5432"
+            - "${CLOUDSQL_CONNECTION_NAME}"
+          securityContext:
+            runAsNonRoot: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+      containers:
+        - name: outboxer-init
+          image: "${IMAGE}"
+          args: ["init", "--apply"]
+          envFrom:
+            - configMapRef:
+                name: outboxer
+          env:
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: outboxer-db
+                  key: password
+          securityContext:
+            runAsNonRoot: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

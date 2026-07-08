@@ -138,3 +138,19 @@ cloud-gcp-orphans:
     gcloud asset search-all-resources --scope=projects/{{gcp_project}} \
         --query="labels.outboxer-test=true" \
         --format="table(assetType, displayName, location)"
+
+# Deploy the ephemeral GKE stack (cluster + Cloud SQL create in parallel, ~12 min).
+cloud-gcp-gke-up:
+    ./deploy/gcp-gke/up.sh
+
+# Run the functional cloud scenarios against the GKE stack.
+cloud-gcp-gke-test:
+    KUBECONFIG=deploy/gcp-gke/.kubeconfig go test -tags=cloud ./test/cloud/gcpgke -run TestGCPGKESmoke -count=1 -timeout 15m -v
+
+# Run the GKE performance scenario (OUTBOXER_CLOUD_PERF_EVENTS overrides the volume).
+cloud-gcp-gke-perf:
+    KUBECONFIG=deploy/gcp-gke/.kubeconfig go test -tags=cloud ./test/cloud/gcpgke -run TestGCPGKEPerf -count=1 -timeout 60m -v
+
+# Destroy the GKE stack.
+cloud-gcp-gke-down:
+    ./deploy/gcp-gke/down.sh

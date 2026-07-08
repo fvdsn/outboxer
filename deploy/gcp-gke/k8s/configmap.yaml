@@ -1,0 +1,27 @@
+# Relay configuration. ${...} placeholders are rendered by the deploy recipe
+# (or edit them by hand when copying this setup).
+#
+# PG_HOST is localhost: every pod runs a cloud-sql-proxy sidecar that carries
+# the connection to Cloud SQL over IAM. The database password comes from the
+# `outboxer-db` Secret, created at deploy time and never checked in.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: outboxer
+  namespace: outboxer
+  labels:
+    app: outboxer
+data:
+  LOG_FORMAT: "json"
+  PUBSUB_ENABLED: "true"
+  PUBSUB_PROJECT_ID: "${PROJECT_ID}"
+  # Publishing with ordering keys requires the regional Pub/Sub endpoint.
+  PUBSUB_API_ENDPOINT: "${REGION}-pubsub.googleapis.com:443"
+  DEFAULT_PUBSUB_TOPIC: "${TOPIC}"
+  DLQ_TABLE: "outboxer_dead_letters"
+  PG_HOST: "127.0.0.1"
+  PG_PORT: "5432"
+  PG_USER: "outboxer"
+  PG_DATABASE: "outboxer"
+  PG_SSL: "false" # localhost to the sidecar; the proxy encrypts in transit
+  HEALTH_PORT: "8080"
