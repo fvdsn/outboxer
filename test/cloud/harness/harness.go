@@ -156,7 +156,13 @@ type Event struct {
 
 // InsertEvents bulk-loads events with the COPY protocol; hundreds of
 // thousands of rows load in seconds through the proxy.
-func InsertEvents(ctx context.Context, db *pgx.Conn, events []Event) error {
+// CopyFromConn is the slice of pgx.Conn and pgx.Tx that InsertEvents needs,
+// so a bulk load can run inside an explicit transaction.
+type CopyFromConn interface {
+	CopyFrom(ctx context.Context, tableName pgx.Identifier, columnNames []string, rowSrc pgx.CopyFromSource) (int64, error)
+}
+
+func InsertEvents(ctx context.Context, db CopyFromConn, events []Event) error {
 	rows := make([][]any, len(events))
 	now := time.Now().UTC()
 	for i, evt := range events {

@@ -196,9 +196,22 @@ func Perf(ctx context.Context, t *testing.T, environment string, db *pgx.Conn, s
 	}
 	baseSent := before["outboxer_events_sent_total"]
 
+	// The whole load runs in one transaction, with the table re-ANALYZEd
+	// before the commit. The relay sees nothing until the rows and their
+	// fresh statistics land together, which removes the two artifacts that
+	// made runs incomparable: the relay draining *during* the load (fast
+	// platforms finished most work inside the insert window), and the
+	// stale-statistics plan stall (the collection query planning against
+	// "empty table" statistics right after a bulk load). The drain clock
+	// starts exactly at commit on every platform.
 	const payloadBytes = 256
 	payload := strings.Repeat("x", payloadBytes)
 	insertStart := time.Now()
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin bulk-load transaction: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	const chunk = 20000
 	for offset := 0; offset < n; offset += chunk {
 		size := min(chunk, n-offset)
@@ -206,12 +219,18 @@ func Perf(ctx context.Context, t *testing.T, environment string, db *pgx.Conn, s
 		for i := range events {
 			events[i] = Event{Payload: payload}
 		}
-		if err := InsertEvents(ctx, db, events); err != nil {
+		if err := InsertEvents(ctx, tx, events); err != nil {
 			t.Fatalf("insert events at offset %d: %v", offset, err)
 		}
 	}
+	if _, err := tx.Exec(ctx, "ANALYZE events"); err != nil {
+		t.Fatalf("analyze events before commit: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit bulk load: %v", err)
+	}
 	insertDuration := time.Since(insertStart)
-	t.Logf("inserted %d events in %s", n, insertDuration.Round(time.Millisecond))
+	t.Logf("loaded and analyzed %d events in %s (invisible to the relay until commit)", n, insertDuration.Round(time.Millisecond))
 
 	report := PerfReport{Environment: environment, Events: n, PayloadBytes: payloadBytes, InsertDuration: insertDuration}
 	drainStart := time.Now()

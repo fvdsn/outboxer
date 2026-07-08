@@ -126,6 +126,10 @@ cloud-gcp-cloudrun-test:
 cloud-gcp-cloudrun-perf:
     go test -tags=cloud ./test/cloud/gcpcloudrun -run TestGCPCloudRunPerf -count=1 -timeout 60m -v
 
+# Measure idle-state end-to-end latency on the Cloud Run stack.
+cloud-gcp-cloudrun-latency:
+    go test -tags=cloud ./test/cloud/gcpcloudrun -run TestGCPCloudRunLatency -count=1 -timeout 20m -v
+
 # Destroy the GCP Cloud Run stack.
 cloud-gcp-cloudrun-down:
     cd deploy/gcp-cloudrun && terraform destroy -input=false -auto-approve \
@@ -150,6 +154,10 @@ cloud-gcp-gke-test:
 # Run the GKE performance scenario (OUTBOXER_CLOUD_PERF_EVENTS overrides the volume).
 cloud-gcp-gke-perf:
     KUBECONFIG={{justfile_directory()}}/deploy/gcp-gke/.kubeconfig go test -tags=cloud ./test/cloud/gcpgke -run TestGCPGKEPerf -count=1 -timeout 60m -v
+
+# Measure idle-state end-to-end latency on the GKE stack.
+cloud-gcp-gke-latency:
+    KUBECONFIG={{justfile_directory()}}/deploy/gcp-gke/.kubeconfig go test -tags=cloud ./test/cloud/gcpgke -run TestGCPGKELatency -count=1 -timeout 20m -v
 
 # Destroy the GKE stack.
 cloud-gcp-gke-down:
