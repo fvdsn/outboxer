@@ -154,3 +154,31 @@ cloud-gcp-gke-perf:
 # Destroy the GKE stack.
 cloud-gcp-gke-down:
     ./deploy/gcp-gke/down.sh
+
+aws_region := env_var_or_default("OUTBOXER_AWS_REGION", "eu-central-1")
+
+# Deploy the ephemeral AWS Fargate stack (RDS creation takes ~10 min).
+cloud-aws-fargate-up:
+    ./deploy/aws-fargate/up.sh
+
+# Run the functional cloud scenarios against the Fargate stack.
+cloud-aws-fargate-test:
+    go test -tags=cloud ./test/cloud/awsfargate -run TestAWSFargateSmoke -count=1 -timeout 15m -v
+
+# Run the Fargate performance scenario (OUTBOXER_CLOUD_PERF_EVENTS overrides the volume).
+cloud-aws-fargate-perf:
+    go test -tags=cloud ./test/cloud/awsfargate -run TestAWSFargatePerf -count=1 -timeout 60m -v
+
+# Measure idle-state end-to-end latency on the Fargate stack.
+cloud-aws-fargate-latency:
+    go test -tags=cloud ./test/cloud/awsfargate -run TestAWSFargateLatency -count=1 -timeout 20m -v
+
+# Destroy the Fargate stack.
+cloud-aws-fargate-down:
+    ./deploy/aws-fargate/down.sh
+
+# List every resource tagged outboxer-test in the AWS test account/region.
+cloud-aws-orphans:
+    aws resourcegroupstaggingapi get-resources --region {{aws_region}} \
+        --tag-filters Key=outboxer-test,Values=true \
+        --query 'ResourceTagMappingList[].ResourceARN' --output table

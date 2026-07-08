@@ -12,17 +12,16 @@ import (
 	"testing"
 	"time"
 
-	"cloud.google.com/go/pubsub/v2"
 	"github.com/jackc/pgx/v5"
 )
 
 // WaitForSettledRelay proves that the instance answering /metrics is the one
-// processing events. Right after a deploy two Cloud Run revisions briefly
-// coexist: the old instance may still win the row locks while the URL routes
-// scrapes to the new one. A canary event is inserted until the scraped
-// instance's sent counter moves, then the subscription is purged so canaries
-// do not pollute the scenario.
-func WaitForSettledRelay(ctx context.Context, t *testing.T, env Env, db *pgx.Conn, pubsubClient *pubsub.Client, metrics *Metrics) {
+// processing events. Right after a deploy two instances can briefly coexist
+// (platform rollover): the old one may still win the row locks while the
+// metrics endpoint routes to the new one. A canary event is inserted until
+// the scraped instance's sent counter moves. Canary deliveries are left in
+// the sink; scenarios filter by payload prefix and ignore them.
+func WaitForSettledRelay(ctx context.Context, t *testing.T, db *pgx.Conn, metrics *Metrics) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Minute)
 	for attempt := 0; ; attempt++ {
@@ -41,11 +40,10 @@ func WaitForSettledRelay(ctx context.Context, t *testing.T, env Env, db *pgx.Con
 			t.Fatalf("fetch metrics while settling: %v", err)
 		}
 		if after["outboxer_events_sent_total"] > before["outboxer_events_sent_total"] {
-			PurgeSubscription(ctx, t, pubsubClient, env.ProjectID, env.Subscription)
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("relay did not settle: the scraped instance never processed a canary (an old revision may still hold the work)")
+			t.Fatal("relay did not settle: the scraped instance never processed a canary (an old instance may still hold the work)")
 		}
 		t.Logf("settling: canary processed by another instance, retrying")
 		time.Sleep(5 * time.Second)
@@ -53,15 +51,14 @@ func WaitForSettledRelay(ctx context.Context, t *testing.T, env Env, db *pgx.Con
 }
 
 // Smoke verifies functional behavior against the deployed stack: delivery of
-// unordered and ordered events (with real per-key ordering), default and
-// explicit destinations, dead-lettering, a drained outbox, and truthful
-// /metrics and /healthz. All counter assertions are deltas, so Smoke is
-// re-runnable against a live stack.
-func Smoke(ctx context.Context, t *testing.T, env Env, db *pgx.Conn, pubsubClient *pubsub.Client) {
+// unordered and ordered events (with real per-key ordering), dead-lettering,
+// a drained outbox, and truthful metrics and health. Event construction is
+// backend-specific (see SmokeEvents); the assertions are not. All counter
+// assertions are deltas, so Smoke is re-runnable against a live stack.
+func Smoke(ctx context.Context, t *testing.T, env Env, db *pgx.Conn, sink MessageSink, metrics *Metrics, build SmokeEvents) {
 	t.Helper()
 
-	metrics := NewMetrics(t, env)
-	WaitForSettledRelay(ctx, t, env, db, pubsubClient, metrics)
+	WaitForSettledRelay(ctx, t, db, metrics)
 	baseline, err := metrics.Fetch(ctx)
 	if err != nil {
 		t.Fatalf("fetch baseline metrics: %v", err)
@@ -77,39 +74,32 @@ func Smoke(ctx context.Context, t *testing.T, env Env, db *pgx.Conn, pubsubClien
 		perKey      = 50
 		poison      = 5
 	)
+	prefix := fmt.Sprintf("smoke-%d-", time.Now().UnixNano())
 	events := make([]Event, 0, unordered+orderedKeys*perKey+poison)
+	deliverable := map[string]bool{}
 	for i := 0; i < unordered; i++ {
-		destination := env.Topic // explicit destination
-		if i%2 == 0 {
-			destination = "" // resolved by DEFAULT_PUBSUB_TOPIC
-		}
-		events = append(events, Event{
-			Payload:     fmt.Sprintf("smoke-unordered-%03d", i),
-			Destination: destination,
-		})
+		evt := build.Unordered(fmt.Sprintf("%sunordered-%03d", prefix, i), i)
+		deliverable[evt.Payload] = true
+		events = append(events, evt)
 	}
 	for k := 0; k < orderedKeys; k++ {
 		for i := 0; i < perKey; i++ {
-			events = append(events, Event{
-				Payload:     fmt.Sprintf("smoke-ordered-key%d-%03d", k, i),
-				OrderingKey: fmt.Sprintf("key-%d", k),
-			})
+			evt := build.Ordered(fmt.Sprintf("%sordered-key%d-%03d", prefix, k, i), fmt.Sprintf("key-%d", k), i)
+			deliverable[evt.Payload] = true
+			events = append(events, evt)
 		}
 	}
 	for i := 0; i < poison; i++ {
-		events = append(events, Event{
-			Payload:     fmt.Sprintf("smoke-poison-%d", i),
-			Destination: "syntactically/invalid/topic",
-		})
+		events = append(events, build.Poison(fmt.Sprintf("%spoison-%d", prefix, i), i))
 	}
 	if err := InsertEvents(ctx, db, events); err != nil {
 		t.Fatalf("insert events: %v", err)
 	}
 
 	want := unordered + orderedKeys*perKey
-	messages := ReceiveMessages(ctx, t, pubsubClient, env.Subscription, want, 3*time.Minute)
+	messages := sink.Receive(ctx, t, prefix, want, 3*time.Minute)
 
-	// Every non-poison payload arrives at least once (real Pub/Sub may
+	// Every non-poison payload arrives at least once (real backends may
 	// duplicate), and ordered payloads arrive in order per key.
 	seen := map[string]bool{}
 	perKeySequences := map[string][]string{}
@@ -119,12 +109,9 @@ func Smoke(ctx context.Context, t *testing.T, env Env, db *pgx.Conn, pubsubClien
 			perKeySequences[msg.OrderingKey] = append(perKeySequences[msg.OrderingKey], msg.Body)
 		}
 	}
-	for _, evt := range events {
-		if strings.HasPrefix(evt.Payload, "smoke-poison-") {
-			continue
-		}
-		if !seen[evt.Payload] {
-			t.Fatalf("event %s was not delivered", evt.Payload)
+	for payload := range deliverable {
+		if !seen[payload] {
+			t.Fatalf("event %s was not delivered", payload)
 		}
 	}
 	for key, sequence := range perKeySequences {
@@ -196,12 +183,11 @@ type PerfSample struct {
 
 // Perf loads n events into the outbox, then samples the relay's own /metrics
 // until the backlog drains, reporting sustained throughput and the lag curve.
-// The subscription is purged afterwards rather than pulled.
-func Perf(ctx context.Context, t *testing.T, environment string, env Env, db *pgx.Conn, pubsubClient *pubsub.Client, n int, resultsDir string) PerfReport {
+// The sink is purged (best effort) afterwards rather than pulled.
+func Perf(ctx context.Context, t *testing.T, environment string, db *pgx.Conn, sink MessageSink, metrics *Metrics, n int, resultsDir string) PerfReport {
 	t.Helper()
 
-	metrics := NewMetrics(t, env)
-	WaitForSettledRelay(ctx, t, env, db, pubsubClient, metrics)
+	WaitForSettledRelay(ctx, t, db, metrics)
 	before, err := metrics.Fetch(ctx)
 	if err != nil {
 		t.Fatalf("fetch metrics before run: %v", err)
@@ -255,21 +241,10 @@ func Perf(ctx context.Context, t *testing.T, environment string, env Env, db *pg
 	report.EventsPerSec = float64(n) / report.DrainDuration.Seconds()
 
 	WaitForEmptyTable(ctx, t, db, "events", time.Minute)
-	PurgeSubscription(ctx, t, pubsubClient, env.ProjectID, env.Subscription)
+	sink.Purge(ctx, t)
 
 	if resultsDir != "" {
-		if err := os.MkdirAll(resultsDir, 0o755); err != nil {
-			t.Fatalf("create results dir: %v", err)
-		}
-		path := filepath.Join(resultsDir, fmt.Sprintf("%s-%s.json", environment, time.Now().UTC().Format("20060102-150405")))
-		content, err := json.MarshalIndent(report, "", "  ")
-		if err != nil {
-			t.Fatalf("marshal report: %v", err)
-		}
-		if err := os.WriteFile(path, content, 0o644); err != nil {
-			t.Fatalf("write report: %v", err)
-		}
-		t.Logf("perf report written to %s", path)
+		writeReport(t, resultsDir, fmt.Sprintf("%s-%s.json", environment, time.Now().UTC().Format("20060102-150405")), report)
 	}
 
 	t.Logf("perf: %d events drained in %s (%.0f events/s, max lag %.1fs)",
@@ -278,7 +253,7 @@ func Perf(ctx context.Context, t *testing.T, environment string, env Env, db *pg
 }
 
 // LatencyReport summarizes per-event end-to-end latency: the time from the
-// event's insert to its delivery at a real subscriber.
+// event's insert to its delivery at a real consumer.
 type LatencyReport struct {
 	Environment string        `json:"environment"`
 	Events      int           `json:"events"`
@@ -289,33 +264,18 @@ type LatencyReport struct {
 }
 
 // Latency measures idle-state end-to-end latency: single events inserted into
-// a quiet relay (exercising the LISTEN/NOTIFY wake-up path), timestamped in
-// the payload and measured at the subscriber. Inserts are spaced out so every
-// event finds the relay idle.
-func Latency(ctx context.Context, t *testing.T, environment string, env Env, db *pgx.Conn, pubsubClient *pubsub.Client, n int, resultsDir string) LatencyReport {
+// a quiet relay (exercising the LISTEN/NOTIFY wake-up path), timestamped at
+// insert and measured at the consumer. Inserts are spaced out so every event
+// finds the relay idle.
+func Latency(ctx context.Context, t *testing.T, environment string, db *pgx.Conn, sink MessageSink, metrics *Metrics, n int, resultsDir string) LatencyReport {
 	t.Helper()
 
-	metrics := NewMetrics(t, env)
-	WaitForSettledRelay(ctx, t, env, db, pubsubClient, metrics)
+	WaitForSettledRelay(ctx, t, db, metrics)
 
-	// The subscriber must be receiving before the first insert so subscriber
+	// The consumer must be receiving before the first insert so consumer
 	// startup does not count as event latency.
-	type delivery struct {
-		payload    string
-		receivedAt time.Time
-	}
-	deliveries := make(chan delivery, n)
-	receiveCtx, stopReceiving := context.WithCancel(ctx)
+	deliveries, stopReceiving := sink.Stream(ctx, t)
 	defer stopReceiving()
-	subscriber := pubsubClient.Subscriber(env.Subscription)
-	receiverDone := make(chan error, 1)
-	go func() {
-		receiverDone <- subscriber.Receive(receiveCtx, func(_ context.Context, msg *pubsub.Message) {
-			msg.Ack()
-			deliveries <- delivery{payload: string(msg.Data), receivedAt: time.Now()}
-		})
-	}()
-	time.Sleep(2 * time.Second) // let the streaming pull open
 
 	insertedAt := make(map[string]time.Time, n)
 	latencies := make([]time.Duration, 0, n)
@@ -332,10 +292,11 @@ func Latency(ctx context.Context, t *testing.T, environment string, env Env, db 
 		for {
 			select {
 			case d := <-deliveries:
-				if inserted, ok := insertedAt[d.payload]; ok {
-					latencies = append(latencies, d.receivedAt.Sub(inserted))
-					delete(insertedAt, d.payload)
-					if d.payload == payload {
+				receivedAt := time.Now()
+				if inserted, ok := insertedAt[d.Body]; ok {
+					latencies = append(latencies, receivedAt.Sub(inserted))
+					delete(insertedAt, d.Body)
+					if d.Body == payload {
 						break waitDelivery
 					}
 				}
@@ -343,11 +304,10 @@ func Latency(ctx context.Context, t *testing.T, environment string, env Env, db 
 				t.Fatalf("event %d not delivered within 30s (%d measured so far)", i, len(latencies))
 			}
 		}
-		// Space inserts so the relay returns to its idle LISTEN wait.
+		// Space inserts so the relay returns to its idle wait.
 		time.Sleep(500 * time.Millisecond)
 	}
 	stopReceiving()
-	<-receiverDone
 
 	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 	percentile := func(p float64) time.Duration {
@@ -364,21 +324,27 @@ func Latency(ctx context.Context, t *testing.T, environment string, env Env, db 
 	}
 
 	if resultsDir != "" {
-		if err := os.MkdirAll(resultsDir, 0o755); err != nil {
-			t.Fatalf("create results dir: %v", err)
-		}
-		path := filepath.Join(resultsDir, fmt.Sprintf("%s-latency-%s.json", environment, time.Now().UTC().Format("20060102-150405")))
-		content, err := json.MarshalIndent(report, "", "  ")
-		if err != nil {
-			t.Fatalf("marshal report: %v", err)
-		}
-		if err := os.WriteFile(path, content, 0o644); err != nil {
-			t.Fatalf("write report: %v", err)
-		}
+		writeReport(t, resultsDir, fmt.Sprintf("%s-latency-%s.json", environment, time.Now().UTC().Format("20060102-150405")), report)
 	}
 
 	t.Logf("latency over %d idle-state events: p50=%s p90=%s p99=%s max=%s",
 		report.Events, report.P50.Round(time.Millisecond), report.P90.Round(time.Millisecond),
 		report.P99.Round(time.Millisecond), report.Max.Round(time.Millisecond))
 	return report
+}
+
+func writeReport(t *testing.T, dir string, name string, report any) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create results dir: %v", err)
+	}
+	content, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	t.Logf("report written to %s", path)
 }

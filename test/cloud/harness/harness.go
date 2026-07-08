@@ -35,6 +35,11 @@ type Env struct {
 	DBPassword             string `tf:"db_password"`
 	Topic                  string `tf:"topic"`
 	Subscription           string `tf:"subscription"`
+	QueueURL               string `tf:"queue_url"`
+	FifoQueueURL           string `tf:"fifo_queue_url"`
+	DBHost                 string `tf:"db_host"`
+	Cluster                string `tf:"cluster"`
+	Service                string `tf:"service"`
 	DLQTable               string `tf:"dlq_table"`
 }
 
@@ -78,6 +83,11 @@ func LoadEnv(t *testing.T, path string) Env {
 		DBPassword:             value("db_password"),
 		Topic:                  value("topic"),
 		Subscription:           value("subscription"),
+		QueueURL:               value("queue_url"),
+		FifoQueueURL:           value("fifo_queue_url"),
+		DBHost:                 value("db_host"),
+		Cluster:                value("cluster"),
+		Service:                value("service"),
 		DLQTable:               value("dlq_table"),
 	}
 }
@@ -152,9 +162,11 @@ func InsertEvents(ctx context.Context, db *pgx.Conn, events []Event) error {
 	for i, evt := range events {
 		var options any
 		if evt.OrderingKey != "" {
-			payload, err := json.Marshal(map[string]any{
-				"pubsub": map[string]any{"orderingKey": evt.OrderingKey},
-			})
+			section := map[string]any{"pubsub": map[string]any{"orderingKey": evt.OrderingKey}}
+			if evt.Target == "sqs" {
+				section = map[string]any{"sqs": map[string]any{"messageGroupId": evt.OrderingKey}}
+			}
+			payload, err := json.Marshal(section)
 			if err != nil {
 				return err
 			}
@@ -208,8 +220,9 @@ type Metrics struct {
 	token string
 }
 
-// NewMetrics mints an identity token for the operator and returns a fetcher
-// for the relay's HTTP endpoints.
+// NewMetrics mints an identity token for the operator (via gcloud) and
+// returns a fetcher for the relay's HTTP endpoints. Used by GCP stacks whose
+// endpoints sit behind IAM.
 func NewMetrics(t *testing.T, env Env) *Metrics {
 	t.Helper()
 	token, err := exec.Command("gcloud", "auth", "print-identity-token").Output()
@@ -219,13 +232,21 @@ func NewMetrics(t *testing.T, env Env) *Metrics {
 	return &Metrics{env: env, token: strings.TrimSpace(string(token))}
 }
 
+// NewPlainMetrics returns an unauthenticated fetcher, for stacks that gate
+// the relay's endpoints by network (security groups) instead of tokens.
+func NewPlainMetrics(env Env) *Metrics {
+	return &Metrics{env: env}
+}
+
 // Fetch returns every single-sample series by name.
 func (m *Metrics) Fetch(ctx context.Context) (map[string]float64, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.env.ServiceURL+"/metrics", nil)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+m.token)
+	if m.token != "" {
+		request.Header.Set("Authorization", "Bearer "+m.token)
+	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return nil, err
@@ -257,7 +278,9 @@ func (m *Metrics) Healthz(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	request.Header.Set("Authorization", "Bearer "+m.token)
+	if m.token != "" {
+		request.Header.Set("Authorization", "Bearer "+m.token)
+	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return 0, err
