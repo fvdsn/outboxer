@@ -54,24 +54,16 @@ options.
 | CLI flag | Env var | Default | Description |
 | --- | --- | --- | --- |
 | `--collect-batch-target` | `COLLECT_BATCH_TARGET` | `10000` | Approximate target rows selected per batch. Must be positive. Every eligible route (distinct target and destination pair with pending events) gets an even share of the target, at least one row; a busy route does not borrow an idle route's share within a batch. Throughput rises with batch size, but peak in-flight memory is roughly batch × payload size and a failed batch is redelivered whole — size it to your events (the default holds ~100 MB at 10 KB payloads). |
-| `--backlog-count-limit` | `BACKLOG_COUNT_LIMIT` | `100000` | Scan cap for the backlog depth probe behind the `outboxer_backlog_events` metric. `0` disables the probe. See [Observability](observability.md). |
-| `--sqs-send-concurrency` | `SQS_SEND_CONCURRENCY` | `128` | Maximum concurrent SQS send requests. SQS caps batches at 10 messages, so this is the SQS throughput knob; the HTTP connection pool is sized to match. |
 | `--dlq-table` | `DLQ_TABLE` | `disabled` | Dead letter table for poison events. Defaults to `disabled`; set a table name to enable. See [Dead Letter Queue](dlq.md). |
 | `--max-event-age-ms` | `MAX_EVENT_AGE_MS` | `0` | Maximum selected event age in milliseconds. `0` disables age-based poison. Requires `EVENT_TIMESTAMP`. |
-| `--error-cooldown-ms` | `ERROR_COOLDOWN_MS` | `5000` | Sleep after batch or database errors in milliseconds. |
 | `--poll-interval-ms` | `POLL_INTERVAL_MS` | `1000` | Idle wait after an empty batch in milliseconds, cut short by a `LISTEN`/`NOTIFY` wake-up via the notification trigger that `init` provisions. Set to `0` to poll continuously with no sleep. See [Notifications](notifications.md). |
-| `--watchdog-interval-ms` | `WATCHDOG_INTERVAL_MS` | `600000` | Watchdog interval in milliseconds. Must be positive and at least 10x `POLL_INTERVAL_MS` when polling is enabled. |
 | `--publish-timeout-ms` | `PUBLISH_TIMEOUT_MS` | `30000` | Timeout for a single publish call in milliseconds. Must be positive. |
-| `--publish-result-grace-ms` | `PUBLISH_RESULT_GRACE_MS` | `5000` | Extra wait after provider publish timeout for async Pub/Sub publish results. |
-| `--stats-interval-ms` | `STATS_INTERVAL_MS` | `10000` | Periodic statistics logging interval in milliseconds. `0` disables statistics. See [Statistics](#statistics). |
-| `--notify-channel` | `NOTIFY_CHANNEL` | `outboxer_events` | PostgreSQL channel for the new-event notification trigger that `init` provisions; the relay also `LISTEN`s on it when `POLL_INTERVAL_MS > 0`. See [Notifications](notifications.md). |
 
 ## HTTP / health
 
 | CLI flag | Env var | Default | Description |
 | --- | --- | --- | --- |
 | `--health-port` | `HEALTH_PORT`, `PORT` | `PORT` or `0` | HTTP health server port. `0` disables the server. |
-| `--health-stale-after-ms` | `HEALTH_STALE_AFTER_MS` | `300000` | `/healthz` reports `503` after this long without a committed batch, in milliseconds. Must be at least 10x `POLL_INTERVAL_MS` so an idle relay cannot flap. `0` always reports healthy. |
 
 The HTTP server starts only when `HEALTH_PORT`, `PORT`, or `--health-port` is set
 to a positive port. It serves `/healthz` (batch-staleness health; `/health` is an alias for platforms whose edge intercepts `/healthz`, such as Cloud Run), `/metrics`
@@ -104,7 +96,6 @@ periodic `Statistics` fields are documented in [Logging](logs.md).
 | `--pg-ssl` | `PG_SSL` | `false` | Enable PostgreSQL TLS. |
 | `--pg-ssl-reject-unauthorized` | `PG_SSL_REJECT_UNAUTHORIZED` | `true` | Verify PostgreSQL TLS certificate and hostname. |
 | `--pg-ssl-root-cert` | `PG_SSL_ROOT_CERT` | empty | Path to a CA certificate (PEM) used to verify the server. |
-| `--pg-connect-timeout-ms` | `PG_CONNECT_TIMEOUT_MS` | `10000` | PostgreSQL connect timeout in milliseconds. |
 | `--pg-query-timeout-ms` | `PG_QUERY_TIMEOUT_MS` | `30000` | Timeout for a single database query in milliseconds. `0` disables it. |
 
 ### TLS
@@ -152,10 +143,30 @@ These settings are used only by `outboxer init` (see
 | `--aws-region` | `AWS_REGION` | empty | AWS region for SQS and STS. |
 | `--aws-role-arn` | `AWS_ROLE_ARN` | empty | Optional AWS role to assume before publishing to SQS. |
 | `--aws-role-session-name` | `AWS_ROLE_SESSION_NAME` | `outboxer` | AWS assume-role session name. |
-| `--aws-role-duration-seconds` | `AWS_ROLE_DURATION_SECONDS` | `3600` | AWS assumed-role duration in seconds. |
-| `--aws-credential-refresh-window-ms` | `AWS_CREDENTIAL_REFRESH_WINDOW_MS` | `300000` | Refresh assumed credentials before expiry in milliseconds. |
 | `--aws-web-identity-provider` | `AWS_WEB_IDENTITY_PROVIDER` | empty | Set to `google` to assume the AWS role with a Google OIDC token (GCP to AWS). |
 | `--aws-web-identity-audience` | `AWS_WEB_IDENTITY_AUDIENCE` | empty | Audience for the web identity token, matching the AWS IAM OIDC provider. |
 
 Authentication and cross-cloud (workload identity federation) setups are covered
 in [Authentication](auth.md).
+
+## Fixed settings
+
+Values that have one good answer are constants, not configuration — a smaller
+surface beats a tunable one. These were knobs in earlier releases; each was
+decided by measurement or design and removed. Setting one of the retired
+environment variables is a startup error, so a stale deployment manifest fails
+loudly instead of being silently ignored.
+
+| Was | Now |
+| --- | --- |
+| `SQS_SEND_CONCURRENCY` | 128 concurrent sends, the fastest measured setting; the HTTP pool is sized to match. |
+| `BACKLOG_COUNT_LIMIT` | The backlog probe scans at most 100,000 rows. |
+| `ERROR_COOLDOWN_MS` | 5 s sleep after a failed batch. |
+| `PUBLISH_RESULT_GRACE_MS` | 5 s extra wait for async publish results. |
+| `STATS_INTERVAL_MS` | Statistics log every 10 s. |
+| `WATCHDOG_INTERVAL_MS` | 10 min, or 10× `POLL_INTERVAL_MS` when larger. |
+| `HEALTH_STALE_AFTER_MS` | `/healthz` turns unhealthy after 5 min without a committed batch, or 10× `POLL_INTERVAL_MS` when larger. |
+| `PG_CONNECT_TIMEOUT_MS` | 10 s. |
+| `AWS_ROLE_DURATION_SECONDS` | 1 h assumed-role sessions. |
+| `AWS_CREDENTIAL_REFRESH_WINDOW_MS` | Credentials refresh 5 min before expiry. |
+| `NOTIFY_CHANNEL` | Derived from the event table as `outboxer_<table>`, so multiple tables in one database need no coordination. Re-run `init` after upgrading if your table is not named `events`. |

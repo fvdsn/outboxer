@@ -5,7 +5,7 @@
 #   the same table; that is safe (they serialize on row locks, delivery stays
 #   at-least-once) but Recreate keeps the single-active model honest.
 # - livenessProbe on /healthz — Outboxer reports 503 only when its processing
-#   loop has not committed a batch for HEALTH_STALE_AFTER_MS (default 5m);
+#   loop has not committed a batch for five minutes;
 #   provider outages never trip it, so the kubelet does not restart the relay
 #   for problems a restart cannot fix.
 apiVersion: apps/v1

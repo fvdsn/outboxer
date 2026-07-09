@@ -316,8 +316,6 @@ resource "aws_ecs_task_definition" "outboxer" {
       { name = "AWS_REGION", value = var.region },
       { name = "DEFAULT_SQS_QUEUE_URL", value = aws_sqs_queue.events.url },
       { name = "DLQ_TABLE", value = "outboxer_dead_letters" },
-      { name = "COLLECT_BATCH_TARGET", value = tostring(var.collect_batch_target) },
-      { name = "SQS_SEND_CONCURRENCY", value = tostring(var.sqs_send_concurrency) },
       { name = "PG_HOST", value = aws_db_instance.outboxer.address },
       { name = "PG_USER", value = "outboxer" },
       { name = "PG_DATABASE", value = "outboxer" },

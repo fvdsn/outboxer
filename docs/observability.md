@@ -51,17 +51,16 @@ are then the entire remaining backlog, known with no extra query. Only a
 truncated batch (some route filled its share of `COLLECT_BATCH_TARGET`) leaves
 the depth unknown; the relay then runs a bounded probe:
 
-- The probe scans the oldest `BACKLOG_COUNT_LIMIT` rows (default `100000`) by
+- The probe scans the oldest 100,000 rows by
   id and counts the ones matching **this relay's** routing predicate — the same
   predicate the collection query uses, so with destination-sharded relays each
   instance reports its own backlog, never another relay's. The scan is bounded
   by the limit regardless of table size or sharding ratio: no `COUNT(*)`, no
   planner statistics.
-- It runs at most once per `STATS_INTERVAL_MS` (10s when stats are disabled),
-  only after truncated batches, between batches on the relay's own connection.
-  A relay with truncated batches never sits in the idle `LISTEN` wait, so the
-  probe cannot delay a notification wake-up. `BACKLOG_COUNT_LIMIT=0` disables
-  probing entirely.
+- It runs at most once per statistics interval (10 s), only after truncated
+  batches, between batches on the relay's own connection. A relay with
+  truncated batches never sits in the idle `LISTEN` wait, so the probe cannot
+  delay a notification wake-up.
 
 `outboxer_backlog_floor` is `1` when the reported depth is only a lower bound:
 the probe hit its scan cap, probing is disabled while batches are truncated, or
@@ -72,9 +71,9 @@ throughput is the bottleneck.
 ## Health
 
 `/healthz` (alias `/health`) returns `200` while batches commit, and `503` once no batch has
-committed for `HEALTH_STALE_AFTER_MS` (default 5 minutes; `0` disables the
-check and always returns `200`). A fresh relay is granted one full window from
-startup before a batch is demanded.
+committed for 5 minutes (or 10x `POLL_INTERVAL_MS` when that is larger, so an
+idle relay on a slow poll cannot flap). A fresh relay is granted one full
+window from startup before a batch is demanded.
 
 The staleness threshold is deliberately generous and the check keys off
 *committed batches only*: an idle relay commits an empty batch every poll

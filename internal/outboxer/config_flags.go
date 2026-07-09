@@ -40,6 +40,9 @@ func newConfigParser(name string, output io.Writer) *configParser {
 }
 
 func (p *configParser) parse(args []string) error {
+	if err := rejectRetiredEnv(); err != nil {
+		return err
+	}
 	if err := applyEnv(p.flags, p.options); err != nil {
 		return err
 	}
@@ -47,8 +50,36 @@ func (p *configParser) parse(args []string) error {
 		return err
 	}
 	p.finalize()
+	deriveConfig(&p.cfg)
 	if p.flags.NArg() > 0 {
 		return fmt.Errorf("unexpected argument: %q", p.flags.Arg(0))
+	}
+	return nil
+}
+
+// retiredEnvVars are settings the configuration audit removed
+// (specs/config_surface_audit.md): the decided value is now a constant or a
+// derivation. A deployment still setting one gets a hard startup error
+// rather than a silently ignored variable.
+var retiredEnvVars = map[string]string{
+	"SQS_SEND_CONCURRENCY":             "fixed at 128, the fastest measured setting",
+	"BACKLOG_COUNT_LIMIT":              "fixed at 100000",
+	"ERROR_COOLDOWN_MS":                "fixed at 5s",
+	"PUBLISH_RESULT_GRACE_MS":          "fixed at 5s",
+	"WATCHDOG_INTERVAL_MS":             "fixed at 10m (or 10x the poll interval when larger)",
+	"STATS_INTERVAL_MS":                "fixed at 10s",
+	"PG_CONNECT_TIMEOUT_MS":            "fixed at 10s",
+	"AWS_ROLE_DURATION_SECONDS":        "fixed at 1h",
+	"AWS_CREDENTIAL_REFRESH_WINDOW_MS": "fixed at 5m",
+	"HEALTH_STALE_AFTER_MS":            "fixed at 5m (or 10x the poll interval when larger)",
+	"NOTIFY_CHANNEL":                   "derived from the event table as outboxer_<table>",
+}
+
+func rejectRetiredEnv() error {
+	for name, resolution := range retiredEnvVars {
+		if _, ok := os.LookupEnv(name); ok {
+			return fmt.Errorf("%s was removed and is now %s; unset it", name, resolution)
+		}
 	}
 	return nil
 }
@@ -66,36 +97,20 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 	addDisableableFlag(flags, options, "Event table", &cfg.EventOptions, "event-options", cfg.EventOptions, "Backend-specific JSON options column.", "EVENT_OPTIONS")
 
 	addIntFlag(flags, options, "Batch processing", &cfg.CollectBatchTarget, "collect-batch-target", cfg.CollectBatchTarget, "Approximate target rows selected per batch, spread evenly across eligible routes.", "COLLECT_BATCH_TARGET")
-	addIntFlag(flags, options, "Batch processing", &cfg.BacklogCountLimit, "backlog-count-limit", cfg.BacklogCountLimit, "Scan cap for the backlog depth probe behind the outboxer_backlog_events metric. 0 disables the probe.", "BACKLOG_COUNT_LIMIT")
-	addIntFlag(flags, options, "Batch processing", &cfg.SQSSendConcurrency, "sqs-send-concurrency", cfg.SQSSendConcurrency, "Maximum concurrent SQS send requests.", "SQS_SEND_CONCURRENCY")
 	addDisableableFlag(flags, options, "Batch processing", &cfg.DLQTable, "dlq-table", cfg.DLQTable, "Dead letter table for poison events.", "DLQ_TABLE")
 
-	var watchdogIntervalMS = int(cfg.WatchdogInterval / time.Millisecond)
-	var errorCooldownMS = int(cfg.ErrorCooldown / time.Millisecond)
 	var pollIntervalMS = int(cfg.PollInterval / time.Millisecond)
 	var publishTimeoutMS = int(cfg.PublishTimeout / time.Millisecond)
-	var publishResultGraceMS = int(cfg.PublishResultGrace / time.Millisecond)
 	var maxEventAgeMS = int(cfg.MaxEventAge / time.Millisecond)
-	var statsIntervalMS = int(cfg.StatsInterval / time.Millisecond)
-	var healthStaleAfterMS = int(cfg.HealthStaleAfter / time.Millisecond)
-	var pgTimeoutMS = int(cfg.PGConnectTimeout / time.Millisecond)
 	var pgQueryTimeoutMS = int(cfg.PGQueryTimeout / time.Millisecond)
-	var awsRoleDurationSeconds = int(cfg.AWSRoleDuration / time.Second)
-	var awsCredentialRefreshWindowMS = int(cfg.AWSCredentialRefreshWindow / time.Millisecond)
 	var pubsubDestinations = strings.Join(cfg.PubSubDestinations, ",")
 	var sqsDestinations = strings.Join(cfg.SQSDestinations, ",")
 
-	addIntFlag(flags, options, "Batch processing", &errorCooldownMS, "error-cooldown-ms", errorCooldownMS, "Sleep after batch or database errors in milliseconds.", "ERROR_COOLDOWN_MS")
 	addIntFlag(flags, options, "Batch processing", &pollIntervalMS, "poll-interval-ms", pollIntervalMS, "Sleep after an empty batch in milliseconds, cut short by a LISTEN/NOTIFY wake-up. 0 polls continuously with no sleep.", "POLL_INTERVAL_MS")
-	addIntFlag(flags, options, "Batch processing", &watchdogIntervalMS, "watchdog-interval-ms", watchdogIntervalMS, "Watchdog interval in milliseconds.", "WATCHDOG_INTERVAL_MS")
 	addIntFlag(flags, options, "Batch processing", &publishTimeoutMS, "publish-timeout-ms", publishTimeoutMS, "Timeout for a single publish call in milliseconds. Must be positive.", "PUBLISH_TIMEOUT_MS")
-	addIntFlag(flags, options, "Batch processing", &publishResultGraceMS, "publish-result-grace-ms", publishResultGraceMS, "Extra wait after provider publish timeout for async publish results.", "PUBLISH_RESULT_GRACE_MS")
 	addIntFlag(flags, options, "Batch processing", &maxEventAgeMS, "max-event-age-ms", maxEventAgeMS, "Maximum selected event age in milliseconds. 0 disables age-based poison.", "MAX_EVENT_AGE_MS")
-	addIntFlag(flags, options, "Batch processing", &statsIntervalMS, "stats-interval-ms", statsIntervalMS, "Periodic statistics logging interval in milliseconds. 0 disables statistics.", "STATS_INTERVAL_MS")
-	addStringFlag(flags, options, "Batch processing", &cfg.NotifyChannel, "notify-channel", cfg.NotifyChannel, "PostgreSQL channel for the new-event notification trigger that init provisions; the relay also LISTENs on it when POLL_INTERVAL_MS > 0.", "NOTIFY_CHANNEL")
 
 	addIntFlag(flags, options, "HTTP / health", &cfg.HealthPort, "health-port", cfg.HealthPort, "HTTP health server port. Set to 0 to disable.", "HEALTH_PORT, PORT")
-	addIntFlag(flags, options, "HTTP / health", &healthStaleAfterMS, "health-stale-after-ms", healthStaleAfterMS, "Report /healthz unhealthy after this long without a committed batch, in milliseconds. 0 always reports healthy.", "HEALTH_STALE_AFTER_MS")
 
 	addStringFlag(flags, options, "Logging", &cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug, info, warn, or error.", "LOG_LEVEL")
 	addStringFlag(flags, options, "Logging", &cfg.LogFormat, "log-format", cfg.LogFormat, "Log format: text or json.", "LOG_FORMAT")
@@ -109,7 +124,6 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 	addBoolFlag(flags, options, "PostgreSQL", &cfg.PGSSL, "pg-ssl", cfg.PGSSL, "Enable PostgreSQL TLS.", "PG_SSL")
 	addBoolFlag(flags, options, "PostgreSQL", &cfg.PGSSLRejectUnauthorized, "pg-ssl-reject-unauthorized", cfg.PGSSLRejectUnauthorized, "Verify PostgreSQL TLS certificate and hostname.", "PG_SSL_REJECT_UNAUTHORIZED")
 	addStringFlag(flags, options, "PostgreSQL", &cfg.PGSSLRootCert, "pg-ssl-root-cert", cfg.PGSSLRootCert, "Path to a CA certificate (PEM) used to verify the PostgreSQL server.", "PG_SSL_ROOT_CERT")
-	addIntFlag(flags, options, "PostgreSQL", &pgTimeoutMS, "pg-connect-timeout-ms", pgTimeoutMS, "PostgreSQL connect timeout in milliseconds.", "PG_CONNECT_TIMEOUT_MS")
 	addIntFlag(flags, options, "PostgreSQL", &pgQueryTimeoutMS, "pg-query-timeout-ms", pgQueryTimeoutMS, "Timeout for a single database query in milliseconds. 0 disables the timeout.", "PG_QUERY_TIMEOUT_MS")
 
 	addBoolFlag(flags, options, "Google Pub/Sub", &cfg.PubSubEnabled, "pubsub-enabled", cfg.PubSubEnabled, "Enable publishing to Google Pub/Sub.", "PUBSUB_ENABLED")
@@ -125,24 +139,14 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 	addStringFlag(flags, options, "AWS SQS", &cfg.AWSRegion, "aws-region", cfg.AWSRegion, "AWS region for SQS and STS.", "AWS_REGION")
 	addStringFlag(flags, options, "AWS SQS", &cfg.AWSRoleARN, "aws-role-arn", cfg.AWSRoleARN, "Optional AWS role to assume before publishing to SQS.", "AWS_ROLE_ARN")
 	addStringFlag(flags, options, "AWS SQS", &cfg.AWSRoleSessionName, "aws-role-session-name", cfg.AWSRoleSessionName, "AWS assume-role session name.", "AWS_ROLE_SESSION_NAME")
-	addIntFlag(flags, options, "AWS SQS", &awsRoleDurationSeconds, "aws-role-duration-seconds", awsRoleDurationSeconds, "AWS assumed-role duration in seconds.", "AWS_ROLE_DURATION_SECONDS")
-	addIntFlag(flags, options, "AWS SQS", &awsCredentialRefreshWindowMS, "aws-credential-refresh-window-ms", awsCredentialRefreshWindowMS, "Refresh assumed credentials before expiry in milliseconds.", "AWS_CREDENTIAL_REFRESH_WINDOW_MS")
 	addDisableableFlag(flags, options, "AWS SQS", &cfg.AWSWebIdentityProvider, "aws-web-identity-provider", cfg.AWSWebIdentityProvider, "Set to 'google' to assume the AWS role with a Google OIDC token (GCP to AWS).", "AWS_WEB_IDENTITY_PROVIDER")
 	addStringFlag(flags, options, "AWS SQS", &cfg.AWSWebIdentityAudience, "aws-web-identity-audience", cfg.AWSWebIdentityAudience, "Audience for the web identity token, matching the AWS IAM OIDC provider.", "AWS_WEB_IDENTITY_AUDIENCE")
 
 	return func() {
-		cfg.WatchdogInterval = time.Duration(watchdogIntervalMS) * time.Millisecond
-		cfg.HealthStaleAfter = time.Duration(healthStaleAfterMS) * time.Millisecond
-		cfg.ErrorCooldown = time.Duration(errorCooldownMS) * time.Millisecond
 		cfg.PollInterval = time.Duration(pollIntervalMS) * time.Millisecond
 		cfg.PublishTimeout = time.Duration(publishTimeoutMS) * time.Millisecond
-		cfg.PublishResultGrace = time.Duration(publishResultGraceMS) * time.Millisecond
 		cfg.MaxEventAge = time.Duration(maxEventAgeMS) * time.Millisecond
-		cfg.StatsInterval = time.Duration(statsIntervalMS) * time.Millisecond
-		cfg.PGConnectTimeout = time.Duration(pgTimeoutMS) * time.Millisecond
 		cfg.PGQueryTimeout = time.Duration(pgQueryTimeoutMS) * time.Millisecond
-		cfg.AWSRoleDuration = time.Duration(awsRoleDurationSeconds) * time.Second
-		cfg.AWSCredentialRefreshWindow = time.Duration(awsCredentialRefreshWindowMS) * time.Millisecond
 		cfg.PubSubDestinations = parseStringList(pubsubDestinations)
 		cfg.SQSDestinations = parseStringList(sqsDestinations)
 	}

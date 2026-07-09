@@ -22,10 +22,10 @@ type awsPublisher struct {
 }
 
 // NewClient creates a configured AWS SQS client. The HTTP connection pool is
-// sized to the configured send concurrency: the SDK default keeps only a
-// handful of idle connections per host, so senders beyond that pay a fresh
-// TCP+TLS handshake per request and publish throughput stops scaling with
-// SQS_SEND_CONCURRENCY.
+// sized to the send concurrency: the SDK default keeps only a handful of
+// idle connections per host, so senders beyond that pay a fresh TCP+TLS
+// handshake per request and publish throughput stops scaling with the
+// concurrency.
 func NewClient(ctx context.Context, cfg Config) (*sqs.Client, error) {
 	httpClient := awshttp.NewBuildableClient().WithTransportOptions(func(transport *http.Transport) {
 		transport.MaxIdleConnsPerHost = max(transport.MaxIdleConnsPerHost, cfg.SendConcurrency)

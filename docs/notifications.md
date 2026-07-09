@@ -48,8 +48,9 @@ FOR EACH STATEMENT
 EXECUTE FUNCTION public.outboxer_notify('outboxer_events');
 ```
 
-- The channel name (`outboxer_events`) is passed as the trigger argument and must
-  match `NOTIFY_CHANNEL`.
+- The channel name is passed as the trigger argument and is derived from the
+  event table as `outboxer_<table>` (`outboxer_events` for the default table),
+  identically by `init` and the relay, so there is nothing to coordinate.
 - Replace `public` with the configured `PG_SCHEMA` when using a custom schema.
 - The function is **generic**: it reads the channel from the trigger's argument
   (`TG_ARGV[0]`) via `pg_notify` rather than hardcoding it in the body. A
@@ -78,7 +79,8 @@ seconds), and let the trigger provide the low latency:
 outboxer --poll-interval-ms=5000   # sweep at most every 5s; trigger wakes sooner
 ```
 
-Remember `WATCHDOG_INTERVAL_MS` must remain at least 10x `POLL_INTERVAL_MS`.
+The watchdog and health-staleness windows scale automatically to 10x the poll
+interval when it exceeds their 10-minute and 5-minute floors.
 
 ## Caveats
 

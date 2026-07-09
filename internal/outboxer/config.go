@@ -77,6 +77,79 @@ type appConfig struct {
 // rejected as ambiguous; this sentinel is the clear way to express "no column".
 const disableSentinel = "disabled"
 
+// Fixed internal settings. Each of these was a configuration knob once; the
+// July 2026 benchmark campaign and the configuration audit
+// (specs/config_surface_audit.md) decided them, and a decided value is a
+// constant, not a knob.
+const (
+	// Measured on ECS Fargate and EKS + SQS (eu-central-1): throughput scales
+	// with send concurrency up to ~128, where publish time converges with the
+	// batch's database time. The HTTP connection pool is sized to match. Idle
+	// deployments pay nothing for the headroom: goroutines and connections
+	// only materialize under load.
+	sqsSendConcurrency = 128
+
+	// The backlog probe scans at most this many routable rows per stats
+	// interval; measured at 10-20ms at the cap on perf-sized databases.
+	backlogCountLimit = 100000
+
+	// Sleep after a failed batch before retrying, long enough to avoid
+	// hammering a struggling provider or database, short enough that a
+	// transient error costs little.
+	errorCooldown = 5 * time.Second
+
+	// Extra wait after the provider publish timeout for async publish
+	// results to land before the batch is judged.
+	publishResultGrace = 5 * time.Second
+
+	// Cadence of the periodic statistics log line; also paces the backlog
+	// probe.
+	statsInterval = 10 * time.Second
+
+	pgConnectTimeout = 10 * time.Second
+
+	awsRoleDuration            = time.Hour
+	awsCredentialRefreshWindow = 5 * time.Minute
+
+	// The relay reports /healthz unhealthy after this long without a
+	// committed batch (and never for provider failures, which a restart
+	// cannot fix). Raised to 10x the poll interval when that is larger, so
+	// an idle relay cannot flap.
+	healthStaleAfterFloor = 5 * time.Minute
+
+	// Watchdog sweep cadence, raised to 10x the poll interval when that is
+	// larger to avoid false deadlock reports.
+	watchdogIntervalFloor = 10 * time.Minute
+
+	// The notification channel is derived from the event table
+	// (outboxer_<table>), so multiple tables in one database get distinct
+	// wake-up channels with nothing to coordinate. Postgres channel names
+	// share the 63-byte identifier limit.
+	notifyChannelPrefix   = "outboxer_"
+	notifyChannelMaxBytes = 63
+)
+
+// deriveNotifyChannel names the notification channel for an event table.
+// Relays on same-named tables in different schemas share a channel, which is
+// harmless: notifications are wake-up hints, so the cost is a spurious empty
+// select, never a correctness problem.
+func deriveNotifyChannel(eventTable string) string {
+	channel := notifyChannelPrefix + eventTable
+	if len(channel) > notifyChannelMaxBytes {
+		channel = channel[:notifyChannelMaxBytes]
+	}
+	return channel
+}
+
+// deriveConfig fills in the settings computed from public configuration.
+// Called after flag/env parsing (and again after any test override of the
+// inputs).
+func deriveConfig(cfg *appConfig) {
+	cfg.NotifyChannel = deriveNotifyChannel(cfg.EventTable)
+	cfg.WatchdogInterval = max(watchdogIntervalFloor, 10*cfg.PollInterval)
+	cfg.HealthStaleAfter = max(healthStaleAfterFloor, 10*cfg.PollInterval)
+}
+
 func loadConfig(args []string, output io.Writer) (appConfig, error) {
 	parser := newConfigParser("outboxer", output)
 	if err := parser.parse(args); err != nil {
@@ -126,21 +199,17 @@ func defaultConfig() appConfig {
 		// (+37% Pub/Sub, +21% SQS over 5k) while staying ~100MB in flight
 		// at 10KB payloads; deployments with small events can raise it.
 		CollectBatchTarget: 10000,
-		BacklogCountLimit:  100000,
-		// Measured on ECS Fargate + SQS (eu-central-1): throughput scales with
-		// send concurrency up to ~128, where publish time converges with the
-		// batch's database time. Idle deployments pay nothing for the headroom:
-		// goroutines and connections only materialize under load.
-		SQSSendConcurrency: 128,
+		BacklogCountLimit:  backlogCountLimit,
+		SQSSendConcurrency: sqsSendConcurrency,
 		DLQTable:           "",
-		NotifyChannel:      "outboxer_events",
+		NotifyChannel:      deriveNotifyChannel("events"),
 
 		LogLevel:  "info",
 		LogFormat: "text",
 
-		WatchdogInterval:   10 * time.Minute,
+		WatchdogInterval:   watchdogIntervalFloor,
 		HealthPort:         0,
-		HealthStaleAfter:   5 * time.Minute,
+		HealthStaleAfter:   healthStaleAfterFloor,
 		PubSubEnabled:      false,
 		SQSEnabled:         false,
 		DefaultPubSubTopic: "default",
@@ -148,12 +217,12 @@ func defaultConfig() appConfig {
 		PubSubProjectID:    "",
 		PubSubAPIEndpoint:  "",
 		SQSAPIEndpoint:     "",
-		ErrorCooldown:      5 * time.Second,
+		ErrorCooldown:      errorCooldown,
 		PollInterval:       time.Second,
 		PublishTimeout:     30 * time.Second,
-		PublishResultGrace: 5 * time.Second,
+		PublishResultGrace: publishResultGrace,
 		MaxEventAge:        0,
-		StatsInterval:      10 * time.Second,
+		StatsInterval:      statsInterval,
 
 		PGHost:                  "localhost",
 		PGPort:                  5432,
@@ -164,7 +233,7 @@ func defaultConfig() appConfig {
 		PGSSL:                   false,
 		PGSSLRejectUnauthorized: true,
 		PGSSLRootCert:           "",
-		PGConnectTimeout:        10 * time.Second,
+		PGConnectTimeout:        pgConnectTimeout,
 		PGQueryTimeout:          30 * time.Second,
 
 		PGInitUser:     "",
@@ -173,8 +242,8 @@ func defaultConfig() appConfig {
 		AWSRegion:                  "",
 		AWSRoleARN:                 "",
 		AWSRoleSessionName:         "outboxer",
-		AWSRoleDuration:            time.Hour,
-		AWSCredentialRefreshWindow: 5 * time.Minute,
+		AWSRoleDuration:            awsRoleDuration,
+		AWSCredentialRefreshWindow: awsCredentialRefreshWindow,
 		AWSWebIdentityProvider:     "",
 		AWSWebIdentityAudience:     "",
 	}

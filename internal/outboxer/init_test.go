@@ -268,15 +268,6 @@ func TestValidateInitConfigRejectsDLQEqualsEvents(t *testing.T) {
 	}
 }
 
-func TestValidateInitConfigRequiresNotifyChannelWhenPolling(t *testing.T) {
-	cfg := baselineInitConfig()
-	cfg.PollInterval = time.Second
-	cfg.NotifyChannel = ""
-	if err := cfg.validate(configValidationInit); err == nil {
-		t.Fatal("expected error for empty notify channel while polling")
-	}
-}
-
 func TestRunRejectsUnknownCommand(t *testing.T) {
 	err := Run(context.Background(), []string{"bogus"})
 	if err == nil || !strings.Contains(err.Error(), "unknown command") {

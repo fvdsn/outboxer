@@ -180,18 +180,12 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	unsetEnv(t, "HEALTH_PORT")
 	t.Setenv("DLQ_TABLE", "dead_letters")
 	t.Setenv("MAX_EVENT_AGE_MS", "60000")
-	t.Setenv("STATS_INTERVAL_MS", "15000")
 	t.Setenv("PUBSUB_DESTINATIONS", "topic-a, topic-b ,,")
 	t.Setenv("SQS_DESTINATIONS", "queue-a,queue-b")
-	t.Setenv("NOTIFY_CHANNEL", "my_channel")
 
 	cfg, err := loadConfig(nil, io.Discard)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
-	}
-
-	if cfg.NotifyChannel != "my_channel" {
-		t.Fatalf("expected env notify channel, got %q", cfg.NotifyChannel)
 	}
 	if cfg.PGHost != "db" {
 		t.Fatalf("expected env pg host, got %q", cfg.PGHost)
@@ -213,9 +207,6 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	}
 	if cfg.MaxEventAge != time.Minute {
 		t.Fatalf("expected env max event age, got %s", cfg.MaxEventAge)
-	}
-	if cfg.StatsInterval != 15*time.Second {
-		t.Fatalf("expected env stats interval, got %s", cfg.StatsInterval)
 	}
 	if !reflect.DeepEqual(cfg.PubSubDestinations, []string{"topic-a", "topic-b"}) {
 		t.Fatalf("unexpected Pub/Sub destinations: %#v", cfg.PubSubDestinations)
@@ -253,13 +244,10 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	t.Setenv("PG_HOST", "env-db")
 	t.Setenv("PG_SCHEMA", "env-schema")
 	t.Setenv("PG_PORT", "5433")
-	t.Setenv("PG_CONNECT_TIMEOUT_MS", "1000")
 	t.Setenv("PG_SSL", "false")
 	t.Setenv("POLL_INTERVAL_MS", "250")
-	t.Setenv("WATCHDOG_INTERVAL_MS", "60000")
 	t.Setenv("DLQ_TABLE", "env_dead_letters")
 	t.Setenv("MAX_EVENT_AGE_MS", "60000")
-	t.Setenv("STATS_INTERVAL_MS", "15000")
 	t.Setenv("PUBSUB_DESTINATIONS", "env-topic")
 	t.Setenv("SQS_DESTINATIONS", "env-queue")
 
@@ -270,13 +258,10 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 		"--pg-host=flag-db",
 		"--pg-schema=flag-schema",
 		"--pg-port=6543",
-		"--pg-connect-timeout-ms=2000",
 		"--pg-ssl=true",
 		"--poll-interval-ms=500",
-		"--watchdog-interval-ms=30000",
 		"--dlq-table=flag_dead_letters",
 		"--max-event-age-ms=120000",
-		"--stats-interval-ms=30000",
 		"--pubsub-destinations=flag-topic-a, flag-topic-b",
 		"--sqs-destinations=flag-queue",
 	}, io.Discard)
@@ -305,23 +290,14 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	if !cfg.PGSSL {
 		t.Fatal("expected flag pg ssl to override env")
 	}
-	if cfg.PGConnectTimeout != 2*time.Second {
-		t.Fatalf("expected flag pg connect timeout, got %s", cfg.PGConnectTimeout)
-	}
 	if cfg.PollInterval != 500*time.Millisecond {
 		t.Fatalf("expected flag poll interval, got %s", cfg.PollInterval)
-	}
-	if cfg.WatchdogInterval != 30*time.Second {
-		t.Fatalf("expected flag watchdog interval, got %s", cfg.WatchdogInterval)
 	}
 	if cfg.DLQTable != "flag_dead_letters" {
 		t.Fatalf("expected flag DLQ table, got %q", cfg.DLQTable)
 	}
 	if cfg.MaxEventAge != 2*time.Minute {
 		t.Fatalf("expected flag max event age, got %s", cfg.MaxEventAge)
-	}
-	if cfg.StatsInterval != 30*time.Second {
-		t.Fatalf("expected flag stats interval, got %s", cfg.StatsInterval)
 	}
 	if !reflect.DeepEqual(cfg.PubSubDestinations, []string{"flag-topic-a", "flag-topic-b"}) {
 		t.Fatalf("expected flag Pub/Sub destinations, got %#v", cfg.PubSubDestinations)
@@ -361,30 +337,20 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"Env: PG_HOST",
 		"--pg-schema",
 		"Env: PG_SCHEMA",
-		"--pg-connect-timeout-ms",
-		"Env: PG_CONNECT_TIMEOUT_MS",
 		"--poll-interval-ms",
 		"Env: POLL_INTERVAL_MS",
-		"--watchdog-interval-ms",
-		"Env: WATCHDOG_INTERVAL_MS",
 		"--collect-batch-target",
 		"Env: COLLECT_BATCH_TARGET",
 		"--dlq-table",
 		"Env: DLQ_TABLE",
 		"--max-event-age-ms",
 		"Env: MAX_EVENT_AGE_MS",
-		"--stats-interval-ms",
-		"Env: STATS_INTERVAL_MS",
-		"--sqs-send-concurrency",
-		"Env: SQS_SEND_CONCURRENCY",
 		"--pubsub-destinations",
 		"Env: PUBSUB_DESTINATIONS",
 		"--sqs-destinations",
 		"Env: SQS_DESTINATIONS",
 		"--sqs-api-endpoint",
 		"Env: SQS_API_ENDPOINT",
-		"--publish-result-grace-ms",
-		"Env: PUBLISH_RESULT_GRACE_MS",
 		"--aws-role-session-name",
 		"Env: AWS_ROLE_SESSION_NAME",
 	} {
@@ -654,83 +620,58 @@ func TestValidateAWSWebIdentity(t *testing.T) {
 	}
 }
 
-func TestValidateWatchdogMustExceedPollInterval(t *testing.T) {
-	cfg := testConfig()
-	cfg.WatchdogInterval = 0
-	if err := cfg.validate(configValidationRelay); err == nil {
-		t.Fatal("expected error when watchdog interval is zero")
+func TestDeriveConfig(t *testing.T) {
+	cfg, err := loadConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.NotifyChannel != "outboxer_events" {
+		t.Fatalf("expected default derived notify channel outboxer_events, got %q", cfg.NotifyChannel)
+	}
+	if cfg.WatchdogInterval != 10*time.Minute {
+		t.Fatalf("expected default watchdog interval 10m, got %s", cfg.WatchdogInterval)
+	}
+	if cfg.HealthStaleAfter != 5*time.Minute {
+		t.Fatalf("expected default health staleness threshold 5m, got %s", cfg.HealthStaleAfter)
 	}
 
-	cfg.WatchdogInterval = -time.Second
-	if err := cfg.validate(configValidationRelay); err == nil {
-		t.Fatal("expected error when watchdog interval is negative")
+	cfg, err = loadConfig([]string{"--event-table=order_events", "--poll-interval-ms=120000"}, io.Discard)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
 	}
-
-	cfg.PollInterval = time.Minute
-	cfg.WatchdogInterval = 5 * time.Minute
-	if err := cfg.validate(configValidationRelay); err == nil {
-		t.Fatal("expected error when watchdog interval is less than 10x the poll interval")
+	if cfg.NotifyChannel != "outboxer_order_events" {
+		t.Fatalf("expected notify channel derived from the event table, got %q", cfg.NotifyChannel)
 	}
-
-	cfg.WatchdogInterval = 10 * time.Minute
-	if err := cfg.validate(configValidationRelay); err != nil {
-		t.Fatalf("expected watchdog interval of exactly 10x poll interval to be valid, got %v", err)
+	// A poll interval above the floors raises both derived intervals to 10x,
+	// so an idle relay can neither flap unhealthy nor trip the watchdog.
+	if cfg.WatchdogInterval != 20*time.Minute {
+		t.Fatalf("expected watchdog interval raised to 10x the poll interval, got %s", cfg.WatchdogInterval)
 	}
-
-	// A zero poll interval (the default hot loop) imposes no constraint.
-	cfg.PollInterval = 0
-	cfg.WatchdogInterval = time.Hour
-	if err := cfg.validate(configValidationRelay); err != nil {
-		t.Fatalf("expected zero poll interval to skip the watchdog check, got %v", err)
-	}
-}
-
-func TestValidateHealthStaleAfter(t *testing.T) {
-	cfg := testConfig()
-	cfg.HealthStaleAfter = -time.Second
-	if err := cfg.validate(configValidationRelay); err == nil {
-		t.Fatal("expected error when the health staleness threshold is negative")
-	}
-
-	cfg.PollInterval = time.Minute
-	cfg.WatchdogInterval = time.Hour
-	cfg.HealthStaleAfter = 5 * time.Minute
-	if err := cfg.validate(configValidationRelay); err == nil {
-		t.Fatal("expected error when the health staleness threshold is less than 10x the poll interval")
-	}
-
-	cfg.HealthStaleAfter = 10 * time.Minute
-	if err := cfg.validate(configValidationRelay); err != nil {
-		t.Fatalf("expected threshold of exactly 10x poll interval to be valid, got %v", err)
-	}
-
-	// Zero disables the staleness check entirely.
-	cfg.HealthStaleAfter = 0
-	if err := cfg.validate(configValidationRelay); err != nil {
-		t.Fatalf("expected zero threshold to be valid, got %v", err)
+	if cfg.HealthStaleAfter != 20*time.Minute {
+		t.Fatalf("expected health staleness threshold raised to 10x the poll interval, got %s", cfg.HealthStaleAfter)
 	}
 }
 
-func TestValidateNotifyChannelRequiredWhenPolling(t *testing.T) {
-	cfg := testConfig()
-	cfg.PollInterval = time.Minute
-	cfg.WatchdogInterval = time.Hour
-	cfg.NotifyChannel = ""
-	if err := cfg.validate(configValidationRelay); err == nil {
-		t.Fatal("expected error when polling is enabled with an empty notify channel")
+func TestDeriveNotifyChannelTruncates(t *testing.T) {
+	long := strings.Repeat("t", 100)
+	channel := deriveNotifyChannel(long)
+	if len(channel) != notifyChannelMaxBytes {
+		t.Fatalf("expected the derived channel truncated to %d bytes, got %d", notifyChannelMaxBytes, len(channel))
 	}
-
-	cfg.NotifyChannel = "outboxer_events"
-	if err := cfg.validate(configValidationRelay); err != nil {
-		t.Fatalf("expected a non-empty notify channel to be valid, got %v", err)
+	if channel != deriveNotifyChannel(long) {
+		t.Fatal("expected derivation to be deterministic")
 	}
+}
 
-	// A zero poll interval (the default hot loop) never listens, so an empty
-	// channel imposes no constraint.
-	cfg.PollInterval = 0
-	cfg.NotifyChannel = ""
-	if err := cfg.validate(configValidationRelay); err != nil {
-		t.Fatalf("expected empty notify channel to be valid without polling, got %v", err)
+func TestLoadConfigRejectsRetiredEnv(t *testing.T) {
+	for name := range retiredEnvVars {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "1000")
+			_, err := loadConfig(nil, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("expected a hard error naming the retired variable %s, got %v", name, err)
+			}
+		})
 	}
 }
 
@@ -759,14 +700,6 @@ func TestValidateRequiresPositivePublishTimeout(t *testing.T) {
 	}
 }
 
-func TestValidateRequiresNonNegativePublishResultGrace(t *testing.T) {
-	cfg := testConfig()
-	cfg.PublishResultGrace = -time.Millisecond
-	if err := cfg.validate(configValidationRelay); err == nil {
-		t.Fatal("expected error when publish result grace is negative")
-	}
-}
-
 func TestValidateMaxEventAge(t *testing.T) {
 	cfg := testConfig()
 	cfg.MaxEventAge = -time.Millisecond
@@ -784,32 +717,6 @@ func TestValidateMaxEventAge(t *testing.T) {
 	cfg.EventTimestamp = "timestamp"
 	if err := cfg.validate(configValidationRelay); err != nil {
 		t.Fatalf("expected max event age with timestamp column to be valid, got %v", err)
-	}
-}
-
-func TestValidateStatsInterval(t *testing.T) {
-	cfg := testConfig()
-	cfg.StatsInterval = -time.Millisecond
-	if err := cfg.validate(configValidationRelay); err == nil {
-		t.Fatal("expected error when stats interval is negative")
-	}
-
-	cfg.StatsInterval = 0
-	if err := cfg.validate(configValidationRelay); err != nil {
-		t.Fatalf("expected zero stats interval to disable stats, got %v", err)
-	}
-}
-
-func TestValidateRequiresPositiveSQSConcurrencyWhenSQSEnabled(t *testing.T) {
-	cfg := testConfig()
-	cfg.SQSSendConcurrency = 0
-	if err := cfg.validate(configValidationRelay); err == nil {
-		t.Fatal("expected error when SQS concurrency is zero and SQS is enabled")
-	}
-
-	cfg.SQSEnabled = false
-	if err := cfg.validate(configValidationRelay); err != nil {
-		t.Fatalf("expected SQS concurrency to be ignored when SQS is disabled, got %v", err)
 	}
 }
 

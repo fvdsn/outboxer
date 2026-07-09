@@ -71,7 +71,7 @@ func (a *app) writeMetrics(w io.Writer) {
 		"This relay's pending events after the last committed batch: exact when the batch drained every route, otherwise the bounded probe's count.",
 		strconv.FormatInt(stats.backlogEvents.Load(), 10))
 	writeGauge(w, "outboxer_backlog_floor",
-		"1 when outboxer_backlog_events is only a lower bound (probe capped at BACKLOG_COUNT_LIMIT, probe disabled, or no batch committed yet).",
+		"1 when outboxer_backlog_events is only a lower bound (probe hit its scan cap or no batch committed yet).",
 		strconv.FormatInt(stats.backlogFloor.Load(), 10))
 	writeGauge(w, "outboxer_last_successful_batch_timestamp_seconds",
 		"Unix time of the last committed batch (startup time until the first one).",

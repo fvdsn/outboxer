@@ -42,14 +42,3 @@ variable "task_memory" {
   default     = "4096"
 }
 
-variable "collect_batch_target" {
-  description = "Relay COLLECT_BATCH_TARGET."
-  type        = number
-  default     = 5000
-}
-
-variable "sqs_send_concurrency" {
-  description = "Relay SQS_SEND_CONCURRENCY: concurrent SendMessageBatch calls. SQS caps batches at 10 messages, so this is the AWS throughput knob."
-  type        = number
-  default     = 128
-}

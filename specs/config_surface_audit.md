@@ -37,6 +37,14 @@ value to decide.
 
 ## Bucket 2 — Hardcode now: the decision already exists
 
+**Done (2026-07-09).** All eleven are internal constants (no hidden env-var
+escape hatches — the e2e suite runs fine at real timings). A retired variable
+still present in the environment is a hard startup error naming the fixed
+value. The two 10x-the-poll-interval validation rules became derivations:
+the watchdog and health-staleness windows are computed as
+`max(floor, 10 x POLL_INTERVAL)`, so no public setting can produce an
+unfixable validation error.
+
 Measurement or design reasoning has already picked the value; the knob only
 advertises indecision. Delete the flag/env, keep the constant with a comment
 stating where the value came from.

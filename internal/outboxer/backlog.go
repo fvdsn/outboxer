@@ -49,7 +49,7 @@ func (a *app) backlogProbeInterval() time.Duration {
 }
 
 // countBacklog counts this relay's routable events among the oldest
-// BACKLOG_COUNT_LIMIT rows of the outbox table. The scan is bounded by the
+// backlogCountLimit rows of the outbox table. The scan is bounded by the
 // limit regardless of how many rows belong to other relays; capped reports
 // whether the scan hit the limit, in which case the count is a floor.
 func (a *app) countBacklog(ctx context.Context) (int64, bool, error) {

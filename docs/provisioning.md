@@ -43,7 +43,7 @@ provisioning-specific schema flags:
   planner statistics. After a **bulk backfill**, run `ANALYZE <table>`
   manually rather than waiting for autoanalyze.
 - **DLQ table** (`DLQ_TABLE`), only when set to a table name.
-- **Notify function and trigger**, always, on the `NOTIFY_CHANNEL` channel,
+- **Notify function and trigger**, always, on the `outboxer_<table>` channel,
   independent of the relay's `POLL_INTERVAL_MS`, which keys the `LISTEN`/`NOTIFY`
   wake-ups. See [Notifications](notifications.md).
 - **PostgreSQL schema** (`PG_SCHEMA`), created when absent. It defaults to

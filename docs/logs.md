@@ -20,7 +20,7 @@ are `debug`.
 | `Health server listening` | Health server bound, when a port is configured. | `port` |
 | `Processing events` | Processing loop starts. | `table` |
 | `Processing batch` | A non-empty batch is selected. | `count` (rows in the batch) |
-| `Statistics` | Every `STATS_INTERVAL_MS`, and once more at shutdown for the final partial interval. | See [Statistics](#statistics). |
+| `Statistics` | Every 10 seconds, and once more at shutdown for the final partial interval. | See [Statistics](#statistics). |
 | `Graceful shutdown` | `SIGINT` / `SIGTERM` received. | — |
 
 ### Debug detail (`debug`)
@@ -79,8 +79,8 @@ from flooding the logs while still surfacing the error and its true rate.
 
 ## Statistics
 
-When `STATS_INTERVAL_MS` is positive (default `10000`), Outboxer logs a periodic
-`Statistics` record at `info` level. Each field except `stats_interval_ms` is a
+Outboxer logs a periodic `Statistics` record at `info` level every 10 seconds.
+Each field except `stats_interval_ms` is a
 **counter for the interval that just elapsed**; counters reset to zero after
 every record. They are per-interval deltas, not running totals. Cumulative
 versions of the same counters are exposed on `/metrics` — see

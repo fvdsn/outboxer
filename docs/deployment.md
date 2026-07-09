@@ -40,8 +40,7 @@ and Kubernetes clusters already exist.
 - Set `HEALTH_PORT` and scrape `/metrics`; alert on `outboxer_oldest_event_age_seconds`
   and point readiness/liveness probes at `/healthz`. See
   [Observability](observability.md).
-- Keep `PUBLISH_TIMEOUT_MS`, `PUBLISH_RESULT_GRACE_MS`, and
-  `WATCHDOG_INTERVAL_MS` consistent with the sizing guidance in
+- Keep `PUBLISH_TIMEOUT_MS` consistent with the sizing guidance in
   [`specs/requirements.md`](../specs/requirements.md).
 - Consumers must be idempotent; Outboxer provides at-least-once delivery.
 

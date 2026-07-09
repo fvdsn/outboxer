@@ -197,8 +197,8 @@ GCP→AWS keyless federation is enabled with:
 
 When `AWS_WEB_IDENTITY_PROVIDER` is empty (the default), `AWS_ROLE_ARN` keeps its
 existing meaning: a role assumed on top of the AWS default credential chain
-(role chaining). `AWS_ROLE_SESSION_NAME` and `AWS_ROLE_DURATION_SECONDS` apply to
-both paths.
+(role chaining). `AWS_ROLE_SESSION_NAME` applies to both paths; sessions last
+one hour and refresh five minutes before expiry.
 
 `PUBSUB_PROJECT_ID` sets the Google Cloud project for Pub/Sub; leave it empty to
 detect it from ADC.

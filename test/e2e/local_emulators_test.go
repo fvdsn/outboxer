@@ -208,11 +208,8 @@ func TestLocalEmulatorE2ETwoOutboxersPreserveOrderedPubSub(t *testing.T) {
 		"SQS_ENABLED":               "false",
 		"DEFAULT_PUBSUB_TOPIC":      topic,
 		"COLLECT_BATCH_TARGET":      "40",
-		"SQS_SEND_CONCURRENCY":      "1",
 		"POLL_INTERVAL_MS":          "10",
 		"PUBLISH_TIMEOUT_MS":        "5000",
-		"PUBLISH_RESULT_GRACE_MS":   "500",
-		"WATCHDOG_INTERVAL_MS":      "60000",
 		"EVENT_TARGET":              "target",
 		"EVENT_DESTINATION":         "destination",
 		"EVENT_OPTIONS":             "options",
@@ -298,10 +295,7 @@ func TestLocalEmulatorE2ETwoOutboxersSplitByTargetOnSameTable(t *testing.T) {
 	commonOverrides := map[string]string{
 		"COLLECT_BATCH_TARGET":      "5",
 		"POLL_INTERVAL_MS":          "10",
-		"ERROR_COOLDOWN_MS":         "50",
 		"PUBLISH_TIMEOUT_MS":        "5000",
-		"PUBLISH_RESULT_GRACE_MS":   "500",
-		"WATCHDOG_INTERVAL_MS":      "60000",
 		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	}
 	pubsubOverrides := copyStringMap(commonOverrides)
@@ -379,10 +373,7 @@ func TestLocalEmulatorE2ETwoOutboxersSplitByPubSubDestination(t *testing.T) {
 		"DEFAULT_SQS_QUEUE_URL":     "disabled",
 		"COLLECT_BATCH_TARGET":      "5",
 		"POLL_INTERVAL_MS":          "10",
-		"ERROR_COOLDOWN_MS":         "50",
 		"PUBLISH_TIMEOUT_MS":        "5000",
-		"PUBLISH_RESULT_GRACE_MS":   "500",
-		"WATCHDOG_INTERVAL_MS":      "60000",
 		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	}
 	overridesA := copyStringMap(commonOverrides)
@@ -449,10 +440,7 @@ func TestLocalEmulatorE2ETwoOutboxersSplitBySQSDestination(t *testing.T) {
 		"DEFAULT_PUBSUB_TOPIC":      "disabled",
 		"COLLECT_BATCH_TARGET":      "5",
 		"POLL_INTERVAL_MS":          "10",
-		"ERROR_COOLDOWN_MS":         "50",
 		"PUBLISH_TIMEOUT_MS":        "5000",
-		"PUBLISH_RESULT_GRACE_MS":   "500",
-		"WATCHDOG_INTERVAL_MS":      "60000",
 		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	}
 	overridesA := copyStringMap(commonOverrides)
@@ -527,12 +515,8 @@ func TestLocalEmulatorE2ERouteBrokenDestinationDoesNotBlockHealthyRoute(t *testi
 
 	process := startOutboxer(t, ctx, binary, table, map[string]string{
 		"COLLECT_BATCH_TARGET":      "5",
-		"SQS_SEND_CONCURRENCY":      "1",
 		"PUBLISH_TIMEOUT_MS":        "1000",
-		"PUBLISH_RESULT_GRACE_MS":   "200",
-		"ERROR_COOLDOWN_MS":         "50",
 		"POLL_INTERVAL_MS":          "50",
-		"WATCHDOG_INTERVAL_MS":      "60000",
 		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	})
 
@@ -590,10 +574,7 @@ func TestLocalEmulatorE2EDeadLettersSQSPoisonEvent(t *testing.T) {
 		"DLQ_TABLE":                 dlqTable,
 		"COLLECT_BATCH_TARGET":      "10",
 		"POLL_INTERVAL_MS":          "10",
-		"ERROR_COOLDOWN_MS":         "50",
 		"PUBLISH_TIMEOUT_MS":        "5000",
-		"PUBLISH_RESULT_GRACE_MS":   "500",
-		"WATCHDOG_INTERVAL_MS":      "60000",
 		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	})
 
@@ -1169,30 +1150,26 @@ func startOutboxer(t *testing.T, ctx context.Context, binary string, table strin
 	var output bytes.Buffer
 	cmd := exec.CommandContext(ctx, binary)
 	env := map[string]string{
-		"EVENT_TABLE":             table,
-		"PUBSUB_ENABLED":          "true",
-		"SQS_ENABLED":             "true",
-		"PUBSUB_PROJECT_ID":       e2eProjectID,
-		"PUBSUB_EMULATOR_HOST":    getenv("OUTBOXER_E2E_PUBSUB_ENDPOINT", e2ePubSubEndpoint),
-		"SQS_API_ENDPOINT":        getenv("OUTBOXER_E2E_SQS_ENDPOINT", e2eSQSEndpoint),
-		"AWS_REGION":              e2eAWSRegion,
-		"AWS_ACCESS_KEY_ID":       "test",
-		"AWS_SECRET_ACCESS_KEY":   "test",
-		"PG_HOST":                 getenv("OUTBOXER_E2E_PG_HOST", "localhost"),
-		"PG_PORT":                 getenv("OUTBOXER_E2E_PG_PORT", "54329"),
-		"PG_USER":                 getenv("OUTBOXER_E2E_PG_USER", "outboxer"),
-		"PG_PASSWORD":             getenv("OUTBOXER_E2E_PG_PASSWORD", "outboxer"),
-		"PG_DATABASE":             getenv("OUTBOXER_E2E_PG_DATABASE", "outboxer"),
-		"PG_SSL":                  "false",
-		"COLLECT_BATCH_TARGET":    "5000",
-		"SQS_SEND_CONCURRENCY":    "4",
-		"POLL_INTERVAL_MS":        "50",
-		"ERROR_COOLDOWN_MS":       "50",
-		"PUBLISH_TIMEOUT_MS":      "5000",
-		"PUBLISH_RESULT_GRACE_MS": "500",
-		"WATCHDOG_INTERVAL_MS":    "60000",
-		"HEALTH_PORT":             "0",
-		"LOG_LEVEL":               "info",
+		"EVENT_TABLE":           table,
+		"PUBSUB_ENABLED":        "true",
+		"SQS_ENABLED":           "true",
+		"PUBSUB_PROJECT_ID":     e2eProjectID,
+		"PUBSUB_EMULATOR_HOST":  getenv("OUTBOXER_E2E_PUBSUB_ENDPOINT", e2ePubSubEndpoint),
+		"SQS_API_ENDPOINT":      getenv("OUTBOXER_E2E_SQS_ENDPOINT", e2eSQSEndpoint),
+		"AWS_REGION":            e2eAWSRegion,
+		"AWS_ACCESS_KEY_ID":     "test",
+		"AWS_SECRET_ACCESS_KEY": "test",
+		"PG_HOST":               getenv("OUTBOXER_E2E_PG_HOST", "localhost"),
+		"PG_PORT":               getenv("OUTBOXER_E2E_PG_PORT", "54329"),
+		"PG_USER":               getenv("OUTBOXER_E2E_PG_USER", "outboxer"),
+		"PG_PASSWORD":           getenv("OUTBOXER_E2E_PG_PASSWORD", "outboxer"),
+		"PG_DATABASE":           getenv("OUTBOXER_E2E_PG_DATABASE", "outboxer"),
+		"PG_SSL":                "false",
+		"COLLECT_BATCH_TARGET":  "5000",
+		"POLL_INTERVAL_MS":      "50",
+		"PUBLISH_TIMEOUT_MS":    "5000",
+		"HEALTH_PORT":           "0",
+		"LOG_LEVEL":             "info",
 	}
 	for _, override := range overrides {
 		for key, value := range override {
