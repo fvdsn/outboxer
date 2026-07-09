@@ -53,7 +53,7 @@ options.
 
 | CLI flag | Env var | Default | Description |
 | --- | --- | --- | --- |
-| `--collect-batch-target` | `COLLECT_BATCH_TARGET` | `5000` | Approximate target rows selected per batch. Must be positive. Every eligible route (distinct target and destination pair with pending events) gets an even share of the target, at least one row; a busy route does not borrow an idle route's share within a batch. |
+| `--collect-batch-target` | `COLLECT_BATCH_TARGET` | `10000` | Approximate target rows selected per batch. Must be positive. Every eligible route (distinct target and destination pair with pending events) gets an even share of the target, at least one row; a busy route does not borrow an idle route's share within a batch. Throughput rises with batch size, but peak in-flight memory is roughly batch × payload size and a failed batch is redelivered whole — size it to your events (the default holds ~100 MB at 10 KB payloads). |
 | `--backlog-count-limit` | `BACKLOG_COUNT_LIMIT` | `100000` | Scan cap for the backlog depth probe behind the `outboxer_backlog_events` metric. `0` disables the probe. See [Observability](observability.md). |
 | `--sqs-send-concurrency` | `SQS_SEND_CONCURRENCY` | `128` | Maximum concurrent SQS send requests. SQS caps batches at 10 messages, so this is the SQS throughput knob; the HTTP connection pool is sized to match. |
 | `--dlq-table` | `DLQ_TABLE` | `disabled` | Dead letter table for poison events. Defaults to `disabled`; set a table name to enable. See [Dead Letter Queue](dlq.md). |

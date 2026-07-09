@@ -52,8 +52,8 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	if cfg.WatchdogInterval != 10*time.Minute {
 		t.Fatalf("expected default watchdog interval 10m, got %s", cfg.WatchdogInterval)
 	}
-	if cfg.CollectBatchTarget != 5000 {
-		t.Fatalf("expected default batch collection target 5000, got %d", cfg.CollectBatchTarget)
+	if cfg.CollectBatchTarget != 10000 {
+		t.Fatalf("expected default batch collection target 10000, got %d", cfg.CollectBatchTarget)
 	}
 	if cfg.DLQTable != "" {
 		t.Fatalf("expected DLQ table to be disabled by default, got %q", cfg.DLQTable)

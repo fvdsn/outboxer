@@ -119,7 +119,13 @@ func defaultConfig() appConfig {
 		EventDestination: "destination",
 		EventOptions:     "options",
 
-		CollectBatchTarget: 5000,
+		// Swept 1k-20k on GKE and EKS (July 2026): throughput keeps rising
+		// with batch size (per-batch fixed cost dominates below 10k), but
+		// peak in-flight memory scales as batch x payload size and a failed
+		// batch redelivers whole. 10k takes most of the throughput
+		// (+37% Pub/Sub, +21% SQS over 5k) while staying ~100MB in flight
+		// at 10KB payloads; deployments with small events can raise it.
+		CollectBatchTarget: 10000,
 		BacklogCountLimit:  100000,
 		// Measured on ECS Fargate + SQS (eu-central-1): throughput scales with
 		// send concurrency up to ~128, where publish time converges with the

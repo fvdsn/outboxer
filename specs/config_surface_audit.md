@@ -55,11 +55,11 @@ stating where the value came from.
 | `HEALTH_STALE_AFTER_MS` | 5 min | Anti-flap window; 5 min is a universal answer given that provider failures never flip health. (Added as a knob 2026-07-08; superseded by the no-knobs philosophy.) |
 | `NOTIFY_CHANNEL` | derived: `outboxer_events_<event table>` | Removes a multi-table coordination footgun; init and relay derive identically. Breaking for non-default tables — needs an init re-run, called out in release notes. |
 
-## Bucket 3 — Benchmark, then hardcode
+## Bucket 3 — Benchmark, then decide
 
 | Setting | Current | Question | Plan |
 | --- | --- | --- | --- |
-| `COLLECT_BATCH_TARGET` | 5,000 | Is 5k the throughput sweet spot? Larger batches amortize per-batch overhead but hold row locks and publish windows longer. | Sweep 1k / 2k / 5k / 10k / 20k on GKE (Pub/Sub, 0.1% run variance) and EKS (SQS), definitive methodology, `kubectl set env` between runs. Hardcode the winner unless the curve is flat — a flat curve also justifies hardcoding 5k. |
+| `COLLECT_BATCH_TARGET` | 5,000 | Where is the throughput knee? | Sweep 1k / 2k / 5k / 10k / 20k on GKE (Pub/Sub) and EKS (SQS), definitive methodology. **Decision (2026-07-09): the knob stays** — the right value depends on event size, because peak in-flight memory scales as batch × payload and the relay cannot know payload sizes. The sweep picks the *default* instead, balancing throughput against memory and failure blast radius for typical payloads, and the docs get the sizing formula. Sweep result: throughput rises with batch size on both platforms (GKE: 6.1k/s @ 1k → 32.1k/s @ 20k; EKS shallower), no knee by 20k at 256 B payloads — the per-batch fixed cost dominates below 10k. |
 | `POLL_INTERVAL_MS` | 1 s | Backstop cadence. The busy-loop A/B already vindicated notify + backstop; the persistent-listener change (see pipelined-batches spec discussion) makes the backstop rarer still. | No further benchmark. Hardcode 1 s when the persistent listener lands. The 0 = busy-poll mode was a benchmark instrument; it goes with the knob. |
 
 ## Bucket 4 — Decide alongside parked specs
@@ -72,10 +72,12 @@ stating where the value came from.
 
 ## Sequencing
 
-1. Run the Bucket 3 batch-target sweep (this campaign).
-2. Remove Bucket 2 + `COLLECT_BATCH_TARGET` + `POLL_INTERVAL_MS` in one
-   commit each (flag, env var, docs row, validation), with the chosen
-   constants and their provenance comments.
+1. Run the Bucket 3 batch-target sweep (this campaign); raise the
+   `COLLECT_BATCH_TARGET` default to the sweep's pick and document the
+   batch × payload memory formula next to it.
+2. Remove Bucket 2 + `POLL_INTERVAL_MS` in one commit each (flag, env var,
+   docs row, validation), with the chosen constants and their provenance
+   comments.
 3. `docs/configuration.md` shrinks to identity + policy settings, one page.
 4. Bucket 4 falls out of the batch-budget / collection-plan work later.
 
