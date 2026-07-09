@@ -68,7 +68,7 @@ stating where the value came from.
 | Setting | Current | Question | Plan |
 | --- | --- | --- | --- |
 | `COLLECT_BATCH_TARGET` | 5,000 | Where is the throughput knee? | Sweep 1k / 2k / 5k / 10k / 20k on GKE (Pub/Sub) and EKS (SQS), definitive methodology. **Decision (2026-07-09): the knob stays** — the right value depends on event size, because peak in-flight memory scales as batch × payload and the relay cannot know payload sizes. The sweep picks the *default* instead, balancing throughput against memory and failure blast radius for typical payloads, and the docs get the sizing formula. Sweep result: throughput rises with batch size on both platforms (GKE: 6.1k/s @ 1k → 32.1k/s @ 20k; EKS shallower), no knee by 20k at 256 B payloads — the per-batch fixed cost dominates below 10k. |
-| `POLL_INTERVAL_MS` | 1 s | Backstop cadence. The busy-loop A/B already vindicated notify + backstop; the persistent-listener change (see pipelined-batches spec discussion) makes the backstop rarer still. | No further benchmark. Hardcode 1 s when the persistent listener lands. The 0 = busy-poll mode was a benchmark instrument; it goes with the knob. |
+| `POLL_INTERVAL_MS` | 1 s | Backstop cadence. The busy-loop A/B already vindicated notify + backstop; the persistent-listener change (see pipelined-batches spec discussion) makes the backstop rarer still. | **Done (2026-07-09):** hardcoded at 1 s after the persistent listener landed (GKE re-measurement: p99 232 → 85 ms). The 0 = busy-poll mode went with the knob, and the e2e suite runs at identical speed without its 10 ms override — the notify path carries it. |
 
 ## Bucket 4 — Decide alongside parked specs
 

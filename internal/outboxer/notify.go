@@ -19,10 +19,9 @@ const unlistenTimeout = time.Second
 // NOTIFY only to sessions listening at commit time, so the subscription is
 // persistent: notifications for events committed while a batch is running
 // buffer on the connection and the next idle wait returns immediately,
-// instead of the event waiting out the poll backstop. It is used only when
-// polling is enabled (POLL_INTERVAL_MS > 0). The poll interval remains the
-// durability backstop — for reconnect gaps after a listener failure, a
-// missed notification only delays an event until the next sweep, never
+// instead of the event waiting out the poll backstop. The 1s backstop sweep
+// remains the durability net — for reconnect gaps after a listener failure,
+// a missed notification only delays an event until the next sweep, never
 // loses it.
 type notifyListener struct {
 	conn *sql.Conn

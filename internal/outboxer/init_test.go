@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 )
 
 func baselineInitConfig() appConfig {
@@ -67,7 +66,6 @@ func TestInitScriptQualifiesCustomSchema(t *testing.T) {
 	cfg.PGInitUser = "admin"
 	cfg.PGProducerRoles = []string{"producer"}
 	cfg.DLQTable = "dead_letters"
-	cfg.PollInterval = time.Second
 
 	script := initScript(cfg, true)
 
@@ -169,7 +167,6 @@ func TestInitScriptNoDLQByDefault(t *testing.T) {
 
 func TestInitScriptTriggerWhenPolling(t *testing.T) {
 	cfg := baselineInitConfig()
-	cfg.PollInterval = 5 * time.Second
 
 	script := initScript(cfg, true)
 
@@ -180,7 +177,7 @@ func TestInitScriptTriggerWhenPolling(t *testing.T) {
 }
 
 func TestInitScriptAlwaysCreatesTrigger(t *testing.T) {
-	// PollInterval is zero here: the trigger is provisioned regardless so the
+	// The trigger is provisioned regardless of runtime settings so the
 	// operator can enable LISTEN/NOTIFY later without re-running init.
 	script := initScript(baselineInitConfig(), true)
 

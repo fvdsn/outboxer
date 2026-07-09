@@ -37,7 +37,6 @@ type appConfig struct {
 	PubSubAPIEndpoint  string
 	SQSAPIEndpoint     string
 	ErrorCooldown      time.Duration
-	PollInterval       time.Duration
 	PublishTimeout     time.Duration
 	PublishResultGrace time.Duration
 	MaxEventAge        time.Duration
@@ -111,15 +110,21 @@ const (
 	awsRoleDuration            = time.Hour
 	awsCredentialRefreshWindow = 5 * time.Minute
 
+	// The idle wait is bounded by this backstop: LISTEN/NOTIFY provides the
+	// fast wake-up path, and the sweep only matters for listener reconnect
+	// gaps, in which a missed notification delays an event by at most this
+	// long. The cloud latency A/B (July 2026) showed busy-polling buys no
+	// median and costs p99 and idle database load.
+	pollInterval = time.Second
+
 	// The relay reports /healthz unhealthy after this long without a
 	// committed batch (and never for provider failures, which a restart
-	// cannot fix). Raised to 10x the poll interval when that is larger, so
-	// an idle relay cannot flap.
-	healthStaleAfterFloor = 5 * time.Minute
+	// cannot fix). Generous relative to the 1s backstop, so an idle relay
+	// cannot flap.
+	healthStaleAfter = 5 * time.Minute
 
-	// Watchdog sweep cadence, raised to 10x the poll interval when that is
-	// larger to avoid false deadlock reports.
-	watchdogIntervalFloor = 10 * time.Minute
+	// Watchdog sweep cadence.
+	watchdogInterval = 10 * time.Minute
 
 	// The notification channel is derived from the event table
 	// (outboxer_<table>), so multiple tables in one database get distinct
@@ -142,12 +147,9 @@ func deriveNotifyChannel(eventTable string) string {
 }
 
 // deriveConfig fills in the settings computed from public configuration.
-// Called after flag/env parsing (and again after any test override of the
-// inputs).
+// Called after flag/env parsing.
 func deriveConfig(cfg *appConfig) {
 	cfg.NotifyChannel = deriveNotifyChannel(cfg.EventTable)
-	cfg.WatchdogInterval = max(watchdogIntervalFloor, 10*cfg.PollInterval)
-	cfg.HealthStaleAfter = max(healthStaleAfterFloor, 10*cfg.PollInterval)
 }
 
 func loadConfig(args []string, output io.Writer) (appConfig, error) {
@@ -207,9 +209,9 @@ func defaultConfig() appConfig {
 		LogLevel:  "info",
 		LogFormat: "text",
 
-		WatchdogInterval:   watchdogIntervalFloor,
+		WatchdogInterval:   watchdogInterval,
 		HealthPort:         0,
-		HealthStaleAfter:   healthStaleAfterFloor,
+		HealthStaleAfter:   healthStaleAfter,
 		PubSubEnabled:      false,
 		SQSEnabled:         false,
 		DefaultPubSubTopic: "default",
@@ -218,7 +220,6 @@ func defaultConfig() appConfig {
 		PubSubAPIEndpoint:  "",
 		SQSAPIEndpoint:     "",
 		ErrorCooldown:      errorCooldown,
-		PollInterval:       time.Second,
 		PublishTimeout:     30 * time.Second,
 		PublishResultGrace: publishResultGrace,
 		MaxEventAge:        0,

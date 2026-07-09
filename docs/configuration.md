@@ -56,7 +56,6 @@ options.
 | `--collect-batch-target` | `COLLECT_BATCH_TARGET` | `10000` | Approximate target rows selected per batch. Must be positive. Every eligible route (distinct target and destination pair with pending events) gets an even share of the target, at least one row; a busy route does not borrow an idle route's share within a batch. Throughput rises with batch size, but peak in-flight memory is roughly batch × payload size and a failed batch is redelivered whole — size it to your events (the default holds ~100 MB at 10 KB payloads). |
 | `--dlq-table` | `DLQ_TABLE` | `disabled` | Dead letter table for poison events. Defaults to `disabled`; set a table name to enable. See [Dead Letter Queue](dlq.md). |
 | `--max-event-age-ms` | `MAX_EVENT_AGE_MS` | `0` | Maximum selected event age in milliseconds. `0` disables age-based poison. Requires `EVENT_TIMESTAMP`. |
-| `--poll-interval-ms` | `POLL_INTERVAL_MS` | `1000` | Idle wait after an empty batch in milliseconds, cut short by a `LISTEN`/`NOTIFY` wake-up via the notification trigger that `init` provisions. Set to `0` to poll continuously with no sleep. See [Notifications](notifications.md). |
 | `--publish-timeout-ms` | `PUBLISH_TIMEOUT_MS` | `30000` | Timeout for a single publish call in milliseconds. Must be positive. |
 
 ## HTTP / health
@@ -164,9 +163,10 @@ loudly instead of being silently ignored.
 | `ERROR_COOLDOWN_MS` | 5 s sleep after a failed batch. |
 | `PUBLISH_RESULT_GRACE_MS` | 5 s extra wait for async publish results. |
 | `STATS_INTERVAL_MS` | Statistics log every 10 s. |
-| `WATCHDOG_INTERVAL_MS` | 10 min, or 10× `POLL_INTERVAL_MS` when larger. |
-| `HEALTH_STALE_AFTER_MS` | `/healthz` turns unhealthy after 5 min without a committed batch, or 10× `POLL_INTERVAL_MS` when larger. |
+| `WATCHDOG_INTERVAL_MS` | 10 min. |
+| `HEALTH_STALE_AFTER_MS` | `/healthz` turns unhealthy after 5 min without a committed batch. |
 | `PG_CONNECT_TIMEOUT_MS` | 10 s. |
 | `AWS_ROLE_DURATION_SECONDS` | 1 h assumed-role sessions. |
 | `AWS_CREDENTIAL_REFRESH_WINDOW_MS` | Credentials refresh 5 min before expiry. |
 | `NOTIFY_CHANNEL` | Derived from the event table as `outboxer_<table>`, so multiple tables in one database need no coordination. Re-run `init` after upgrading if your table is not named `events`. |
+| `POLL_INTERVAL_MS` | The idle wait is a 1 s safety sweep; `LISTEN`/`NOTIFY` is the wake-up path (see [Notifications](notifications.md)). |

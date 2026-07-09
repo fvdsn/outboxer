@@ -208,7 +208,6 @@ func TestLocalEmulatorE2ETwoOutboxersPreserveOrderedPubSub(t *testing.T) {
 		"SQS_ENABLED":               "false",
 		"DEFAULT_PUBSUB_TOPIC":      topic,
 		"COLLECT_BATCH_TARGET":      "40",
-		"POLL_INTERVAL_MS":          "10",
 		"PUBLISH_TIMEOUT_MS":        "5000",
 		"EVENT_TARGET":              "target",
 		"EVENT_DESTINATION":         "destination",
@@ -294,7 +293,6 @@ func TestLocalEmulatorE2ETwoOutboxersSplitByTargetOnSameTable(t *testing.T) {
 
 	commonOverrides := map[string]string{
 		"COLLECT_BATCH_TARGET":      "5",
-		"POLL_INTERVAL_MS":          "10",
 		"PUBLISH_TIMEOUT_MS":        "5000",
 		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	}
@@ -372,7 +370,6 @@ func TestLocalEmulatorE2ETwoOutboxersSplitByPubSubDestination(t *testing.T) {
 		"SQS_ENABLED":               "false",
 		"DEFAULT_SQS_QUEUE_URL":     "disabled",
 		"COLLECT_BATCH_TARGET":      "5",
-		"POLL_INTERVAL_MS":          "10",
 		"PUBLISH_TIMEOUT_MS":        "5000",
 		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	}
@@ -439,7 +436,6 @@ func TestLocalEmulatorE2ETwoOutboxersSplitBySQSDestination(t *testing.T) {
 		"SQS_ENABLED":               "true",
 		"DEFAULT_PUBSUB_TOPIC":      "disabled",
 		"COLLECT_BATCH_TARGET":      "5",
-		"POLL_INTERVAL_MS":          "10",
 		"PUBLISH_TIMEOUT_MS":        "5000",
 		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	}
@@ -516,7 +512,6 @@ func TestLocalEmulatorE2ERouteBrokenDestinationDoesNotBlockHealthyRoute(t *testi
 	process := startOutboxer(t, ctx, binary, table, map[string]string{
 		"COLLECT_BATCH_TARGET":      "5",
 		"PUBLISH_TIMEOUT_MS":        "1000",
-		"POLL_INTERVAL_MS":          "50",
 		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	})
 
@@ -573,7 +568,6 @@ func TestLocalEmulatorE2EDeadLettersSQSPoisonEvent(t *testing.T) {
 		"DEFAULT_SQS_QUEUE_URL":     queue,
 		"DLQ_TABLE":                 dlqTable,
 		"COLLECT_BATCH_TARGET":      "10",
-		"POLL_INTERVAL_MS":          "10",
 		"PUBLISH_TIMEOUT_MS":        "5000",
 		"AWS_WEB_IDENTITY_PROVIDER": "disabled",
 	})
@@ -1166,7 +1160,6 @@ func startOutboxer(t *testing.T, ctx context.Context, binary string, table strin
 		"PG_DATABASE":           getenv("OUTBOXER_E2E_PG_DATABASE", "outboxer"),
 		"PG_SSL":                "false",
 		"COLLECT_BATCH_TARGET":  "5000",
-		"POLL_INTERVAL_MS":      "50",
 		"PUBLISH_TIMEOUT_MS":    "5000",
 		"HEALTH_PORT":           "0",
 		"LOG_LEVEL":             "info",

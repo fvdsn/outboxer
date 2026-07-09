@@ -66,13 +66,14 @@ var retiredEnvVars = map[string]string{
 	"BACKLOG_COUNT_LIMIT":              "fixed at 100000",
 	"ERROR_COOLDOWN_MS":                "fixed at 5s",
 	"PUBLISH_RESULT_GRACE_MS":          "fixed at 5s",
-	"WATCHDOG_INTERVAL_MS":             "fixed at 10m (or 10x the poll interval when larger)",
+	"WATCHDOG_INTERVAL_MS":             "fixed at 10m",
 	"STATS_INTERVAL_MS":                "fixed at 10s",
 	"PG_CONNECT_TIMEOUT_MS":            "fixed at 10s",
 	"AWS_ROLE_DURATION_SECONDS":        "fixed at 1h",
 	"AWS_CREDENTIAL_REFRESH_WINDOW_MS": "fixed at 5m",
-	"HEALTH_STALE_AFTER_MS":            "fixed at 5m (or 10x the poll interval when larger)",
+	"HEALTH_STALE_AFTER_MS":            "fixed at 5m",
 	"NOTIFY_CHANNEL":                   "derived from the event table as outboxer_<table>",
+	"POLL_INTERVAL_MS":                 "fixed at 1s (the wake-up backstop; LISTEN/NOTIFY is the fast path)",
 }
 
 func rejectRetiredEnv() error {
@@ -99,14 +100,12 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 	addIntFlag(flags, options, "Batch processing", &cfg.CollectBatchTarget, "collect-batch-target", cfg.CollectBatchTarget, "Approximate target rows selected per batch, spread evenly across eligible routes.", "COLLECT_BATCH_TARGET")
 	addDisableableFlag(flags, options, "Batch processing", &cfg.DLQTable, "dlq-table", cfg.DLQTable, "Dead letter table for poison events.", "DLQ_TABLE")
 
-	var pollIntervalMS = int(cfg.PollInterval / time.Millisecond)
 	var publishTimeoutMS = int(cfg.PublishTimeout / time.Millisecond)
 	var maxEventAgeMS = int(cfg.MaxEventAge / time.Millisecond)
 	var pgQueryTimeoutMS = int(cfg.PGQueryTimeout / time.Millisecond)
 	var pubsubDestinations = strings.Join(cfg.PubSubDestinations, ",")
 	var sqsDestinations = strings.Join(cfg.SQSDestinations, ",")
 
-	addIntFlag(flags, options, "Batch processing", &pollIntervalMS, "poll-interval-ms", pollIntervalMS, "Sleep after an empty batch in milliseconds, cut short by a LISTEN/NOTIFY wake-up. 0 polls continuously with no sleep.", "POLL_INTERVAL_MS")
 	addIntFlag(flags, options, "Batch processing", &publishTimeoutMS, "publish-timeout-ms", publishTimeoutMS, "Timeout for a single publish call in milliseconds. Must be positive.", "PUBLISH_TIMEOUT_MS")
 	addIntFlag(flags, options, "Batch processing", &maxEventAgeMS, "max-event-age-ms", maxEventAgeMS, "Maximum selected event age in milliseconds. 0 disables age-based poison.", "MAX_EVENT_AGE_MS")
 
@@ -143,7 +142,6 @@ func bindConfigFlags(flags *flag.FlagSet, cfg *appConfig, options *[]cliOption) 
 	addStringFlag(flags, options, "AWS SQS", &cfg.AWSWebIdentityAudience, "aws-web-identity-audience", cfg.AWSWebIdentityAudience, "Audience for the web identity token, matching the AWS IAM OIDC provider.", "AWS_WEB_IDENTITY_AUDIENCE")
 
 	return func() {
-		cfg.PollInterval = time.Duration(pollIntervalMS) * time.Millisecond
 		cfg.PublishTimeout = time.Duration(publishTimeoutMS) * time.Millisecond
 		cfg.MaxEventAge = time.Duration(maxEventAgeMS) * time.Millisecond
 		cfg.PGQueryTimeout = time.Duration(pgQueryTimeoutMS) * time.Millisecond

@@ -44,8 +44,8 @@ provisioning-specific schema flags:
   manually rather than waiting for autoanalyze.
 - **DLQ table** (`DLQ_TABLE`), only when set to a table name.
 - **Notify function and trigger**, always, on the `outboxer_<table>` channel,
-  independent of the relay's `POLL_INTERVAL_MS`, which keys the `LISTEN`/`NOTIFY`
-  wake-ups. See [Notifications](notifications.md).
+  which keys the relay's `LISTEN`/`NOTIFY` wake-ups. See
+  [Notifications](notifications.md).
 - **PostgreSQL schema** (`PG_SCHEMA`), created when absent. It defaults to
   `public`.
 
@@ -98,7 +98,6 @@ environment that runs the relay:
 ```sh
 export EVENT_TABLE=events
 export DLQ_TABLE=dead_letters
-export POLL_INTERVAL_MS=5000
 export PG_HOST=... PG_DATABASE=app
 export PG_SCHEMA=public                              # or an application schema
 export PG_INIT_USER=admin PG_INIT_PASSWORD=...   # provisioning identity

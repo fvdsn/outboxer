@@ -37,9 +37,7 @@ type senderResult struct {
 
 func (a *app) processEvents(ctx context.Context) error {
 	slog.Info("Processing events", "table", a.cfg.EventTable)
-	if a.cfg.PollInterval > 0 {
-		slog.Debug("Notification wake-ups enabled", "channel", a.cfg.NotifyChannel)
-	}
+	slog.Debug("Notification wake-ups enabled", "channel", a.cfg.NotifyChannel)
 	defer func() {
 		a.listener.close()
 		a.listener = nil
@@ -63,7 +61,7 @@ func (a *app) processEvents(ctx context.Context) error {
 		}
 		a.updateBacklog(ctx, result)
 
-		if result.selected == 0 && a.cfg.PollInterval > 0 {
+		if result.selected == 0 {
 			a.waitForEvents(ctx)
 		}
 	}
@@ -82,13 +80,13 @@ func (a *app) waitForEvents(ctx context.Context) {
 			if ctx.Err() == nil {
 				slog.Debug("Failed to start notification listener, polling instead", "error", err.Error())
 			}
-			sleepContext(ctx, a.cfg.PollInterval)
+			sleepContext(ctx, pollInterval)
 			return
 		}
 		a.listener = listener
 	}
 
-	if err := a.listener.wait(ctx, a.cfg.PollInterval); err != nil && ctx.Err() == nil {
+	if err := a.listener.wait(ctx, pollInterval); err != nil && ctx.Err() == nil {
 		slog.Debug("Notification wait failed, reconnecting the listener next cycle", "error", err.Error())
 		a.listener.close()
 		a.listener = nil

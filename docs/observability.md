@@ -71,9 +71,8 @@ throughput is the bottleneck.
 ## Health
 
 `/healthz` (alias `/health`) returns `200` while batches commit, and `503` once no batch has
-committed for 5 minutes (or 10x `POLL_INTERVAL_MS` when that is larger, so an
-idle relay on a slow poll cannot flap). A fresh relay is granted one full
-window from startup before a batch is demanded.
+committed for 5 minutes. A fresh relay is granted one full window from
+startup before a batch is demanded.
 
 The staleness threshold is deliberately generous and the check keys off
 *committed batches only*: an idle relay commits an empty batch every poll

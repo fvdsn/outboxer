@@ -489,7 +489,6 @@ func startOutboxer(t *testing.T, ctx context.Context, binary string, table strin
 		"EVENT_ID":                  "id",
 		"EVENT_TIMESTAMP":           "timestamp",
 		"COLLECT_BATCH_TARGET":      strconv.Itoa(target),
-		"POLL_INTERVAL_MS":          "0",
 		"PUBLISH_TIMEOUT_MS":        "30000",
 		"HEALTH_PORT":               "0",
 		"LOG_LEVEL":                 getenv("OUTBOXER_PERF_LOG_LEVEL", "error"),

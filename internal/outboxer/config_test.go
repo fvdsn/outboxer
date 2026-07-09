@@ -18,7 +18,7 @@ import (
 )
 
 func TestLoadConfigUsesDefaults(t *testing.T) {
-	unsetEnv(t, "EVENT_PAYLOAD", "EVENT_DESTINATION", "EVENT_OPTIONS", "PG_HOST", "PG_USER", "PG_SCHEMA", "HEALTH_PORT", "PORT", "POLL_INTERVAL_MS", "WATCHDOG_INTERVAL_MS", "NOTIFY_CHANNEL")
+	unsetEnv(t, "EVENT_PAYLOAD", "EVENT_DESTINATION", "EVENT_OPTIONS", "PG_HOST", "PG_USER", "PG_SCHEMA", "HEALTH_PORT", "PORT")
 
 	cfg, err := loadConfig(nil, io.Discard)
 	if err != nil {
@@ -45,9 +45,6 @@ func TestLoadConfigUsesDefaults(t *testing.T) {
 	}
 	if cfg.HealthPort != 0 {
 		t.Fatalf("expected default healthcheck port 0, got %d", cfg.HealthPort)
-	}
-	if cfg.PollInterval != time.Second {
-		t.Fatalf("expected default poll interval 1s, got %s", cfg.PollInterval)
 	}
 	if cfg.WatchdogInterval != 10*time.Minute {
 		t.Fatalf("expected default watchdog interval 10m, got %s", cfg.WatchdogInterval)
@@ -160,7 +157,6 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	t.Setenv("PG_HOST", "db")
 	t.Setenv("PG_SCHEMA", "outbox")
 	t.Setenv("EVENT_OPTIONS", "event_options")
-	t.Setenv("POLL_INTERVAL_MS", "250")
 	t.Setenv("PORT", "9090")
 	unsetEnv(t, "HEALTH_PORT")
 	t.Setenv("DLQ_TABLE", "dead_letters")
@@ -177,9 +173,6 @@ func TestLoadConfigUsesEnv(t *testing.T) {
 	}
 	if cfg.PGSchema != "outbox" {
 		t.Fatalf("expected env pg schema, got %q", cfg.PGSchema)
-	}
-	if cfg.PollInterval != 250*time.Millisecond {
-		t.Fatalf("expected env poll interval, got %s", cfg.PollInterval)
 	}
 	if cfg.EventOptions != "event_options" {
 		t.Fatalf("expected env event options column, got %q", cfg.EventOptions)
@@ -230,7 +223,6 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	t.Setenv("PG_SCHEMA", "env-schema")
 	t.Setenv("PG_PORT", "5433")
 	t.Setenv("PG_SSL", "false")
-	t.Setenv("POLL_INTERVAL_MS", "250")
 	t.Setenv("DLQ_TABLE", "env_dead_letters")
 	t.Setenv("MAX_EVENT_AGE_MS", "60000")
 	t.Setenv("PUBSUB_DESTINATIONS", "env-topic")
@@ -244,7 +236,6 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 		"--pg-schema=flag-schema",
 		"--pg-port=6543",
 		"--pg-ssl=true",
-		"--poll-interval-ms=500",
 		"--dlq-table=flag_dead_letters",
 		"--max-event-age-ms=120000",
 		"--pubsub-destinations=flag-topic-a, flag-topic-b",
@@ -274,9 +265,6 @@ func TestLoadConfigFlagsOverrideEnv(t *testing.T) {
 	}
 	if !cfg.PGSSL {
 		t.Fatal("expected flag pg ssl to override env")
-	}
-	if cfg.PollInterval != 500*time.Millisecond {
-		t.Fatalf("expected flag poll interval, got %s", cfg.PollInterval)
 	}
 	if cfg.DLQTable != "flag_dead_letters" {
 		t.Fatalf("expected flag DLQ table, got %q", cfg.DLQTable)
@@ -322,8 +310,6 @@ func TestLoadConfigHelpMentionsEnvVars(t *testing.T) {
 		"Env: PG_HOST",
 		"--pg-schema",
 		"Env: PG_SCHEMA",
-		"--poll-interval-ms",
-		"Env: POLL_INTERVAL_MS",
 		"--collect-batch-target",
 		"Env: COLLECT_BATCH_TARGET",
 		"--dlq-table",
@@ -620,20 +606,12 @@ func TestDeriveConfig(t *testing.T) {
 		t.Fatalf("expected default health staleness threshold 5m, got %s", cfg.HealthStaleAfter)
 	}
 
-	cfg, err = loadConfig([]string{"--event-table=order_events", "--poll-interval-ms=120000"}, io.Discard)
+	cfg, err = loadConfig([]string{"--event-table=order_events"}, io.Discard)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
 	if cfg.NotifyChannel != "outboxer_order_events" {
 		t.Fatalf("expected notify channel derived from the event table, got %q", cfg.NotifyChannel)
-	}
-	// A poll interval above the floors raises both derived intervals to 10x,
-	// so an idle relay can neither flap unhealthy nor trip the watchdog.
-	if cfg.WatchdogInterval != 20*time.Minute {
-		t.Fatalf("expected watchdog interval raised to 10x the poll interval, got %s", cfg.WatchdogInterval)
-	}
-	if cfg.HealthStaleAfter != 20*time.Minute {
-		t.Fatalf("expected health staleness threshold raised to 10x the poll interval, got %s", cfg.HealthStaleAfter)
 	}
 }
 

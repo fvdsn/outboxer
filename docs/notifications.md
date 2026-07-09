@@ -1,38 +1,24 @@
 # Low-Latency Notifications
 
-Between empty batches Outboxer sleeps for `POLL_INTERVAL_MS` (default one
-second), so plain polling alone would add up to one interval of latency. A
-PostgreSQL `LISTEN`/`NOTIFY` trigger removes that trade-off: Outboxer waits for
-a notification instead of sleeping out the full interval, so an insert wakes it
-almost immediately while the polling load stays low. The poll interval is a
-**safety sweep** rather than a latency floor.
+Between empty batches Outboxer waits for a PostgreSQL `LISTEN`/`NOTIFY`
+wake-up on a dedicated, permanently subscribed connection, bounded by a
+one-second safety sweep. An insert wakes the relay almost immediately (the
+July 2026 cloud benchmark measured a 55 ms median, 85 ms p99 commit-to-consumer
+on an idle relay); the sweep only matters when the listener connection is
+re-establishing after a failure, so it is a durability net rather than a
+latency floor.
 
-The trigger is an optional optimization. It is never required for correctness —
-a missed or absent notification only delays an event until the next sweep,
-never loses it.
-
-## How it works
-
-- `POLL_INTERVAL_MS > 0` (default `1000`): between empty batches Outboxer waits
-  for a notification on the configured channel, but wakes no later than
-  `POLL_INTERVAL_MS` anyway. With the trigger installed, inserts wake it almost
-  immediately; without it, it behaves exactly like plain polling at that
-  interval.
-- `POLL_INTERVAL_MS=0`: hot-loop polling. Outboxer never sleeps between empty
-  batches, so there is nothing for a notification to interrupt and no listener
-  is started. Installing the trigger has no effect. This trades constant
-  database load for the lowest possible latency without the trigger.
-
-There is no on/off switch for this feature — it is keyed entirely off
-`POLL_INTERVAL_MS`.
+The trigger is never required for correctness — a missed or absent
+notification only delays an event until the next sweep, never loses it.
+Without the trigger installed, the relay behaves like a plain one-second
+poller.
 
 ## Installing the trigger
 
 The trigger is provisioning DDL, run once by whoever owns the schema (typically
 in the same migration that creates the outbox table). The running relay never
 creates it; you install it yourself, or let [`outboxer init`](provisioning.md)
-generate it (always, independent of `POLL_INTERVAL_MS`, so you can raise the
-poll interval later without re-provisioning). The equivalent SQL is:
+generate it. The equivalent SQL is:
 
 ```sql
 CREATE OR REPLACE FUNCTION public.outboxer_notify() RETURNS trigger AS $$
@@ -71,16 +57,8 @@ time (for the migration role), not to the running relay.
 
 ## Recommended usage
 
-With the trigger installed, raise `POLL_INTERVAL_MS` to whatever staleness you
-are willing to tolerate as a backstop (for example a few seconds, or tens of
-seconds), and let the trigger provide the low latency:
-
-```sh
-outboxer --poll-interval-ms=5000   # sweep at most every 5s; trigger wakes sooner
-```
-
-The watchdog and health-staleness windows scale automatically to 10x the poll
-interval when it exceeds their 10-minute and 5-minute floors.
+Install the trigger (or let `init` do it) and do nothing else — the wake-up
+path needs no tuning.
 
 ## Caveats
 

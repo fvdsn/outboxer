@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -42,7 +41,6 @@ func TestInitApplyRoundTripIntegration(t *testing.T) {
 		EventTimestamp:   "timestamp",
 		EventOptions:     "options",
 		DLQTable:         dlq,
-		PollInterval:     5 * time.Second,
 		NotifyChannel:    "outboxer_" + suffix,
 		PGHost:           pc.Host,
 		PGPort:           pc.Port,
