@@ -86,26 +86,31 @@ free — nothing was published, the rollback releases the locks.
 A crash kills both connections; both batches' locks vanish and all rows
 remain. At-least-once is untouched.
 
-### Scope and knobs
+### Scope
 
-- Config: `BATCH_PIPELINE` (default `1` = today's behavior, `2` = double
-  buffering). Ship dark, measure on the cloud harness, then promote `2` to
-  the default per the fastest-defaults policy. Depths beyond 2 buy nothing:
-  the serial publish stage is the pipeline's backbone, and a third in-flight
-  batch would only add abort-on-failure surface.
+- **No permanent knob.** Per the project's configuration philosophy (decide
+  once, ship the good value as the behavior), pipelining is validated with a
+  temporary flag on a branch against the cloud harness and, if it meets the
+  acceptance bar, becomes the only mode; the flag is deleted before release.
+  Pipeline depth is fixed at 2: the serial publish stage is the pipeline's
+  backbone, and a third in-flight batch would only add abort-on-failure
+  surface.
 - Pipelining engages only when the previous select filled the batch target
   (the existing `batchDrained` signal). A relay trickling single events keeps
-  one connection's cadence and pays nothing new.
+  one connection's cadence and pays nothing new — this adaptivity is behavior,
+  not configuration.
 - The LISTEN/notify connection, watchdog, health, and metrics endpoints are
   unchanged. The stats accounting must tolerate two in-flight batch results
   (`addCommittedBatch` is already commit-ordered).
 
 ### Interactions
 
-- **Second connection.** This doubles the relay's connections per table (plus
-  the LISTEN connection). That is a deliberate, documented exception to the
-  single-connection principle, gated behind the knob; the observability
-  constraint (no second connection *for metrics*) is unaffected.
+- **Connection budget.** This adds one connection per relay. The
+  single-connection requirement is retired (2026-07-09) in favor of a small,
+  fixed, documented budget — batch connection + listener + one pipeline
+  connection — stated as a formula in the deployment docs so sharded
+  operators can do the arithmetic. The observability constraint (no second
+  connection *for metrics*) is unaffected.
 - **Collection plan spec.** `specs/collection_plan_requirements.md` reworks
   the collection query into a bounded cursor walk. SKIP LOCKED composes with
   it (it is a lock-clause modifier, not a plan shape), but the two changes
