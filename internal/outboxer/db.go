@@ -38,12 +38,16 @@ func openDB(cfg appConfig) (*sql.DB, error) {
 	}
 
 	db := stdlib.OpenDB(*pgConfig)
-	// One connection, kept idle for reuse: batches and the idle listener share
-	// it sequentially, so the relay does not open a fresh connection (TCP, TLS,
-	// auth, backend fork) per batch. The listener removes its LISTEN state
-	// before releasing the connection (see notifyListener.close).
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	// The relay's whole connection budget: one connection for batches, kept
+	// idle for reuse so there is no fresh connection (TCP, TLS, auth, backend
+	// fork) per batch, plus one held by the persistent notification listener.
+	// Postgres delivers a NOTIFY only to sessions listening at commit time,
+	// so the listener subscribes once and stays subscribed; releasing it
+	// between batches (the previous design) left deaf windows during
+	// processing in which committed events missed their wake-up and waited
+	// out the poll backstop.
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(2)
 	return db, nil
 }
 

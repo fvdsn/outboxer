@@ -20,6 +20,11 @@ type app struct {
 	stats         *appStats
 	watchdog      *watchdog
 
+	// listener is the persistent notification subscription, established on
+	// the first idle wait and re-established after connection failures. Only
+	// the processing goroutine touches it.
+	listener *notifyListener
+
 	// lastBacklogProbe throttles the bounded backlog count; it is only touched
 	// by the processing goroutine.
 	lastBacklogProbe time.Time

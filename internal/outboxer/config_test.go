@@ -142,32 +142,17 @@ func TestBuildTLSConfigRootCert(t *testing.T) {
 	}
 }
 
-func TestOpenDBUsesSingleConnection(t *testing.T) {
+func TestOpenDBUsesFixedConnectionBudget(t *testing.T) {
 	db, err := openDB(testConfig())
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
 	defer db.Close()
 
-	if got := db.Stats().MaxOpenConnections; got != 1 {
-		t.Fatalf("expected one max open connection, got %d", got)
-	}
-}
-
-func TestOpenDBUsesSingleConnectionWhenPolling(t *testing.T) {
-	cfg := testConfig()
-	cfg.PollInterval = time.Second
-
-	db, err := openDB(cfg)
-	if err != nil {
-		t.Fatalf("openDB: %v", err)
-	}
-	defer db.Close()
-
-	// The transient notify listener borrows the single connection only while
-	// idle, so polling does not require a second connection.
-	if got := db.Stats().MaxOpenConnections; got != 1 {
-		t.Fatalf("expected one max open connection even when polling, got %d", got)
+	// One connection for batches plus one held by the persistent
+	// notification listener — the relay's whole budget, fixed.
+	if got := db.Stats().MaxOpenConnections; got != 2 {
+		t.Fatalf("expected the two-connection budget, got %d", got)
 	}
 }
 

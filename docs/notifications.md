@@ -88,5 +88,8 @@ interval when it exceeds their 10-minute and 5-minute floors.
   (for example pgbouncer `pool_mode = transaction`). Outboxer's direct
   connection is unaffected; this only matters if you front Postgres with such a
   pooler.
-- Outboxer still uses a single database connection: the listener borrows it only
-  while idle and releases it before the next batch runs.
+- Outboxer uses exactly two database connections: one for batches and one held
+  by the notification listener. The subscription is persistent because Postgres
+  delivers a `NOTIFY` only to sessions listening at commit time — an event
+  committed while a batch runs buffers its wake-up on the listener connection
+  instead of waiting out the poll backstop.

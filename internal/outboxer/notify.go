@@ -14,19 +14,23 @@ import (
 // its connection back to the pool.
 const unlistenTimeout = time.Second
 
-// notifyListener borrows a PostgreSQL connection for one idle cycle: it LISTENs
-// on the configured channel and blocks until a notification arrives or the wait
-// times out, then the connection is released. It is used only when polling is
-// enabled (POLL_INTERVAL_MS > 0) to wake the processing loop quickly when a
-// producer inserts an event. The poll interval remains the durability backstop:
-// notifications are best-effort, and a missed one only delays an event until the
-// next sweep, never loses it.
+// notifyListener holds a dedicated PostgreSQL connection subscribed to the
+// derived notification channel for the relay's lifetime. Postgres delivers a
+// NOTIFY only to sessions listening at commit time, so the subscription is
+// persistent: notifications for events committed while a batch is running
+// buffer on the connection and the next idle wait returns immediately,
+// instead of the event waiting out the poll backstop. It is used only when
+// polling is enabled (POLL_INTERVAL_MS > 0). The poll interval remains the
+// durability backstop — for reconnect gaps after a listener failure, a
+// missed notification only delays an event until the next sweep, never
+// loses it.
 type notifyListener struct {
 	conn *sql.Conn
 }
 
-// startListener borrows a connection and issues LISTEN on the configured
-// channel. The caller must close the listener to release the connection.
+// startListener dedicates a pool connection to the notification subscription
+// and issues LISTEN on the derived channel. The caller keeps the listener
+// across batches and closes it on shutdown or after a wait error.
 func (a *app) startListener(ctx context.Context) (*notifyListener, error) {
 	conn, err := a.db.Conn(ctx)
 	if err != nil {
@@ -39,10 +43,12 @@ func (a *app) startListener(ctx context.Context) (*notifyListener, error) {
 	return &notifyListener{conn: conn}, nil
 }
 
-// close releases the listener connection back to the pool for the next batch
-// to reuse, removing the subscription first so pooled reuse does not carry
-// LISTEN state. If the cleanup fails the connection is in an unknown state and
-// is discarded instead of reused. It is safe to call on a nil listener.
+// close releases the listener connection back to the pool, removing the
+// subscription first so pooled reuse does not carry LISTEN state. Called on
+// shutdown and after a wait error (the connection is then re-established by
+// the next idle cycle). If the cleanup fails the connection is in an unknown
+// state and is discarded instead of reused. It is safe to call on a nil
+// listener.
 func (l *notifyListener) close() {
 	if l == nil || l.conn == nil {
 		return

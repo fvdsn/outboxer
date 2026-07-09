@@ -40,6 +40,10 @@ func (a *app) processEvents(ctx context.Context) error {
 	if a.cfg.PollInterval > 0 {
 		slog.Debug("Notification wake-ups enabled", "channel", a.cfg.NotifyChannel)
 	}
+	defer func() {
+		a.listener.close()
+		a.listener = nil
+	}()
 
 	for {
 		if ctx.Err() != nil {
@@ -66,23 +70,28 @@ func (a *app) processEvents(ctx context.Context) error {
 }
 
 // waitForEvents waits for a new-event notification, bounded by the poll interval
-// as a backstop. It listens on a transient connection borrowed for this idle
-// cycle and released before returning, so it never holds a connection while
-// batches run. If the listener cannot be established it falls back to a plain
-// sleep; the next idle cycle tries again.
+// as a backstop. The listener connection is persistent: it stays subscribed
+// while batches run, so a notification committed mid-batch is buffered and
+// the wait returns immediately. If the listener cannot be established (or its
+// connection failed) this cycle falls back to a plain sleep and the next idle
+// cycle re-establishes it.
 func (a *app) waitForEvents(ctx context.Context) {
-	listener, err := a.startListener(ctx)
-	if err != nil {
-		if ctx.Err() == nil {
-			slog.Debug("Failed to start notification listener, polling instead", "error", err.Error())
+	if a.listener == nil {
+		listener, err := a.startListener(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Debug("Failed to start notification listener, polling instead", "error", err.Error())
+			}
+			sleepContext(ctx, a.cfg.PollInterval)
+			return
 		}
-		sleepContext(ctx, a.cfg.PollInterval)
-		return
+		a.listener = listener
 	}
-	defer listener.close()
 
-	if err := listener.wait(ctx, a.cfg.PollInterval); err != nil && ctx.Err() == nil {
-		slog.Debug("Notification wait failed, polling next cycle", "error", err.Error())
+	if err := a.listener.wait(ctx, a.cfg.PollInterval); err != nil && ctx.Err() == nil {
+		slog.Debug("Notification wait failed, reconnecting the listener next cycle", "error", err.Error())
+		a.listener.close()
+		a.listener = nil
 	}
 }
 
