@@ -1,10 +1,55 @@
 # Collection Query Plan Robustness Requirements
 
-Status: bug analysis and fix requirements, not yet implemented. Written
-2026-07-08 from live GCP Cloud Run performance runs (`test/cloud/gcpcloudrun`,
-reports in `test/cloud/results/`). The stall described here is considered a
-bug: the collection query must not have a statistics-dependent degenerate
-case.
+Status: implementation design settled 2026-07-09 (see "Implementation
+design" below); originally written 2026-07-08 from live GCP Cloud Run
+performance runs (`test/cloud/gcpcloudrun`, reports in
+`test/cloud/results/`). The stall described here is considered a bug: the
+collection query must not have a statistics-dependent degenerate case.
+
+## Implementation design (2026-07-09)
+
+The cursor walk from the fix requirements, refined by one discovery made at
+design time: **a bounded scan alone can starve routes**. The
+broken-destination semantic (a failing route's growing backlog must not
+block healthy routes — pinned by the
+`RouteBrokenDestinationDoesNotBlockHealthyRoute` e2e scenario) is served
+today by the routes CTE's unbounded discovery scan. A pure oldest-N walk
+with a scan bound would let a broken route with a deeper-than-the-bound
+backlog occupy the whole scan window every batch, starving routes behind
+it. The design therefore has a cheap common path and a targeted
+pathological path:
+
+1. **Cursor walk** (common path). Page through the PK index in id order:
+   `WHERE id > $cursor ORDER BY id LIMIT $page`, with the routable
+   predicate applied to the page's rows and the resolved route expressions
+   computed per row. The relay accumulates ids per route, capped at a
+   per-route quota `max(1, target / knownRoutes)`, and stops when the batch
+   target fills, the table ends, or a fixed 100k scan bound is reached
+   (same reasoning and constant as the backlog probe). In a healthy
+   deployment this is a single bounded statement.
+2. **Route memory + targeted probes** (pathological path). Routes that
+   yielded rows in the previous batch stay known. A known route the walk
+   did not reach gets its own bounded pick — today's per-route LATERAL
+   shape for exactly one route (`WHERE routable AND route = ... ORDER BY id
+   LIMIT quota`). Healthy deployments never probe; a broken-route pileup
+   costs one targeted index walk per starved route per batch. Known
+   limitation, documented: a route *born* behind a deeper-than-100k broken
+   backlog is not discovered until that backlog drains (DLQ / MAX_EVENT_AGE
+   are the mitigations for the backlog itself).
+3. **Lock at fetch.** The final statement fetches and locks the full rows:
+   `WHERE id = ANY($ids) ORDER BY id FOR UPDATE` — the id-array shape
+   already proven index-safe by `deleteEvents`.
+4. **`SET LOCAL enable_seqscan = off`** on the batch transaction. Postgres
+   has no plan hints; this is the structural guarantee that none of the
+   above can degrade to a seq-scan+sort plan under stale statistics. All
+   batch statements are id-keyed, so the setting costs nothing when
+   statistics are healthy.
+5. **Per-route order is preserved** (each route's ids are always taken
+   oldest-first, by walk order or probe order), which is what ordered
+   delivery actually requires; global cross-route order was never
+   guaranteed. `batchDrained` is re-derived: a batch is drained when the
+   walk reached the end of the table with no route capped by quota and no
+   probes pending.
 
 ## Symptom
 
