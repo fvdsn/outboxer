@@ -5,7 +5,6 @@
 # Outboxer
 
 [![CI](https://github.com/fvdsn/outboxer/actions/workflows/ci.yml/badge.svg)](https://github.com/fvdsn/outboxer/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/fvdsn/outboxer)](https://goreportcard.com/report/github.com/fvdsn/outboxer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Outboxer is a standalone worker application that reads events from a PostgreSQL
