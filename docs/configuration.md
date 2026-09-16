@@ -160,7 +160,7 @@ loudly instead of being silently ignored.
 | --- | --- |
 | `SQS_SEND_CONCURRENCY` | 128 concurrent sends, the fastest measured setting; the HTTP pool is sized to match. |
 | `BACKLOG_COUNT_LIMIT` | The backlog probe scans at most 100,000 rows. |
-| `ERROR_COOLDOWN_MS` | 5 s sleep after a failed batch. |
+| `ERROR_COOLDOWN_MS` | 5 s sleep after a failed database transaction; sender failures retry immediately. |
 | `PUBLISH_RESULT_GRACE_MS` | 5 s extra wait for async publish results. |
 | `STATS_INTERVAL_MS` | Statistics log every 10 s. |
 | `WATCHDOG_INTERVAL_MS` | 10 min. |
