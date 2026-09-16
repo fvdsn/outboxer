@@ -85,7 +85,7 @@ vet:
 
 # Run golangci-lint (pinned to the version used in CI).
 lint:
-    go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./...
+    go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
 
 # Scan dependencies for known vulnerabilities.
 vuln:
