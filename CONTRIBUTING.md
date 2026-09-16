@@ -39,7 +39,7 @@ just integration
 - Keep changes focused; one logical change per pull request.
 - Make sure `just check` passes before opening the pull request.
 - Add or update tests for behavior changes.
-- Update the `README.md` when you change configuration or behavior.
+- Update `docs/configuration.md` when you change configuration, and the `README.md` when you change behavior.
 
 ## License
 

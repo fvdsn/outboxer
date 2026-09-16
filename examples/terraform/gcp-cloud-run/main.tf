@@ -13,7 +13,7 @@ locals {
   project_id = "my-gcp-project"
   region     = "europe-west1"
   name       = "outboxer"
-  image      = "ghcr.io/fvdsn/outboxer:v0.1.0"
+  image      = "ghcr.io/fvdsn/outboxer:v0.4.0"
 
   labels = {
     app = local.name

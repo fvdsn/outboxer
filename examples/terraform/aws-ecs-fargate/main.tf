@@ -12,7 +12,7 @@ terraform {
 locals {
   aws_region         = "eu-west-1"
   name               = "outboxer"
-  image              = "ghcr.io/fvdsn/outboxer:v0.1.0"
+  image              = "ghcr.io/fvdsn/outboxer:v0.4.0"
   cluster_arn        = "arn:aws:ecs:eu-west-1:123456789012:cluster/app"
   subnet_ids         = ["subnet-0123456789abcdef0", "subnet-abcdef0123456789a"]
   security_group_ids = ["sg-0123456789abcdef0"]

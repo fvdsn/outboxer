@@ -32,6 +32,6 @@ services:
       - "8085:8085"
 
   sqs:
-    image: softwaremill/elasticmq-native:latest
+    image: softwaremill/elasticmq-native:1.7.1
     ports:
       - "9324:9324"

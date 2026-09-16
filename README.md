@@ -84,8 +84,8 @@ INSERT INTO events (payload)
 VALUES ('{"type":"user.created","id":"123"}');
 ```
 
-Note that the Outboxer must always run as at least one active instance. It continuously polls
-from a single PostgreSQL connection.
+Note that the Outboxer must always run as at least one active instance. It holds two
+PostgreSQL connections: one listening for new-event notifications and one processing batches.
 
 ## Supported Features
 

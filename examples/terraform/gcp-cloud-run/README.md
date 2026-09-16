@@ -9,7 +9,7 @@ The example assumes PostgreSQL and Pub/Sub topics already exist. It creates:
 - a Google service account for Outboxer
 - `roles/pubsub.publisher`
 - Secret Manager access for the configured database password secret
-- a Cloud Run v2 service using `ghcr.io/fvdsn/outboxer:v0.1.0`
+- a Cloud Run v2 service using `ghcr.io/fvdsn/outboxer:v0.4.0`
 
 Cloud Run services normally optimize for request/response workloads. For
 Outboxer, keep `min_instance_count = 1` and `cpu_idle = false` so the processor

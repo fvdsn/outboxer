@@ -36,7 +36,7 @@ spec:
       terminationGracePeriodSeconds: 60
       containers:
         - name: outboxer
-          image: ghcr.io/fvdsn/outboxer:v0.1.0
+          image: ghcr.io/fvdsn/outboxer:v0.4.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
