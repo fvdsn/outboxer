@@ -106,6 +106,54 @@ func TestProcessEventsDoesNotCooldownAfterNonFatalSenderError(t *testing.T) {
 	}
 }
 
+func TestProcessEventsUpdatesBacklogAfterNonFatalSenderError(t *testing.T) {
+	cfg := testConfig()
+	cfg.SQSEnabled = false
+	cfg.ErrorCooldown = time.Hour
+	expectedErr := errors.New("retryable pubsub")
+	a, mock, cleanup := newMockProcessorApp(t, cfg)
+	defer cleanup()
+	setTestPubSubProvider(a, &fakePubSubPublisher{errs: []error{nil, expectedErr}})
+
+	firstRows := mockEventRows().
+		AddRow(mockEventRow("event-1", "pubsub", "topic-1", "one", nil)...).
+		AddRow(mockEventRow("event-2", "pubsub", "topic-1", "two", nil)...)
+	mock.ExpectBegin()
+	expectSelectEvents(mock, a).WillReturnRows(firstRows)
+	mock.ExpectExec(deleteEventsSQL).WithArgs(deletedIDs{"event-1"}).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	// The next select fails so the loop parks in the (long) cooldown, leaving
+	// the gauge as the committed batch with the sender error set it.
+	mock.ExpectBegin()
+	expectSelectEvents(mock, a).WillReturnError(errors.New("second select failed"))
+	mock.ExpectRollback()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- a.processEvents(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("processEvents returned an error after context cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("processEvents did not return after cancellation")
+	}
+
+	if got := a.stats.backlogEvents.Load(); got != 1 {
+		t.Fatalf("expected the backlog gauge to reflect the event kept for retry, got %d", got)
+	}
+	if got := a.stats.backlogFloor.Load(); got != 0 {
+		t.Fatalf("expected an exact backlog after a drained batch, got floor=%d", got)
+	}
+}
+
 func TestProcessOneBatchCommitsDoneBeforeNonFatalSenderError(t *testing.T) {
 	cfg := testConfig()
 	cfg.SQSEnabled = false

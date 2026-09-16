@@ -19,7 +19,7 @@ Counters are cumulative since process start.
 | `outboxer_events_kept_for_retry_total` | counter | Events left pending after their batch, summed per batch: one event retried across N batches counts N times. |
 | `outboxer_batches_processed_total` | counter | Batches committed, including empty ones. |
 | `outboxer_batch_errors_total` | counter | Batches that failed on a database error and rolled back. |
-| `outboxer_sender_errors_total` | counter | Errors returned by providers; the affected events stay pending. |
+| `outboxer_sender_errors_total` | counter | Errors returned by providers: one per failed publish call, plus one per message rejected inside an otherwise accepted call (SQS partial batch failures, Pub/Sub per-message errors). The affected events stay pending. |
 | `outboxer_fatal_after_commit_errors_total` | counter | Fatal sender errors that stop the relay after committing completed work. |
 | `outboxer_collect_batch_target` | gauge | The configured `COLLECT_BATCH_TARGET`. |
 | `outboxer_last_batch_selected_events` | gauge | Events selected by the most recent committed batch. |

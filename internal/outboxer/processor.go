@@ -49,16 +49,16 @@ func (a *app) processEvents(ctx context.Context) error {
 		}
 
 		result, err := a.processOneBatch(ctx)
-		if err != nil {
-			if errors.Is(err, errFatalAfterCommit) {
-				slog.Error("Fatal sender error after commit, stopping processor", "error", err.Error())
-				return err
-			}
-			if errors.Is(err, errDatabaseBatch) {
-				sleepContext(ctx, a.cfg.ErrorCooldown)
-			}
+		switch {
+		case errors.Is(err, errFatalAfterCommit):
+			slog.Error("Fatal sender error after commit, stopping processor", "error", err.Error())
+			return err
+		case errors.Is(err, errDatabaseBatch):
+			sleepContext(ctx, a.cfg.ErrorCooldown)
 			continue
 		}
+		// A non-fatal sender error still commits the batch (S12), so what the
+		// batch left behind is known and the backlog gauge must follow it.
 		a.updateBacklog(ctx, result)
 
 		if result.selected == 0 {
@@ -116,15 +116,13 @@ func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 	}
 
 	result, batchErr := a.processEventBatch(ctx, tx)
-	if batchErr != nil {
+	if errors.Is(batchErr, errDatabaseBatch) {
 		logBatchError(ctx, "Failed during batch transaction", batchErr)
-		if errors.Is(batchErr, errDatabaseBatch) {
-			if rollbackErr := tx.Rollback(); rollbackErr != nil {
-				logBatchError(ctx, "Failed to rollback batch transaction", rollbackErr)
-			}
-			a.stats.addBatchError()
-			return result, batchErr
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			logBatchError(ctx, "Failed to rollback batch transaction", rollbackErr)
 		}
+		a.stats.addBatchError()
+		return result, batchErr
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -138,6 +136,15 @@ func (a *app) processOneBatch(ctx context.Context) (batchResult, error) {
 	a.markProgress()
 	a.stats.addCommittedBatch(result.stats, time.Now())
 
+	if batchErr != nil && !errors.Is(batchErr, errFatalAfterCommit) {
+		// Every failed event was already reported individually through the
+		// rate-limited failure logger; this line only summarizes the batch, so
+		// it goes through the same limiter (S13) rather than logging per batch.
+		a.logFailure(ctx, "Batch committed with sender errors", "batch-sender-errors",
+			"sender_errors", result.stats.senderErrors,
+			"error", firstLeafError(batchErr).Error(),
+		)
+	}
 	return result, batchErr
 }
 
@@ -299,6 +306,23 @@ func countJoinedErrors(err error) int {
 		return count
 	}
 	return 1
+}
+
+// firstLeafError returns the first non-joined error inside err, so a summary
+// log can name one concrete failure instead of printing every joined message.
+func firstLeafError(err error) error {
+	type unwrapper interface{ Unwrap() []error }
+	for {
+		joined, ok := err.(unwrapper)
+		if !ok {
+			return err
+		}
+		items := joined.Unwrap()
+		if len(items) == 0 {
+			return err
+		}
+		err = items[0]
+	}
 }
 
 // oldestEventAge observes the outbox lag from the batch itself: events are

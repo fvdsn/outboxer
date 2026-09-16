@@ -328,8 +328,8 @@ func TestSendSQSBatchHandlesStandardPartialResponses(t *testing.T) {
 	err := a.sendSQSBatchForTest(context.Background(), "queue-a", events, func(id any) {
 		deleted = append(deleted, id)
 	})
-	if err != nil {
-		t.Fatalf("sendSQSBatchForTest returned error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "event-3 rejected: InternalError: later") {
+		t.Fatalf("expected the retryable rejection to surface as a sender error, got %v", err)
 	}
 
 	if !reflect.DeepEqual(deleted, []any{"event-1", "event-2"}) {
@@ -667,8 +667,8 @@ func TestSendSQSEventsFIFOStopsGroupAfterRetryableFailure(t *testing.T) {
 	err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deleted = append(deleted, id)
 	})
-	if err != nil {
-		t.Fatalf("sendSQSEvents returned error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "event-2 rejected: InternalError: retry") {
+		t.Fatalf("expected the retryable rejection to surface as a sender error, got %v", err)
 	}
 
 	if !reflect.DeepEqual(deleted, []any{"event-1"}) {
@@ -803,12 +803,13 @@ func TestSendSQSEventsFIFODifferentGroupCanSucceedWhenOneFails(t *testing.T) {
 		fromColumns(map[string]any{"id": "event-2", "destination": "queue-a.fifo", "payload": "two", "options": combinedOrderingOptions("group-b")}),
 	}
 
-	if err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
+	err := a.sendSQSEventsForTest(context.Background(), events, func(id any) {
 		deletedMu.Lock()
 		defer deletedMu.Unlock()
 		deleted = append(deleted, id)
-	}); err != nil {
-		t.Fatalf("sendSQSEvents returned error: %v", err)
+	})
+	if err == nil || !strings.Contains(err.Error(), "event-1 rejected: InternalError: retry") {
+		t.Fatalf("expected the retryable rejection to surface as a sender error, got %v", err)
 	}
 
 	deletedMu.Lock()

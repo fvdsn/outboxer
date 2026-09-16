@@ -373,21 +373,29 @@ func (a *sender) sendSQSBatch(ctx context.Context, queueURL string, events []sqs
 		entryLog.Sent(entry.MessageID, publishLatency)
 	}
 
+	var rejected error
 	for _, entry := range response.Failed {
 		entryLog := logsByEntryID[entry.ID]
+		reason := fmt.Sprintf("%s: %s", entry.Code, entry.Message)
 		if entry.SenderFault {
-			callbacks.AddPoisonID(entryLog.ID, fmt.Sprintf("%s: %s", entry.Code, entry.Message))
+			callbacks.AddPoisonID(entryLog.ID, reason)
 			anyDone = true
+		} else {
+			// SQS accepted the call but rejected this entry (throttling, an
+			// internal error). The SDK retryer only covers whole-call failures,
+			// so surface the rejection as a sender error; the event stays
+			// pending and the next batch retries it.
+			rejected = errors.Join(rejected, fmt.Errorf("entry %v rejected: %s", entryLog.ID, reason))
 		}
 		callbacks.ReportFailure(ctx, "Failed to send event",
 			fmt.Sprintf("%s|%s|%s|%s", Target, queueURL, entry.Code, entry.Message),
 			"event_id", entryLog.ID,
 			"event_destination", queueURL,
-			"error", fmt.Sprintf("%s: %s", entry.Code, entry.Message),
+			"error", reason,
 		)
 	}
 
-	return anyDone, nil
+	return anyDone, rejected
 }
 
 func (a *sender) sendSQSBatchIsolated(ctx context.Context, queueURL string, events []sqsPreparedEvent, callbacks provider.Callbacks) (bool, error) {

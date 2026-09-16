@@ -54,7 +54,8 @@ Outboxer picked it up (only meaningful when `EVENT_TIMESTAMP` is configured).
 | `Event cannot be routed, leaving it in the table` | An event has no valid route (unknown/disabled target, missing destination). | `event_id`, `error` |
 | `Sender reported an ID outside the selected batch, ignoring it` | A backend returned a result for an unexpected id. | `event_id` |
 | `Failed to start batch transaction` | Opening the batch transaction failed. | `error` |
-| `Failed during batch transaction` | A select/send/delete step failed; the batch is rolled back. | `error` |
+| `Failed during batch transaction` | A select/insert/delete step failed; the batch is rolled back. | `error` |
+| `Batch committed with sender errors` | Some events failed to publish; the batch committed what did succeed and the rest stay pending. | `sender_errors`, `error` |
 | `Failed to rollback batch transaction` | The rollback itself failed. | `error` |
 | `Failed to commit batch transaction` | The commit failed. | `error` |
 | `Failed to count backlog` | The bounded backlog depth probe failed; `outboxer_backlog_events` keeps its previous value until the next probe. | `error` |
@@ -70,8 +71,9 @@ produce spurious error logs.
 
 #### Repeated-failure rate limiting
 
-`Failed to send event`, `Failed to send event batch`, `Failed to count
-backlog`, the routing failure, and the out-of-batch-id messages go through a
+`Failed to send event`, `Failed to send event batch`, `Batch committed with
+sender errors`, `Failed to count backlog`, the routing failure, and the
+out-of-batch-id messages go through a
 rate limiter keyed by failure signature. Identical failures are logged at most once per minute; when a burst
 is collapsed, the next emitted log carries a `suppressed_count` field with the
 number of occurrences that were skipped. This keeps a sustained provider outage
@@ -96,7 +98,7 @@ versions of the same counters are exposed on `/metrics` — see
 | `events_kept_for_retry` | counter | Events left in the outbox table for a later retry — routing failures and retryable provider failures. |
 | `batches_processed` | counter | Batches committed this interval. |
 | `batch_errors` | counter | Batches that failed and triggered a database cooldown. |
-| `sender_errors` | counter | Per-event sender errors observed during batches. |
+| `sender_errors` | counter | Sender errors observed during batches: failed publish calls, plus messages a provider rejected inside an accepted call. |
 | `fatal_after_commit_errors` | counter | Fatal sender errors that stopped the processor after commit. |
 
 ### Interpreting the numbers
